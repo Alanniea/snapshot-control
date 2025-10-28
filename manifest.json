@@ -1,0 +1,9 @@
+{
+    "id": "snapshot-control",
+    "name": "本地快照版本控制",
+    "version": "1.0.0",
+    "minAppVersion": "0.15.0",
+    "description": "基于本地快照的版本控制系统",
+    "author": "Your Name",
+    "isDesktopOnly": false
+}
