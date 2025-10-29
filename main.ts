@@ -1,19 +1,17 @@
-import {
-    App,
-    Plugin,
-    PluginSettingTab,
-    Setting,
-    TFile,
-    Notice,
-    Modal,
-    ButtonComponent,
-} from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, Modal, TextComponent } from 'obsidian';
 
 interface SnapshotPluginSettings {
     snapshotFolder: string;
-    autoSnapshot: boolean;
     maxSnapshots: number;
-    snapshotInterval: number; // 分钟
+    autoSnapshot: boolean;
+    autoSnapshotInterval: number;
+}
+
+const DEFAULT_SETTINGS: SnapshotPluginSettings = {
+    snapshotFolder: '.snapshots',
+    maxSnapshots: 50,
+    autoSnapshot: false,
+    autoSnapshotInterval: 5
 }
 
 interface Snapshot {
@@ -21,86 +19,79 @@ interface Snapshot {
     filePath: string;
     timestamp: number;
     content: string;
-    size: number;
     note: string;
 }
 
-const DEFAULT_SETTINGS: SnapshotPluginSettings = {
-    snapshotFolder: '.snapshots',
-    autoSnapshot: true,
-    maxSnapshots: 50,
-    snapshotInterval: 30,
-};
-
 export default class SnapshotPlugin extends Plugin {
     settings: SnapshotPluginSettings;
-    lastSaveTime: Map<string, number> = new Map();
+    private autoSaveIntervalId: number | null = null;
 
     async onload() {
         await this.loadSettings();
 
-        // 创建快照文件夹
-        await this.ensureSnapshotFolder();
+        // 添加左侧功能区图标
+        this.addRibbonIcon('clock-rotate-left', '快照版本控制', () => {
+            new SnapshotListModal(this.app, this).open();
+        });
 
-        // 添加命令：手动创建快照
+        // 添加命令:创建快照
         this.addCommand({
             id: 'create-snapshot',
             name: '创建当前文件快照',
-            callback: () => this.createSnapshot(),
+            callback: () => {
+                this.createSnapshot();
+            }
         });
 
-        // 添加命令：查看快照历史
+        // 添加命令:查看快照列表
         this.addCommand({
             id: 'view-snapshots',
-            name: '查看快照历史',
-            callback: () => this.viewSnapshots(),
+            name: '查看快照列表',
+            callback: () => {
+                new SnapshotListModal(this.app, this).open();
+            }
         });
 
-        // 添加命令：恢复快照
+        // 添加命令:恢复快照
         this.addCommand({
             id: 'restore-snapshot',
             name: '恢复快照',
-            callback: () => this.showRestoreModal(),
+            callback: () => {
+                new SnapshotListModal(this.app, this).open();
+            }
         });
 
-        // 添加命令：清理旧快照
-        this.addCommand({
-            id: 'clean-snapshots',
-            name: '清理旧快照',
-            callback: () => this.cleanOldSnapshots(),
-        });
-
-        // 监听文件修改事件（自动快照）
-        if (this.settings.autoSnapshot) {
-            this.registerEvent(
-                this.app.vault.on('modify', (file) => {
-                    if (file instanceof TFile) {
-                        this.autoCreateSnapshot(file);
-                    }
-                })
-            );
-        }
-
-        // 添加设置选项卡
+        // 添加设置标签
         this.addSettingTab(new SnapshotSettingTab(this.app, this));
 
-        // 添加功能区图标
-        this.addRibbonIcon('history', '快照管理', () => {
-            this.viewSnapshots();
-        });
-    }
-
-    async ensureSnapshotFolder() {
-        const folder = this.settings.snapshotFolder;
-        if (!(await this.app.vault.adapter.exists(folder))) {
-            await this.app.vault.createFolder(folder);
+        // 启动自动保存
+        if (this.settings.autoSnapshot) {
+            this.startAutoSave();
         }
+
+        console.log('快照版本控制插件已加载');
     }
 
-    async createSnapshot(file?: TFile, note?: string) {
-        const activeFile = file || this.app.workspace.getActiveFile();
+    onunload() {
+        if (this.autoSaveIntervalId) {
+            window.clearInterval(this.autoSaveIntervalId);
+        }
+        console.log('快照版本控制插件已卸载');
+    }
+
+    async loadSettings() {
+        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    }
+
+    async saveSettings() {
+        await this.saveData(this.settings);
+    }
+
+    // 创建快照
+    async createSnapshot(note: string = '') {
+        const activeFile = this.app.workspace.getActiveFile();
         if (!activeFile) {
-            new Notice('没有活动文件');
+            new Notice('没有打开的文件');
             return;
         }
 
@@ -111,109 +102,139 @@ export default class SnapshotPlugin extends Plugin {
                 filePath: activeFile.path,
                 timestamp: Date.now(),
                 content: content,
-                size: content.length,
-                note: note || '',
+                note: note
             };
 
-            const snapshotPath = `${this.settings.snapshotFolder}/${this.sanitizeFileName(activeFile.path)}_${snapshot.id}.json`;
-            await this.app.vault.create(snapshotPath, JSON.stringify(snapshot, null, 2));
-
-            new Notice(`快照已创建: ${activeFile.name}`);
-            
-            // 清理超出限制的旧快照
+            await this.saveSnapshot(snapshot);
             await this.cleanOldSnapshots(activeFile.path);
+            new Notice('快照创建成功');
         } catch (error) {
-            new Notice(`创建快照失败: ${error.message}`);
-            console.error(error);
+            console.error('创建快照失败:', error);
+            new Notice('快照创建失败');
         }
     }
 
-    async autoCreateSnapshot(file: TFile) {
-        const lastSave = this.lastSaveTime.get(file.path) || 0;
-        const now = Date.now();
-        const intervalMs = this.settings.snapshotInterval * 60 * 1000;
-
-        if (now - lastSave >= intervalMs) {
-            await this.createSnapshot(file);
-            this.lastSaveTime.set(file.path, now);
+    // 保存快照到文件
+    async saveSnapshot(snapshot: Snapshot) {
+        const snapshotFolder = this.settings.snapshotFolder;
+        
+        // 确保快照文件夹存在
+        const folderExists = await this.app.vault.adapter.exists(snapshotFolder);
+        if (!folderExists) {
+            await this.app.vault.adapter.mkdir(snapshotFolder);
         }
+
+        // 创建文件特定的子文件夹
+        const fileFolder = this.getSnapshotFolderForFile(snapshot.filePath);
+        const fileFolderExists = await this.app.vault.adapter.exists(fileFolder);
+        if (!fileFolderExists) {
+            await this.app.vault.adapter.mkdir(fileFolder);
+        }
+
+        // 保存快照数据
+        const snapshotPath = `${fileFolder}/${snapshot.id}.json`;
+        await this.app.vault.adapter.write(snapshotPath, JSON.stringify(snapshot, null, 2));
     }
 
-    async getSnapshots(filePath?: string): Promise<Snapshot[]> {
-        const snapshotFiles = this.app.vault.getFiles().filter(f => 
-            f.path.startsWith(this.settings.snapshotFolder) && f.extension === 'json'
-        );
+    // 获取文件的快照文件夹路径
+    getSnapshotFolderForFile(filePath: string): string {
+        const sanitizedPath = filePath.replace(/\//g, '_').replace(/\\/g, '_');
+        return `${this.settings.snapshotFolder}/${sanitizedPath}`;
+    }
 
-        const snapshots: Snapshot[] = [];
-        for (const file of snapshotFiles) {
-            try {
-                const content = await this.app.vault.read(file);
-                const snapshot: Snapshot = JSON.parse(content);
-                if (!filePath || snapshot.filePath === filePath) {
+    // 获取指定文件的所有快照
+    async getSnapshots(filePath: string): Promise<Snapshot[]> {
+        const fileFolder = this.getSnapshotFolderForFile(filePath);
+        const folderExists = await this.app.vault.adapter.exists(fileFolder);
+        
+        if (!folderExists) {
+            return [];
+        }
+
+        try {
+            const files = await this.app.vault.adapter.list(fileFolder);
+            const snapshots: Snapshot[] = [];
+
+            for (const file of files.files) {
+                if (file.endsWith('.json')) {
+                    const content = await this.app.vault.adapter.read(file);
+                    const snapshot = JSON.parse(content) as Snapshot;
                     snapshots.push(snapshot);
                 }
-            } catch (error) {
-                console.error(`读取快照失败: ${file.path}`, error);
             }
-        }
 
-        return snapshots.sort((a, b) => b.timestamp - a.timestamp);
+            // 按时间戳降序排序
+            snapshots.sort((a, b) => b.timestamp - a.timestamp);
+            return snapshots;
+        } catch (error) {
+            console.error('读取快照失败:', error);
+            return [];
+        }
     }
 
+    // 清理旧快照
+    async cleanOldSnapshots(filePath: string) {
+        const snapshots = await this.getSnapshots(filePath);
+        if (snapshots.length > this.settings.maxSnapshots) {
+            const toDelete = snapshots.slice(this.settings.maxSnapshots);
+            const fileFolder = this.getSnapshotFolderForFile(filePath);
+            
+            for (const snapshot of toDelete) {
+                const snapshotPath = `${fileFolder}/${snapshot.id}.json`;
+                await this.app.vault.adapter.remove(snapshotPath);
+            }
+        }
+    }
+
+    // 恢复快照
     async restoreSnapshot(snapshot: Snapshot) {
         try {
             const file = this.app.vault.getAbstractFileByPath(snapshot.filePath);
             if (file instanceof TFile) {
-                // 在恢复前创建当前版本的快照
-                await this.createSnapshot(file, '恢复前自动保存');
-                
-                // 恢复内容
                 await this.app.vault.modify(file, snapshot.content);
-                new Notice(`已恢复快照: ${new Date(snapshot.timestamp).toLocaleString()}`);
+                new Notice('快照恢复成功');
             } else {
-                new Notice('原文件不存在，无法恢复');
+                new Notice('文件不存在');
             }
         } catch (error) {
-            new Notice(`恢复快照失败: ${error.message}`);
-            console.error(error);
+            console.error('恢复快照失败:', error);
+            new Notice('恢复快照失败');
         }
     }
 
-    async cleanOldSnapshots(filePath?: string) {
-        const snapshots = await this.getSnapshots(filePath);
-        const maxSnapshots = this.settings.maxSnapshots;
+    // 删除快照
+    async deleteSnapshot(snapshot: Snapshot) {
+        try {
+            const fileFolder = this.getSnapshotFolderForFile(snapshot.filePath);
+            const snapshotPath = `${fileFolder}/${snapshot.id}.json`;
+            await this.app.vault.adapter.remove(snapshotPath);
+            new Notice('快照已删除');
+        } catch (error) {
+            console.error('删除快照失败:', error);
+            new Notice('删除快照失败');
+        }
+    }
 
-        if (snapshots.length > maxSnapshots) {
-            const toDelete = snapshots.slice(maxSnapshots);
-            for (const snapshot of toDelete) {
-                const snapshotPath = `${this.settings.snapshotFolder}/${this.sanitizeFileName(snapshot.filePath)}_${snapshot.id}.json`;
-                const file = this.app.vault.getAbstractFileByPath(snapshotPath);
-                if (file instanceof TFile) {
-                    await this.app.vault.delete(file);
-                }
+    // 启动自动保存
+    startAutoSave() {
+        if (this.autoSaveIntervalId) {
+            window.clearInterval(this.autoSaveIntervalId);
+        }
+
+        this.autoSaveIntervalId = window.setInterval(() => {
+            const activeFile = this.app.workspace.getActiveFile();
+            if (activeFile) {
+                this.createSnapshot('自动快照');
             }
-            new Notice(`已清理 ${toDelete.length} 个旧快照`);
+        }, this.settings.autoSnapshotInterval * 60 * 1000);
+    }
+
+    // 停止自动保存
+    stopAutoSave() {
+        if (this.autoSaveIntervalId) {
+            window.clearInterval(this.autoSaveIntervalId);
+            this.autoSaveIntervalId = null;
         }
-    }
-
-    viewSnapshots() {
-        new SnapshotListModal(this.app, this).open();
-    }
-
-    showRestoreModal() {
-        new RestoreSnapshotModal(this.app, this).open();
-    }
-
-    sanitizeFileName(path: string): string {
-        return path.replace(/[/\\:*?"<>|]/g, '_');
-    }
-
-    async loadSettings() {
-        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-    }
-
-    async saveSettings() {
-        await this.saveData(this.settings);
     }
 }
 
@@ -229,51 +250,112 @@ class SnapshotListModal extends Modal {
     async onOpen() {
         const { contentEl } = this;
         contentEl.empty();
-        contentEl.createEl('h2', { text: '快照历史' });
+        contentEl.addClass('snapshot-modal');
+
+        contentEl.createEl('h2', { text: '快照版本控制' });
 
         const activeFile = this.app.workspace.getActiveFile();
-        const snapshots = await this.plugin.getSnapshots(activeFile?.path);
-
-        if (snapshots.length === 0) {
-            contentEl.createEl('p', { text: '暂无快照' });
+        if (!activeFile) {
+            contentEl.createEl('p', { text: '没有打开的文件' });
             return;
         }
 
-        const listEl = contentEl.createDiv({ cls: 'snapshot-list' });
+        contentEl.createEl('p', { text: `当前文件: ${activeFile.name}` });
+
+        // 创建快照按钮
+        const buttonContainer = contentEl.createDiv({ cls: 'snapshot-button-container' });
+        const createBtn = buttonContainer.createEl('button', { text: '创建新快照' });
+        createBtn.addEventListener('click', async () => {
+            new CreateSnapshotModal(this.app, this.plugin, () => {
+                this.onOpen(); // 刷新列表
+            }).open();
+        });
+
+        // 加载快照列表
+        const snapshots = await this.plugin.getSnapshots(activeFile.path);
+        
+        if (snapshots.length === 0) {
+            contentEl.createEl('p', { text: '暂无快照记录' });
+            return;
+        }
+
+        const listContainer = contentEl.createDiv({ cls: 'snapshot-list' });
+        
         for (const snapshot of snapshots) {
-            const itemEl = listEl.createDiv({ cls: 'snapshot-item' });
+            const item = listContainer.createDiv({ cls: 'snapshot-item' });
             
-            const infoEl = itemEl.createDiv({ cls: 'snapshot-info' });
-            infoEl.createEl('div', { 
-                text: new Date(snapshot.timestamp).toLocaleString(),
-                cls: 'snapshot-time'
+            const info = item.createDiv({ cls: 'snapshot-info' });
+            const date = new Date(snapshot.timestamp);
+            info.createEl('div', { 
+                text: `时间: ${date.toLocaleString('zh-CN')}`,
+                cls: 'snapshot-timestamp'
             });
-            infoEl.createEl('div', { 
-                text: `${snapshot.filePath} (${(snapshot.size / 1024).toFixed(2)} KB)`,
-                cls: 'snapshot-path'
-            });
+            
             if (snapshot.note) {
-                infoEl.createEl('div', { 
-                    text: snapshot.note,
+                info.createEl('div', { 
+                    text: `备注: ${snapshot.note}`,
                     cls: 'snapshot-note'
                 });
             }
 
-            const actionsEl = itemEl.createDiv({ cls: 'snapshot-actions' });
+            const actions = item.createDiv({ cls: 'snapshot-actions' });
             
-            new ButtonComponent(actionsEl)
-                .setButtonText('恢复')
-                .onClick(async () => {
-                    await this.plugin.restoreSnapshot(snapshot);
-                    this.close();
-                });
+            const restoreBtn = actions.createEl('button', { text: '恢复' });
+            restoreBtn.addEventListener('click', async () => {
+                await this.plugin.restoreSnapshot(snapshot);
+                this.close();
+            });
 
-            new ButtonComponent(actionsEl)
-                .setButtonText('查看')
-                .onClick(() => {
-                    new SnapshotContentModal(this.app, snapshot).open();
-                });
+            const deleteBtn = actions.createEl('button', { text: '删除' });
+            deleteBtn.addEventListener('click', async () => {
+                await this.plugin.deleteSnapshot(snapshot);
+                this.onOpen(); // 刷新列表
+            });
         }
+
+        // 添加样式
+        const style = contentEl.createEl('style');
+        style.textContent = `
+            .snapshot-modal {
+                padding: 20px;
+            }
+            .snapshot-button-container {
+                margin: 15px 0;
+            }
+            .snapshot-list {
+                margin-top: 20px;
+                max-height: 400px;
+                overflow-y: auto;
+            }
+            .snapshot-item {
+                border: 1px solid var(--background-modifier-border);
+                border-radius: 5px;
+                padding: 10px;
+                margin-bottom: 10px;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+            .snapshot-info {
+                flex: 1;
+            }
+            .snapshot-timestamp {
+                font-weight: bold;
+                margin-bottom: 5px;
+            }
+            .snapshot-note {
+                color: var(--text-muted);
+                font-size: 0.9em;
+            }
+            .snapshot-actions {
+                display: flex;
+                gap: 5px;
+            }
+            .snapshot-actions button {
+                padding: 5px 10px;
+                cursor: pointer;
+            }
+        `;
     }
 
     onClose() {
@@ -282,78 +364,48 @@ class SnapshotListModal extends Modal {
     }
 }
 
-// 快照内容查看模态框
-class SnapshotContentModal extends Modal {
-    snapshot: Snapshot;
+// 创建快照模态框
+class CreateSnapshotModal extends Modal {
+    plugin: SnapshotPlugin;
+    onSubmit: () => void;
 
-    constructor(app: App, snapshot: Snapshot) {
+    constructor(app: App, plugin: SnapshotPlugin, onSubmit: () => void) {
         super(app);
-        this.snapshot = snapshot;
+        this.plugin = plugin;
+        this.onSubmit = onSubmit;
     }
 
     onOpen() {
         const { contentEl } = this;
         contentEl.empty();
-        contentEl.createEl('h2', { text: '快照内容' });
-        
-        contentEl.createEl('p', { 
-            text: `时间: ${new Date(this.snapshot.timestamp).toLocaleString()}`
-        });
-        contentEl.createEl('p', { 
-            text: `文件: ${this.snapshot.filePath}`
-        });
 
-        const contentBox = contentEl.createEl('pre', { 
-            cls: 'snapshot-content',
-        });
-        contentBox.createEl('code', { text: this.snapshot.content });
-    }
+        contentEl.createEl('h2', { text: '创建快照' });
 
-    onClose() {
-        const { contentEl } = this;
-        contentEl.empty();
-    }
-}
+        new Setting(contentEl)
+            .setName('备注')
+            .setDesc('为这个快照添加备注(可选)')
+            .addText(text => {
+                text.inputEl.style.width = '100%';
+                text.onChange(() => {});
+                
+                // 创建按钮
+                const buttonContainer = contentEl.createDiv({ cls: 'modal-button-container' });
+                buttonContainer.style.marginTop = '20px';
+                buttonContainer.style.display = 'flex';
+                buttonContainer.style.gap = '10px';
+                
+                const submitBtn = buttonContainer.createEl('button', { text: '创建' });
+                submitBtn.addEventListener('click', async () => {
+                    await this.plugin.createSnapshot(text.getValue());
+                    this.close();
+                    this.onSubmit();
+                });
 
-// 恢复快照模态框
-class RestoreSnapshotModal extends Modal {
-    plugin: SnapshotPlugin;
-
-    constructor(app: App, plugin: SnapshotPlugin) {
-        super(app);
-        this.plugin = plugin;
-    }
-
-    async onOpen() {
-        const { contentEl } = this;
-        contentEl.empty();
-        contentEl.createEl('h2', { text: '恢复快照' });
-
-        const activeFile = this.app.workspace.getActiveFile();
-        if (!activeFile) {
-            contentEl.createEl('p', { text: '请先打开要恢复的文件' });
-            return;
-        }
-
-        const snapshots = await this.plugin.getSnapshots(activeFile.path);
-        if (snapshots.length === 0) {
-            contentEl.createEl('p', { text: '该文件没有快照' });
-            return;
-        }
-
-        for (const snapshot of snapshots) {
-            const itemEl = contentEl.createDiv({ cls: 'snapshot-restore-item' });
-            itemEl.createEl('span', { 
-                text: new Date(snapshot.timestamp).toLocaleString()
-            });
-            
-            new ButtonComponent(itemEl)
-                .setButtonText('恢复此版本')
-                .onClick(async () => {
-                    await this.plugin.restoreSnapshot(snapshot);
+                const cancelBtn = buttonContainer.createEl('button', { text: '取消' });
+                cancelBtn.addEventListener('click', () => {
                     this.close();
                 });
-        }
+            });
     }
 
     onClose() {
@@ -362,7 +414,7 @@ class RestoreSnapshotModal extends Modal {
     }
 }
 
-// 设置选项卡
+// 设置标签
 class SnapshotSettingTab extends PluginSettingTab {
     plugin: SnapshotPlugin;
 
@@ -374,6 +426,7 @@ class SnapshotSettingTab extends PluginSettingTab {
     display(): void {
         const { containerEl } = this;
         containerEl.empty();
+
         containerEl.createEl('h2', { text: '快照版本控制设置' });
 
         new Setting(containerEl)
@@ -388,30 +441,6 @@ class SnapshotSettingTab extends PluginSettingTab {
                 }));
 
         new Setting(containerEl)
-            .setName('自动快照')
-            .setDesc('在文件修改时自动创建快照')
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.autoSnapshot)
-                .onChange(async (value) => {
-                    this.plugin.settings.autoSnapshot = value;
-                    await this.plugin.saveSettings();
-                }));
-
-        new Setting(containerEl)
-            .setName('快照间隔（分钟）')
-            .setDesc('自动快照的时间间隔')
-            .addText(text => text
-                .setPlaceholder('30')
-                .setValue(String(this.plugin.settings.snapshotInterval))
-                .onChange(async (value) => {
-                    const num = parseInt(value);
-                    if (!isNaN(num) && num > 0) {
-                        this.plugin.settings.snapshotInterval = num;
-                        await this.plugin.saveSettings();
-                    }
-                }));
-
-        new Setting(containerEl)
             .setName('最大快照数量')
             .setDesc('每个文件保留的最大快照数量')
             .addText(text => text
@@ -422,6 +451,40 @@ class SnapshotSettingTab extends PluginSettingTab {
                     if (!isNaN(num) && num > 0) {
                         this.plugin.settings.maxSnapshots = num;
                         await this.plugin.saveSettings();
+                    }
+                }));
+
+        new Setting(containerEl)
+            .setName('自动快照')
+            .setDesc('定期自动创建快照')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.autoSnapshot)
+                .onChange(async (value) => {
+                    this.plugin.settings.autoSnapshot = value;
+                    await this.plugin.saveSettings();
+                    
+                    if (value) {
+                        this.plugin.startAutoSave();
+                    } else {
+                        this.plugin.stopAutoSave();
+                    }
+                }));
+
+        new Setting(containerEl)
+            .setName('自动快照间隔')
+            .setDesc('自动创建快照的时间间隔(分钟)')
+            .addText(text => text
+                .setPlaceholder('5')
+                .setValue(String(this.plugin.settings.autoSnapshotInterval))
+                .onChange(async (value) => {
+                    const num = parseInt(value);
+                    if (!isNaN(num) && num > 0) {
+                        this.plugin.settings.autoSnapshotInterval = num;
+                        await this.plugin.saveSettings();
+                        
+                        if (this.plugin.settings.autoSnapshot) {
+                            this.plugin.startAutoSave();
+                        }
                     }
                 }));
     }
