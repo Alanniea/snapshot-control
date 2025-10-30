@@ -639,8 +639,9 @@ export default class VersionControlPlugin extends Plugin {
     let leaf = workspace.getLeavesOfType(VERSION_VIEW_TYPE)[0];
 
     if (!leaf) {
-      leaf = workspace.getRightLeaf(false);
-      if (leaf) {
+      const rightLeaf = workspace.getRightLeaf(false);
+      if (rightLeaf) {
+        leaf = rightLeaf;
         await leaf.setViewState({ type: VERSION_VIEW_TYPE });
       }
     }
