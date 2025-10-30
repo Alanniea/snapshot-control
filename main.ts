@@ -1,491 +1,983 @@
-import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, Modal, TextComponent } from 'obsidian';
+import { 
+  App, 
+  Plugin, 
+  PluginSettingTab, 
+  Setting, 
+  TFile, 
+  Notice, 
+  Modal,
+  ItemView,
+  WorkspaceLeaf,
+  Menu
+} from 'obsidian';
+import * as Diff from 'diff';
 
-interface SnapshotPluginSettings {
-    snapshotFolder: string;
-    maxSnapshots: number;
-    autoSnapshot: boolean;
-    autoSnapshotInterval: number;
+// 插件设置接口
+interface VersionControlSettings {
+  storageLocation: 'vault' | 'custom';
+  customStoragePath: string;
+  autoSaveInterval: number; // 分钟
+  maxVersionCount: number;
+  retentionDays: number;
+  cleanupStrategy: 'days-first' | 'count-first' | 'both';
 }
 
-const DEFAULT_SETTINGS: SnapshotPluginSettings = {
-    snapshotFolder: '.snapshots',
-    maxSnapshots: 50,
-    autoSnapshot: false,
-    autoSnapshotInterval: 5
+// 默认设置
+const DEFAULT_SETTINGS: VersionControlSettings = {
+  storageLocation: 'vault',
+  customStoragePath: '',
+  autoSaveInterval: 5,
+  maxVersionCount: 50,
+  retentionDays: 30,
+  cleanupStrategy: 'both'
+};
+
+// 版本数据接口
+interface Version {
+  id: string;
+  timestamp: number;
+  content: string;
+  message: string;
+  size: number;
+  isManual: boolean;
 }
 
-interface Snapshot {
-    id: string;
-    filePath: string;
-    timestamp: number;
-    content: string;
-    note: string;
+// 文件版本历史接口
+interface FileVersionHistory {
+  filePath: string;
+  versions: Version[];
 }
 
-export default class SnapshotPlugin extends Plugin {
-    settings: SnapshotPluginSettings;
-    private autoSaveIntervalId: number | null = null;
+const VERSION_VIEW_TYPE = 'version-history-view';
 
-    async onload() {
-        await this.loadSettings();
+// 版本历史视图
+class VersionHistoryView extends ItemView {
+  plugin: VersionControlPlugin;
+  currentFile: TFile | null = null;
+  selectedVersions: Set<string> = new Set();
 
-        // 添加左侧功能区图标
-        this.addRibbonIcon('clock-rotate-left', '快照版本控制', () => {
-            new SnapshotListModal(this.app, this).open();
-        });
+  constructor(leaf: WorkspaceLeaf, plugin: VersionControlPlugin) {
+    super(leaf);
+    this.plugin = plugin;
+  }
 
-        // 添加命令:创建快照
-        this.addCommand({
-            id: 'create-snapshot',
-            name: '创建当前文件快照',
-            callback: () => {
-                this.createSnapshot();
-            }
-        });
+  getViewType(): string {
+    return VERSION_VIEW_TYPE;
+  }
 
-        // 添加命令:查看快照列表
-        this.addCommand({
-            id: 'view-snapshots',
-            name: '查看快照列表',
-            callback: () => {
-                new SnapshotListModal(this.app, this).open();
-            }
-        });
+  getDisplayText(): string {
+    return '版本历史';
+  }
 
-        // 添加命令:恢复快照
-        this.addCommand({
-            id: 'restore-snapshot',
-            name: '恢复快照',
-            callback: () => {
-                new SnapshotListModal(this.app, this).open();
-            }
-        });
+  getIcon(): string {
+    return 'history';
+  }
 
-        // 添加设置标签
-        this.addSettingTab(new SnapshotSettingTab(this.app, this));
+  async onOpen() {
+    const container = this.containerEl.children[1];
+    container.empty();
+    container.addClass('version-history-container');
 
-        // 启动自动保存
-        if (this.settings.autoSnapshot) {
-            this.startAutoSave();
+    // 监听活动文件变化
+    this.registerEvent(
+      this.app.workspace.on('active-leaf-change', () => {
+        this.updateView();
+      })
+    );
+
+    this.updateView();
+  }
+
+  async updateView() {
+    const container = this.containerEl.children[1];
+    container.empty();
+
+    const activeFile = this.app.workspace.getActiveFile();
+    this.currentFile = activeFile;
+
+    if (!activeFile) {
+      container.createEl('div', { 
+        text: '请打开一个文件以查看版本历史',
+        cls: 'version-empty-state'
+      });
+      return;
+    }
+
+    // 标题和操作按钮
+    const header = container.createEl('div', { cls: 'version-header' });
+    header.createEl('h4', { text: `${activeFile.name} 的版本历史` });
+
+    const buttonGroup = header.createEl('div', { cls: 'version-button-group' });
+    
+    const createBtn = buttonGroup.createEl('button', { 
+      text: '创建版本',
+      cls: 'mod-cta'
+    });
+    createBtn.addEventListener('click', () => {
+      new CreateVersionModal(this.app, this.plugin, activeFile).open();
+    });
+
+    const deleteBtn = buttonGroup.createEl('button', { 
+      text: '批量删除',
+      cls: 'mod-warning'
+    });
+    deleteBtn.addEventListener('click', () => {
+      this.batchDelete();
+    });
+
+    // 版本列表
+    const history = await this.plugin.getFileHistory(activeFile.path);
+    
+    if (!history || history.versions.length === 0) {
+      container.createEl('div', { 
+        text: '暂无版本历史',
+        cls: 'version-empty-state'
+      });
+      return;
+    }
+
+    const versionList = container.createEl('div', { cls: 'version-list' });
+
+    // 按时间倒序显示
+    const sortedVersions = [...history.versions].sort((a, b) => b.timestamp - a.timestamp);
+
+    sortedVersions.forEach((version, index) => {
+      const versionItem = versionList.createEl('div', { cls: 'version-item' });
+
+      // 选择框
+      const checkbox = versionItem.createEl('input', { type: 'checkbox' });
+      checkbox.addEventListener('change', (e) => {
+        if ((e.target as HTMLInputElement).checked) {
+          this.selectedVersions.add(version.id);
+        } else {
+          this.selectedVersions.delete(version.id);
         }
+      });
 
-        console.log('快照版本控制插件已加载');
-    }
+      // 版本信息
+      const versionInfo = versionItem.createEl('div', { cls: 'version-info' });
+      
+      const timeEl = versionInfo.createEl('div', { cls: 'version-time' });
+      timeEl.createEl('strong', { text: new Date(version.timestamp).toLocaleString('zh-CN') });
+      
+      if (index === 0) {
+        timeEl.createEl('span', { text: ' (最新)', cls: 'version-badge' });
+      }
 
-    onunload() {
-        if (this.autoSaveIntervalId) {
-            window.clearInterval(this.autoSaveIntervalId);
-        }
-        console.log('快照版本控制插件已卸载');
-    }
+      const messageEl = versionInfo.createEl('div', { cls: 'version-message' });
+      messageEl.setText(version.message || (version.isManual ? '手动保存' : '[Auto Save]'));
 
-    async loadSettings() {
-        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-    }
+      const metaEl = versionInfo.createEl('div', { cls: 'version-meta' });
+      metaEl.setText(`大小: ${this.formatSize(version.size)} | ID: ${version.id.substring(0, 8)}`);
 
-    async saveSettings() {
-        await this.saveData(this.settings);
-    }
+      // 操作按钮
+      const actions = versionItem.createEl('div', { cls: 'version-actions' });
 
-    // 创建快照
-    async createSnapshot(note: string = '') {
-        const activeFile = this.app.workspace.getActiveFile();
-        if (!activeFile) {
-            new Notice('没有打开的文件');
-            return;
-        }
+      const restoreBtn = actions.createEl('button', { text: '恢复', cls: 'mod-cta' });
+      restoreBtn.addEventListener('click', () => {
+        new RestoreConfirmModal(this.app, this.plugin, activeFile, version).open();
+      });
 
-        try {
-            const content = await this.app.vault.read(activeFile);
-            const snapshot: Snapshot = {
-                id: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-                filePath: activeFile.path,
-                timestamp: Date.now(),
-                content: content,
-                note: note
-            };
+      const compareBtn = actions.createEl('button', { text: '与当前比较' });
+      compareBtn.addEventListener('click', async () => {
+        await this.plugin.showDiff(activeFile, 'current', version.id);
+      });
 
-            await this.saveSnapshot(snapshot);
-            await this.cleanOldSnapshots(activeFile.path);
-            new Notice('快照创建成功');
-        } catch (error) {
-            console.error('创建快照失败:', error);
-            new Notice('快照创建失败');
-        }
-    }
-
-    // 保存快照到文件
-    async saveSnapshot(snapshot: Snapshot) {
-        const snapshotFolder = this.settings.snapshotFolder;
+      const moreBtn = actions.createEl('button', { text: '•••' });
+      moreBtn.addEventListener('click', (e) => {
+        const menu = new Menu();
         
-        // 确保快照文件夹存在
-        const folderExists = await this.app.vault.adapter.exists(snapshotFolder);
-        if (!folderExists) {
-            await this.app.vault.adapter.mkdir(snapshotFolder);
-        }
-
-        // 创建文件特定的子文件夹
-        const fileFolder = this.getSnapshotFolderForFile(snapshot.filePath);
-        const fileFolderExists = await this.app.vault.adapter.exists(fileFolder);
-        if (!fileFolderExists) {
-            await this.app.vault.adapter.mkdir(fileFolder);
-        }
-
-        // 保存快照数据
-        const snapshotPath = `${fileFolder}/${snapshot.id}.json`;
-        await this.app.vault.adapter.write(snapshotPath, JSON.stringify(snapshot, null, 2));
-    }
-
-    // 获取文件的快照文件夹路径
-    getSnapshotFolderForFile(filePath: string): string {
-        const sanitizedPath = filePath.replace(/\//g, '_').replace(/\\/g, '_');
-        return `${this.settings.snapshotFolder}/${sanitizedPath}`;
-    }
-
-    // 获取指定文件的所有快照
-    async getSnapshots(filePath: string): Promise<Snapshot[]> {
-        const fileFolder = this.getSnapshotFolderForFile(filePath);
-        const folderExists = await this.app.vault.adapter.exists(fileFolder);
-        
-        if (!folderExists) {
-            return [];
-        }
-
-        try {
-            const files = await this.app.vault.adapter.list(fileFolder);
-            const snapshots: Snapshot[] = [];
-
-            for (const file of files.files) {
-                if (file.endsWith('.json')) {
-                    const content = await this.app.vault.adapter.read(file);
-                    const snapshot = JSON.parse(content) as Snapshot;
-                    snapshots.push(snapshot);
-                }
-            }
-
-            // 按时间戳降序排序
-            snapshots.sort((a, b) => b.timestamp - a.timestamp);
-            return snapshots;
-        } catch (error) {
-            console.error('读取快照失败:', error);
-            return [];
-        }
-    }
-
-    // 清理旧快照
-    async cleanOldSnapshots(filePath: string) {
-        const snapshots = await this.getSnapshots(filePath);
-        if (snapshots.length > this.settings.maxSnapshots) {
-            const toDelete = snapshots.slice(this.settings.maxSnapshots);
-            const fileFolder = this.getSnapshotFolderForFile(filePath);
-            
-            for (const snapshot of toDelete) {
-                const snapshotPath = `${fileFolder}/${snapshot.id}.json`;
-                await this.app.vault.adapter.remove(snapshotPath);
-            }
-        }
-    }
-
-    // 恢复快照
-    async restoreSnapshot(snapshot: Snapshot) {
-        try {
-            const file = this.app.vault.getAbstractFileByPath(snapshot.filePath);
-            if (file instanceof TFile) {
-                await this.app.vault.modify(file, snapshot.content);
-                new Notice('快照恢复成功');
-            } else {
-                new Notice('文件不存在');
-            }
-        } catch (error) {
-            console.error('恢复快照失败:', error);
-            new Notice('恢复快照失败');
-        }
-    }
-
-    // 删除快照
-    async deleteSnapshot(snapshot: Snapshot) {
-        try {
-            const fileFolder = this.getSnapshotFolderForFile(snapshot.filePath);
-            const snapshotPath = `${fileFolder}/${snapshot.id}.json`;
-            await this.app.vault.adapter.remove(snapshotPath);
-            new Notice('快照已删除');
-        } catch (error) {
-            console.error('删除快照失败:', error);
-            new Notice('删除快照失败');
-        }
-    }
-
-    // 启动自动保存
-    startAutoSave() {
-        if (this.autoSaveIntervalId) {
-            window.clearInterval(this.autoSaveIntervalId);
-        }
-
-        this.autoSaveIntervalId = window.setInterval(() => {
-            const activeFile = this.app.workspace.getActiveFile();
-            if (activeFile) {
-                this.createSnapshot('自动快照');
-            }
-        }, this.settings.autoSnapshotInterval * 60 * 1000);
-    }
-
-    // 停止自动保存
-    stopAutoSave() {
-        if (this.autoSaveIntervalId) {
-            window.clearInterval(this.autoSaveIntervalId);
-            this.autoSaveIntervalId = null;
-        }
-    }
-}
-
-// 快照列表模态框
-class SnapshotListModal extends Modal {
-    plugin: SnapshotPlugin;
-
-    constructor(app: App, plugin: SnapshotPlugin) {
-        super(app);
-        this.plugin = plugin;
-    }
-
-    async onOpen() {
-        const { contentEl } = this;
-        contentEl.empty();
-        contentEl.addClass('snapshot-modal');
-
-        contentEl.createEl('h2', { text: '快照版本控制' });
-
-        const activeFile = this.app.workspace.getActiveFile();
-        if (!activeFile) {
-            contentEl.createEl('p', { text: '没有打开的文件' });
-            return;
-        }
-
-        contentEl.createEl('p', { text: `当前文件: ${activeFile.name}` });
-
-        // 创建快照按钮
-        const buttonContainer = contentEl.createDiv({ cls: 'snapshot-button-container' });
-        const createBtn = buttonContainer.createEl('button', { text: '创建新快照' });
-        createBtn.addEventListener('click', async () => {
-            new CreateSnapshotModal(this.app, this.plugin, () => {
-                this.onOpen(); // 刷新列表
-            }).open();
+        menu.addItem((item) => {
+          item.setTitle('与其他版本比较')
+            .setIcon('git-compare')
+            .onClick(() => {
+              new CompareVersionModal(this.app, this.plugin, activeFile, version).open();
+            });
         });
 
-        // 加载快照列表
-        const snapshots = await this.plugin.getSnapshots(activeFile.path);
-        
-        if (snapshots.length === 0) {
-            contentEl.createEl('p', { text: '暂无快照记录' });
-            return;
-        }
-
-        const listContainer = contentEl.createDiv({ cls: 'snapshot-list' });
-        
-        for (const snapshot of snapshots) {
-            const item = listContainer.createDiv({ cls: 'snapshot-item' });
-            
-            const info = item.createDiv({ cls: 'snapshot-info' });
-            const date = new Date(snapshot.timestamp);
-            info.createEl('div', { 
-                text: `时间: ${date.toLocaleString('zh-CN')}`,
-                cls: 'snapshot-timestamp'
+        menu.addItem((item) => {
+          item.setTitle('删除此版本')
+            .setIcon('trash')
+            .onClick(async () => {
+              await this.plugin.deleteVersion(activeFile.path, version.id);
+              this.updateView();
             });
-            
-            if (snapshot.note) {
-                info.createEl('div', { 
-                    text: `备注: ${snapshot.note}`,
-                    cls: 'snapshot-note'
-                });
-            }
+        });
 
-            const actions = item.createDiv({ cls: 'snapshot-actions' });
-            
-            const restoreBtn = actions.createEl('button', { text: '恢复' });
-            restoreBtn.addEventListener('click', async () => {
-                await this.plugin.restoreSnapshot(snapshot);
-                this.close();
-            });
+        menu.showAtMouseEvent(e);
+      });
+    });
+  }
 
-            const deleteBtn = actions.createEl('button', { text: '删除' });
-            deleteBtn.addEventListener('click', async () => {
-                await this.plugin.deleteSnapshot(snapshot);
-                this.onOpen(); // 刷新列表
-            });
-        }
-
-        // 添加样式
-        const style = contentEl.createEl('style');
-        style.textContent = `
-            .snapshot-modal {
-                padding: 20px;
-            }
-            .snapshot-button-container {
-                margin: 15px 0;
-            }
-            .snapshot-list {
-                margin-top: 20px;
-                max-height: 400px;
-                overflow-y: auto;
-            }
-            .snapshot-item {
-                border: 1px solid var(--background-modifier-border);
-                border-radius: 5px;
-                padding: 10px;
-                margin-bottom: 10px;
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-            }
-            .snapshot-info {
-                flex: 1;
-            }
-            .snapshot-timestamp {
-                font-weight: bold;
-                margin-bottom: 5px;
-            }
-            .snapshot-note {
-                color: var(--text-muted);
-                font-size: 0.9em;
-            }
-            .snapshot-actions {
-                display: flex;
-                gap: 5px;
-            }
-            .snapshot-actions button {
-                padding: 5px 10px;
-                cursor: pointer;
-            }
-        `;
+  async batchDelete() {
+    if (this.selectedVersions.size === 0) {
+      new Notice('请先选择要删除的版本');
+      return;
     }
 
-    onClose() {
-        const { contentEl } = this;
-        contentEl.empty();
+    if (!this.currentFile) return;
+
+    const confirmed = await new Promise((resolve) => {
+      const modal = new Modal(this.app);
+      modal.titleEl.setText('确认批量删除');
+      modal.contentEl.setText(`确定要删除选中的 ${this.selectedVersions.size} 个版本吗？此操作不可恢复。`);
+      
+      const buttonGroup = modal.contentEl.createEl('div', { cls: 'modal-button-group' });
+      
+      const cancelBtn = buttonGroup.createEl('button', { text: '取消' });
+      cancelBtn.addEventListener('click', () => {
+        modal.close();
+        resolve(false);
+      });
+
+      const confirmBtn = buttonGroup.createEl('button', { text: '确认删除', cls: 'mod-warning' });
+      confirmBtn.addEventListener('click', () => {
+        modal.close();
+        resolve(true);
+      });
+
+      modal.open();
+    });
+
+    if (!confirmed) return;
+
+    for (const versionId of this.selectedVersions) {
+      await this.plugin.deleteVersion(this.currentFile.path, versionId);
     }
+
+    this.selectedVersions.clear();
+    new Notice(`已删除 ${this.selectedVersions.size} 个版本`);
+    this.updateView();
+  }
+
+  formatSize(bytes: number): string {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+  }
+
+  async onClose() {
+    // 清理
+  }
 }
 
-// 创建快照模态框
-class CreateSnapshotModal extends Modal {
-    plugin: SnapshotPlugin;
-    onSubmit: () => void;
+// 创建版本对话框
+class CreateVersionModal extends Modal {
+  plugin: VersionControlPlugin;
+  file: TFile;
+  message: string = '';
 
-    constructor(app: App, plugin: SnapshotPlugin, onSubmit: () => void) {
-        super(app);
-        this.plugin = plugin;
-        this.onSubmit = onSubmit;
-    }
+  constructor(app: App, plugin: VersionControlPlugin, file: TFile) {
+    super(app);
+    this.plugin = plugin;
+    this.file = file;
+  }
 
-    onOpen() {
-        const { contentEl } = this;
-        contentEl.empty();
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
 
-        contentEl.createEl('h2', { text: '创建快照' });
+    contentEl.createEl('h2', { text: '创建新版本' });
 
-        new Setting(contentEl)
-            .setName('备注')
-            .setDesc('为这个快照添加备注(可选)')
-            .addText(text => {
-                text.inputEl.style.width = '100%';
-                text.onChange(() => {});
-                
-                // 创建按钮
-                const buttonContainer = contentEl.createDiv({ cls: 'modal-button-container' });
-                buttonContainer.style.marginTop = '20px';
-                buttonContainer.style.display = 'flex';
-                buttonContainer.style.gap = '10px';
-                
-                const submitBtn = buttonContainer.createEl('button', { text: '创建' });
-                submitBtn.addEventListener('click', async () => {
-                    await this.plugin.createSnapshot(text.getValue());
-                    this.close();
-                    this.onSubmit();
-                });
+    const inputContainer = contentEl.createEl('div', { cls: 'version-input-container' });
+    inputContainer.createEl('label', { text: '提交信息:' });
+    
+    const textarea = inputContainer.createEl('textarea', { 
+      placeholder: '描述此版本的变更内容...',
+      cls: 'version-message-input'
+    });
+    textarea.addEventListener('input', (e) => {
+      this.message = (e.target as HTMLTextAreaElement).value;
+    });
 
-                const cancelBtn = buttonContainer.createEl('button', { text: '取消' });
-                cancelBtn.addEventListener('click', () => {
-                    this.close();
-                });
-            });
-    }
+    const buttonGroup = contentEl.createEl('div', { cls: 'modal-button-group' });
+    
+    const cancelBtn = buttonGroup.createEl('button', { text: '取消' });
+    cancelBtn.addEventListener('click', () => this.close());
 
-    onClose() {
-        const { contentEl } = this;
-        contentEl.empty();
-    }
+    const createBtn = buttonGroup.createEl('button', { text: '创建', cls: 'mod-cta' });
+    createBtn.addEventListener('click', async () => {
+      await this.plugin.createManualVersion(this.file, this.message);
+      new Notice('版本创建成功');
+      this.close();
+    });
+  }
+
+  onClose() {
+    const { contentEl } = this;
+    contentEl.empty();
+  }
 }
 
-// 设置标签
-class SnapshotSettingTab extends PluginSettingTab {
-    plugin: SnapshotPlugin;
+// 恢复确认对话框
+class RestoreConfirmModal extends Modal {
+  plugin: VersionControlPlugin;
+  file: TFile;
+  version: Version;
 
-    constructor(app: App, plugin: SnapshotPlugin) {
-        super(app, plugin);
-        this.plugin = plugin;
+  constructor(app: App, plugin: VersionControlPlugin, file: TFile, version: Version) {
+    super(app);
+    this.plugin = plugin;
+    this.file = file;
+    this.version = version;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+
+    contentEl.createEl('h2', { text: '⚠️ 确认恢复版本', cls: 'version-warning-title' });
+
+    const warning = contentEl.createEl('div', { cls: 'version-warning-box' });
+    warning.createEl('p', { 
+      text: '警告：恢复到此版本将会覆盖当前文件内容！',
+      cls: 'version-warning-text'
+    });
+    warning.createEl('p', { 
+      text: '当前未保存的所有修改将会丢失，此操作不可撤销。',
+      cls: 'version-warning-text'
+    });
+
+    const info = contentEl.createEl('div', { cls: 'version-restore-info' });
+    info.createEl('p', { text: `目标版本: ${new Date(this.version.timestamp).toLocaleString('zh-CN')}` });
+    info.createEl('p', { text: `提交信息: ${this.version.message}` });
+
+    const buttonGroup = contentEl.createEl('div', { cls: 'modal-button-group' });
+    
+    const cancelBtn = buttonGroup.createEl('button', { text: '取消' });
+    cancelBtn.addEventListener('click', () => this.close());
+
+    const confirmBtn = buttonGroup.createEl('button', { text: '确认恢复', cls: 'mod-warning' });
+    confirmBtn.addEventListener('click', async () => {
+      await this.plugin.restoreVersion(this.file, this.version.id);
+      new Notice('版本恢复成功');
+      this.close();
+    });
+  }
+
+  onClose() {
+    const { contentEl } = this;
+    contentEl.empty();
+  }
+}
+
+// 版本比较选择对话框
+class CompareVersionModal extends Modal {
+  plugin: VersionControlPlugin;
+  file: TFile;
+  baseVersion: Version;
+
+  constructor(app: App, plugin: VersionControlPlugin, file: TFile, baseVersion: Version) {
+    super(app);
+    this.plugin = plugin;
+    this.file = file;
+    this.baseVersion = baseVersion;
+  }
+
+  async onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+
+    contentEl.createEl('h2', { text: '选择比较版本' });
+
+    const info = contentEl.createEl('p', { 
+      text: `基础版本: ${new Date(this.baseVersion.timestamp).toLocaleString('zh-CN')}`
+    });
+
+    const history = await this.plugin.getFileHistory(this.file.path);
+    if (!history) return;
+
+    const select = contentEl.createEl('select', { cls: 'version-select' });
+    
+    history.versions
+      .filter(v => v.id !== this.baseVersion.id)
+      .sort((a, b) => b.timestamp - a.timestamp)
+      .forEach(version => {
+        const option = select.createEl('option');
+        option.value = version.id;
+        option.text = `${new Date(version.timestamp).toLocaleString('zh-CN')} - ${version.message}`;
+      });
+
+    const buttonGroup = contentEl.createEl('div', { cls: 'modal-button-group' });
+    
+    const cancelBtn = buttonGroup.createEl('button', { text: '取消' });
+    cancelBtn.addEventListener('click', () => this.close());
+
+    const compareBtn = buttonGroup.createEl('button', { text: '比较', cls: 'mod-cta' });
+    compareBtn.addEventListener('click', async () => {
+      const targetVersionId = select.value;
+      await this.plugin.showDiff(this.file, this.baseVersion.id, targetVersionId);
+      this.close();
+    });
+  }
+
+  onClose() {
+    const { contentEl } = this;
+    contentEl.empty();
+  }
+}
+
+// 差异查看视图
+class DiffView extends Modal {
+  plugin: VersionControlPlugin;
+  file: TFile;
+  leftVersion: Version | 'current';
+  rightVersion: Version;
+  currentDiffIndex: number = 0;
+  totalDiffs: number = 0;
+
+  constructor(
+    app: App, 
+    plugin: VersionControlPlugin, 
+    file: TFile, 
+    leftVersion: Version | 'current', 
+    rightVersion: Version
+  ) {
+    super(app);
+    this.plugin = plugin;
+    this.file = file;
+    this.leftVersion = leftVersion;
+    this.rightVersion = rightVersion;
+    this.modalEl.addClass('version-diff-modal');
+  }
+
+  async onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+
+    // 标题栏
+    const header = contentEl.createEl('div', { cls: 'diff-header' });
+    
+    const leftTitle = this.leftVersion === 'current' 
+      ? '当前版本' 
+      : new Date(this.leftVersion.timestamp).toLocaleString('zh-CN');
+    const rightTitle = new Date(this.rightVersion.timestamp).toLocaleString('zh-CN');
+    
+    header.createEl('h3', { text: `比较: ${leftTitle} ⟷ ${rightTitle}` });
+
+    // 工具栏
+    const toolbar = contentEl.createEl('div', { cls: 'diff-toolbar' });
+    
+    const prevBtn = toolbar.createEl('button', { text: '← 上一个差异' });
+    const diffCounter = toolbar.createEl('span', { cls: 'diff-counter' });
+    const nextBtn = toolbar.createEl('button', { text: '下一个差异 →' });
+    
+    const searchInput = toolbar.createEl('input', { 
+      type: 'text',
+      placeholder: '搜索...',
+      cls: 'diff-search'
+    });
+
+    // 差异容器
+    const diffContainer = contentEl.createEl('div', { cls: 'diff-container' });
+
+    // 获取内容
+    const leftContent = this.leftVersion === 'current' 
+      ? await this.app.vault.read(this.file)
+      : this.leftVersion.content;
+    const rightContent = this.rightVersion.content;
+
+    // 计算差异
+    const diffs = Diff.diffLines(leftContent, rightContent);
+    
+    // 创建左右分栏
+    const leftPane = diffContainer.createEl('div', { cls: 'diff-pane diff-left' });
+    const rightPane = diffContainer.createEl('div', { cls: 'diff-pane diff-right' });
+
+    leftPane.createEl('h4', { text: leftTitle });
+    rightPane.createEl('h4', { text: rightTitle });
+
+    let leftLineNum = 1;
+    let rightLineNum = 1;
+    let diffBlocks: HTMLElement[] = [];
+
+    diffs.forEach((part) => {
+      const lines = part.value.split('\n');
+      if (lines[lines.length - 1] === '') lines.pop();
+
+      if (!part.added && !part.removed) {
+        // 未更改的行
+        lines.forEach(line => {
+          const leftLine = leftPane.createEl('div', { cls: 'diff-line' });
+          leftLine.createEl('span', { text: String(leftLineNum++), cls: 'line-num' });
+          leftLine.createEl('span', { text: line || ' ', cls: 'line-content' });
+
+          const rightLine = rightPane.createEl('div', { cls: 'diff-line' });
+          rightLine.createEl('span', { text: String(rightLineNum++), cls: 'line-num' });
+          rightLine.createEl('span', { text: line || ' ', cls: 'line-content' });
+        });
+      } else if (part.removed) {
+        // 删除的行
+        lines.forEach(line => {
+          const leftLine = leftPane.createEl('div', { cls: 'diff-line diff-removed' });
+          leftLine.createEl('span', { text: String(leftLineNum++), cls: 'line-num' });
+          leftLine.createEl('span', { text: line || ' ', cls: 'line-content' });
+          diffBlocks.push(leftLine);
+
+          const rightLine = rightPane.createEl('div', { cls: 'diff-line diff-empty' });
+          rightLine.createEl('span', { text: '', cls: 'line-num' });
+          rightLine.createEl('span', { text: '', cls: 'line-content' });
+        });
+      } else if (part.added) {
+        // 添加的行
+        lines.forEach(line => {
+          const leftLine = leftPane.createEl('div', { cls: 'diff-line diff-empty' });
+          leftLine.createEl('span', { text: '', cls: 'line-num' });
+          leftLine.createEl('span', { text: '', cls: 'line-content' });
+
+          const rightLine = rightPane.createEl('div', { cls: 'diff-line diff-added' });
+          rightLine.createEl('span', { text: String(rightLineNum++), cls: 'line-num' });
+          rightLine.createEl('span', { text: line || ' ', cls: 'line-content' });
+          diffBlocks.push(rightLine);
+        });
+      }
+    });
+
+    this.totalDiffs = diffBlocks.length;
+    diffCounter.setText(`(${this.currentDiffIndex + 1} / ${this.totalDiffs})`);
+
+    // 导航功能
+    const scrollToDiff = (index: number) => {
+      if (diffBlocks.length === 0) return;
+      
+      this.currentDiffIndex = ((index % diffBlocks.length) + diffBlocks.length) % diffBlocks.length;
+      diffBlocks[this.currentDiffIndex].scrollIntoView({ behavior: 'smooth', block: 'center' });
+      diffCounter.setText(`(${this.currentDiffIndex + 1} / ${this.totalDiffs})`);
+    };
+
+    prevBtn.addEventListener('click', () => scrollToDiff(this.currentDiffIndex - 1));
+    nextBtn.addEventListener('click', () => scrollToDiff(this.currentDiffIndex + 1));
+
+    // 搜索功能
+    searchInput.addEventListener('input', (e) => {
+      const searchTerm = (e.target as HTMLInputElement).value.toLowerCase();
+      const allLines = diffContainer.querySelectorAll('.line-content');
+      
+      allLines.forEach(line => {
+        const lineEl = line as HTMLElement;
+        if (lineEl.textContent?.toLowerCase().includes(searchTerm)) {
+          lineEl.addClass('search-highlight');
+        } else {
+          lineEl.removeClass('search-highlight');
+        }
+      });
+    });
+  }
+
+  onClose() {
+    const { contentEl } = this;
+    contentEl.empty();
+  }
+}
+
+// 主插件类
+export default class VersionControlPlugin extends Plugin {
+  settings: VersionControlSettings;
+  autoSaveInterval: number;
+  versionStorage: Map<string, FileVersionHistory> = new Map();
+
+  async onload() {
+    await this.loadSettings();
+    await this.loadVersionData();
+
+    // 注册版本历史视图
+    this.registerView(
+      VERSION_VIEW_TYPE,
+      (leaf) => new VersionHistoryView(leaf, this)
+    );
+
+    // 添加侧边栏按钮
+    this.addRibbonIcon('history', '版本历史', () => {
+      this.activateView();
+    });
+
+    // 添加命令
+    this.addCommand({
+      id: 'create-version',
+      name: '创建版本快照',
+      editorCallback: (editor, view) => {
+        if (view.file) {
+          new CreateVersionModal(this.app, this, view.file).open();
+        }
+      }
+    });
+
+    this.addCommand({
+      id: 'show-version-history',
+      name: '显示版本历史',
+      callback: () => {
+        this.activateView();
+      }
+    });
+
+    // 添加设置选项卡
+    this.addSettingTab(new VersionControlSettingTab(this.app, this));
+
+    // 自动保存设置
+    this.setupAutoSave();
+
+    // 监听文件修改
+    this.registerEvent(
+      this.app.vault.on('modify', async (file) => {
+        if (file instanceof TFile && file.extension === 'md') {
+          // 文件修改标记，由自动保存处理
+        }
+      })
+    );
+
+    // 监听文件关闭（Obsidian 后台化）
+    this.registerEvent(
+      this.app.workspace.on('quit', async () => {
+        await this.saveAllModified();
+      })
+    );
+  }
+
+  async activateView() {
+    const { workspace } = this.app;
+
+    let leaf = workspace.getLeavesOfType(VERSION_VIEW_TYPE)[0];
+
+    if (!leaf) {
+      const rightLeaf = workspace.getRightLeaf(false);
+      if (rightLeaf) {
+        leaf = rightLeaf;
+        await leaf.setViewState({ type: VERSION_VIEW_TYPE });
+      }
     }
 
-    display(): void {
-        const { containerEl } = this;
-        containerEl.empty();
-
-        containerEl.createEl('h2', { text: '快照版本控制设置' });
-
-        new Setting(containerEl)
-            .setName('快照存储文件夹')
-            .setDesc('快照文件的存储位置')
-            .addText(text => text
-                .setPlaceholder('.snapshots')
-                .setValue(this.plugin.settings.snapshotFolder)
-                .onChange(async (value) => {
-                    this.plugin.settings.snapshotFolder = value;
-                    await this.plugin.saveSettings();
-                }));
-
-        new Setting(containerEl)
-            .setName('最大快照数量')
-            .setDesc('每个文件保留的最大快照数量')
-            .addText(text => text
-                .setPlaceholder('50')
-                .setValue(String(this.plugin.settings.maxSnapshots))
-                .onChange(async (value) => {
-                    const num = parseInt(value);
-                    if (!isNaN(num) && num > 0) {
-                        this.plugin.settings.maxSnapshots = num;
-                        await this.plugin.saveSettings();
-                    }
-                }));
-
-        new Setting(containerEl)
-            .setName('自动快照')
-            .setDesc('定期自动创建快照')
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.autoSnapshot)
-                .onChange(async (value) => {
-                    this.plugin.settings.autoSnapshot = value;
-                    await this.plugin.saveSettings();
-                    
-                    if (value) {
-                        this.plugin.startAutoSave();
-                    } else {
-                        this.plugin.stopAutoSave();
-                    }
-                }));
-
-        new Setting(containerEl)
-            .setName('自动快照间隔')
-            .setDesc('自动创建快照的时间间隔(分钟)')
-            .addText(text => text
-                .setPlaceholder('5')
-                .setValue(String(this.plugin.settings.autoSnapshotInterval))
-                .onChange(async (value) => {
-                    const num = parseInt(value);
-                    if (!isNaN(num) && num > 0) {
-                        this.plugin.settings.autoSnapshotInterval = num;
-                        await this.plugin.saveSettings();
-                        
-                        if (this.plugin.settings.autoSnapshot) {
-                            this.plugin.startAutoSave();
-                        }
-                    }
-                }));
+    if (leaf) {
+      workspace.revealLeaf(leaf);
     }
+  }
+
+  setupAutoSave() {
+    // 清除旧的间隔
+    if (this.autoSaveInterval) {
+      window.clearInterval(this.autoSaveInterval);
+    }
+
+    // 设置新的自动保存间隔
+    this.autoSaveInterval = window.setInterval(async () => {
+      await this.autoSaveAllFiles();
+    }, this.settings.autoSaveInterval * 60 * 1000);
+
+    this.registerInterval(this.autoSaveInterval);
+  }
+
+  async autoSaveAllFiles() {
+    const files = this.app.vault.getMarkdownFiles();
+    
+    for (const file of files) {
+      await this.createAutoVersion(file);
+    }
+
+    await this.cleanupOldVersions();
+  }
+
+  async createAutoVersion(file: TFile) {
+    const content = await this.app.vault.read(file);
+    
+    // 检查是否有变化
+    const history = this.versionStorage.get(file.path);
+    if (history && history.versions.length > 0) {
+      const lastVersion = history.versions[history.versions.length - 1];
+      if (lastVersion.content === content) {
+        return; // 内容无变化，跳过
+      }
+    }
+
+    await this.createVersion(file, content, '[Auto Save]', false);
+  }
+
+  async createManualVersion(file: TFile, message: string) {
+    const content = await this.app.vault.read(file);
+    await this.createVersion(file, content, message, true);
+  }
+
+  async createVersion(file: TFile, content: string, message: string, isManual: boolean) {
+    const version: Version = {
+      id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      timestamp: Date.now(),
+      content: content,
+      message: message,
+      size: new Blob([content]).size,
+      isManual: isManual
+    };
+
+    let history = this.versionStorage.get(file.path);
+    if (!history) {
+      history = {
+        filePath: file.path,
+        versions: []
+      };
+      this.versionStorage.set(file.path, history);
+    }
+
+    history.versions.push(version);
+    await this.saveVersionData();
+
+    // 触发视图更新
+    const leaves = this.app.workspace.getLeavesOfType(VERSION_VIEW_TYPE);
+    leaves.forEach(leaf => {
+      if (leaf.view instanceof VersionHistoryView) {
+        leaf.view.updateView();
+      }
+    });
+  }
+
+  async restoreVersion(file: TFile, versionId: string) {
+    const history = this.versionStorage.get(file.path);
+    if (!history) return;
+
+    const version = history.versions.find(v => v.id === versionId);
+    if (!version) return;
+
+    await this.app.vault.modify(file, version.content);
+  }
+
+  async deleteVersion(filePath: string, versionId: string) {
+    const history = this.versionStorage.get(filePath);
+    if (!history) return;
+
+    history.versions = history.versions.filter(v => v.id !== versionId);
+    await this.saveVersionData();
+  }
+
+  async cleanupOldVersions() {
+    const now = Date.now();
+    const retentionMs = this.settings.retentionDays * 24 * 60 * 60 * 1000;
+
+    for (const [filePath, history] of this.versionStorage.entries()) {
+      let versions = [...history.versions];
+
+      // 按策略清理
+      if (this.settings.cleanupStrategy === 'days-first' || this.settings.cleanupStrategy === 'both') {
+        versions = versions.filter(v => (now - v.timestamp) < retentionMs || v.isManual);
+      }
+
+      if (this.settings.cleanupStrategy === 'count-first' || this.settings.cleanupStrategy === 'both') {
+        // 保留手动版本和最新的版本
+        const manualVersions = versions.filter(v => v.isManual);
+        const autoVersions = versions.filter(v => !v.isManual).slice(-this.settings.maxVersionCount);
+        versions = [...manualVersions, ...autoVersions].sort((a, b) => a.timestamp - b.timestamp);
+      }
+
+      history.versions = versions;
+    }
+
+    await this.saveVersionData();
+  }
+
+  async showDiff(file: TFile, leftVersionId: string | 'current', rightVersionId: string) {
+    const history = this.versionStorage.get(file.path);
+    if (!history) return;
+
+    const leftVersion = leftVersionId === 'current' 
+      ? 'current' 
+      : history.versions.find(v => v.id === leftVersionId);
+    
+    const rightVersion = history.versions.find(v => v.id === rightVersionId);
+
+    if (!rightVersion || (leftVersionId !== 'current' && !leftVersion)) {
+      new Notice('版本不存在');
+      return;
+    }
+
+    new DiffView(
+      this.app, 
+      this, 
+      file, 
+      leftVersion as Version | 'current', 
+      rightVersion
+    ).open();
+  }
+
+  getFileHistory(filePath: string): FileVersionHistory | undefined {
+    return this.versionStorage.get(filePath);
+  }
+
+  async saveAllModified() {
+    const activeFile = this.app.workspace.getActiveFile();
+    if (activeFile) {
+      await this.createAutoVersion(activeFile);
+    }
+  }
+
+  async loadVersionData() {
+    const dataFile = `${this.getStoragePath()}/version-data.json`;
+    
+    try {
+      const data = await this.app.vault.adapter.read(dataFile);
+      const parsed = JSON.parse(data);
+      this.versionStorage = new Map(Object.entries(parsed));
+    } catch (error) {
+      // 文件不存在或解析失败，使用空数据
+      this.versionStorage = new Map();
+    }
+  }
+
+  async saveVersionData() {
+    const dataFile = `${this.getStoragePath()}/version-data.json`;
+    const data = JSON.stringify(Object.fromEntries(this.versionStorage), null, 2);
+    
+    try {
+      await this.app.vault.adapter.write(dataFile, data);
+    } catch (error) {
+      console.error('Failed to save version data:', error);
+    }
+  }
+
+  getStoragePath(): string {
+    if (this.settings.storageLocation === 'custom' && this.settings.customStoragePath) {
+      return this.settings.customStoragePath;
+    }
+    return '.obsidian/versions';
+  }
+
+  async loadSettings() {
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+  }
+
+  async saveSettings() {
+    await this.saveData(this.settings);
+    this.setupAutoSave(); // 重新设置自动保存间隔
+  }
+
+  onunload() {
+    // 保存所有修改的文件
+    this.saveAllModified();
+  }
+}
+
+// 设置选项卡
+class VersionControlSettingTab extends PluginSettingTab {
+  plugin: VersionControlPlugin;
+
+  constructor(app: App, plugin: VersionControlPlugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+  }
+
+  display(): void {
+    const { containerEl } = this;
+    containerEl.empty();
+
+    containerEl.createEl('h2', { text: '版本控制设置' });
+
+    // 存储位置
+    new Setting(containerEl)
+      .setName('存储位置')
+      .setDesc('选择版本数据的存储位置')
+      .addDropdown(dropdown => dropdown
+        .addOption('vault', 'Vault 内（.obsidian/versions）')
+        .addOption('custom', '自定义路径')
+        .setValue(this.plugin.settings.storageLocation)
+        .onChange(async (value) => {
+          this.plugin.settings.storageLocation = value as 'vault' | 'custom';
+          await this.plugin.saveSettings();
+          this.display(); // 刷新显示
+        }));
+
+    // 自定义路径（仅在选择自定义时显示）
+    if (this.plugin.settings.storageLocation === 'custom') {
+      new Setting(containerEl)
+        .setName('自定义存储路径')
+        .setDesc('指定版本数据的存储路径（相对于 vault 根目录）')
+        .addText(text => text
+          .setPlaceholder('例如: ../version-backup')
+          .setValue(this.plugin.settings.customStoragePath)
+          .onChange(async (value) => {
+            this.plugin.settings.customStoragePath = value;
+            await this.plugin.saveSettings();
+          }));
+    }
+
+    containerEl.createEl('h3', { text: '自动保存设置' });
+
+    // 自动保存间隔
+    new Setting(containerEl)
+      .setName('自动保存间隔（分钟）')
+      .setDesc('文件修改后自动创建版本的时间间隔')
+      .addText(text => text
+        .setPlaceholder('5')
+        .setValue(String(this.plugin.settings.autoSaveInterval))
+        .onChange(async (value) => {
+          const num = parseInt(value);
+          if (!isNaN(num) && num > 0) {
+            this.plugin.settings.autoSaveInterval = num;
+            await this.plugin.saveSettings();
+          }
+        }));
+
+    containerEl.createEl('h3', { text: '版本清理设置' });
+
+    // 保留版本数量
+    new Setting(containerEl)
+      .setName('保留版本数量上限')
+      .setDesc('每个文件最多保留的版本数量（手动版本不受此限制）')
+      .addText(text => text
+        .setPlaceholder('50')
+        .setValue(String(this.plugin.settings.maxVersionCount))
+        .onChange(async (value) => {
+          const num = parseInt(value);
+          if (!isNaN(num) && num > 0) {
+            this.plugin.settings.maxVersionCount = num;
+            await this.plugin.saveSettings();
+          }
+        }));
+
+    // 保留天数
+    new Setting(containerEl)
+      .setName('保留天数')
+      .setDesc('自动删除超过此天数的旧版本（手动版本不受此限制）')
+      .addText(text => text
+        .setPlaceholder('30')
+        .setValue(String(this.plugin.settings.retentionDays))
+        .onChange(async (value) => {
+          const num = parseInt(value);
+          if (!isNaN(num) && num > 0) {
+            this.plugin.settings.retentionDays = num;
+            await this.plugin.saveSettings();
+          }
+        }));
+
+    // 清理策略
+    new Setting(containerEl)
+      .setName('清理策略')
+      .setDesc('选择版本清理的优先级策略')
+      .addDropdown(dropdown => dropdown
+        .addOption('days-first', '优先按天数清理')
+        .addOption('count-first', '优先按数量清理')
+        .addOption('both', '同时满足两个条件')
+        .setValue(this.plugin.settings.cleanupStrategy)
+        .onChange(async (value) => {
+          this.plugin.settings.cleanupStrategy = value as any;
+          await this.plugin.saveSettings();
+        }));
+
+    // 立即清理按钮
+    new Setting(containerEl)
+      .setName('立即清理旧版本')
+      .setDesc('根据当前设置立即清理所有文件的旧版本')
+      .addButton(button => button
+        .setButtonText('执行清理')
+        .setCta()
+        .onClick(async () => {
+          await this.plugin.cleanupOldVersions();
+          new Notice('旧版本清理完成');
+        }));
+
+    // 统计信息
+    containerEl.createEl('h3', { text: '统计信息' });
+
+    const totalFiles = this.plugin.versionStorage.size;
+    let totalVersions = 0;
+    this.plugin.versionStorage.forEach(history => {
+      totalVersions += history.versions.length;
+    });
+
+    containerEl.createEl('p', { text: `已跟踪文件数: ${totalFiles}` });
+    containerEl.createEl('p', { text: `总版本数: ${totalVersions}` });
+  }
 }
