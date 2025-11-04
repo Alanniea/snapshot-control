@@ -1,8 +1,387 @@
-/*
+/* 版本历史视图 */
+.version-history-view {
+    padding: 20px;
+    overflow-y: auto;
+}
 
-This CSS file will be included with your plugin, and
-available in the app when your plugin is enabled.
+.version-history-empty {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--text-muted);
+    font-size: 14px;
+}
 
-If your plugin does not need CSS, delete this file.
+/* 工具栏 */
+.version-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px;
+    background: var(--background-secondary);
+    border-radius: 6px;
+    margin-bottom: 15px;
+}
 
-*/
+.version-toolbar button {
+    padding: 6px 12px;
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+}
+
+.version-toolbar button:hover {
+    background: var(--interactive-accent-hover);
+}
+
+/* 版本列表 */
+.version-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.version-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px;
+    background: var(--background-secondary);
+    border-radius: 6px;
+    border: 1px solid var(--background-modifier-border);
+    transition: all 0.2s ease;
+}
+
+.version-item:hover {
+    background: var(--background-secondary-alt);
+    border-color: var(--interactive-accent);
+}
+
+.version-item input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+}
+
+.version-info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+}
+
+.version-time {
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--text-normal);
+}
+
+.version-message {
+    font-size: 12px;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.version-size {
+    font-size: 11px;
+    color: var(--text-faint);
+}
+
+.version-actions {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.version-actions button {
+    padding: 5px 10px;
+    font-size: 12px;
+    background: var(--interactive-normal);
+    color: var(--text-normal);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.version-actions button:hover {
+    background: var(--interactive-hover);
+    border-color: var(--interactive-accent);
+}
+
+/* 统计信息 */
+.version-stats {
+    padding: 15px;
+    background: var(--background-secondary);
+    border-radius: 6px;
+    margin-bottom: 20px;
+    border-left: 3px solid var(--interactive-accent);
+}
+
+.version-stats p {
+    margin: 6px 0;
+    font-size: 13px;
+    color: var(--text-normal);
+}
+
+.version-stats p:first-child {
+    font-weight: 600;
+}
+
+/* 差异对比模态框 */
+.diff-modal {
+    width: 90vw;
+    max-width: 1200px;
+    height: 80vh;
+}
+
+.diff-modal .modal-content {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+.diff-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px;
+    background: var(--background-secondary);
+    border-radius: 6px;
+    margin-bottom: 15px;
+    flex-wrap: wrap;
+}
+
+.diff-toolbar button {
+    padding: 6px 12px;
+    background: var(--interactive-normal);
+    color: var(--text-normal);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+}
+
+.diff-toolbar button:hover {
+    background: var(--interactive-hover);
+}
+
+.diff-toolbar select {
+    padding: 6px 10px;
+    background: var(--background-primary);
+    color: var(--text-normal);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.diff-stats {
+    padding: 6px 12px;
+    background: var(--background-primary);
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-accent);
+}
+
+/* 差异容器 */
+.diff-container {
+    flex: 1;
+    overflow: auto;
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    padding: 15px;
+    font-family: var(--font-monospace);
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+/* 统一视图 */
+.diff-line {
+    display: flex;
+    padding: 2px 8px;
+    margin: 1px 0;
+    border-radius: 3px;
+    transition: background-color 0.2s ease;
+}
+
+.diff-line:hover {
+    background: var(--background-secondary-alt);
+}
+
+.diff-line .line-number {
+    display: inline-block;
+    width: 50px;
+    text-align: right;
+    margin-right: 15px;
+    color: var(--text-faint);
+    user-select: none;
+    flex-shrink: 0;
+}
+
+.diff-added {
+    background: rgba(46, 160, 67, 0.15);
+    color: var(--text-normal);
+}
+
+.diff-added:hover {
+    background: rgba(46, 160, 67, 0.25);
+}
+
+.diff-removed {
+    background: rgba(248, 81, 73, 0.15);
+    color: var(--text-normal);
+    text-decoration: line-through;
+}
+
+.diff-removed:hover {
+    background: rgba(248, 81, 73, 0.25);
+}
+
+/* 分栏视图 */
+.diff-split {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 15px;
+    height: 100%;
+}
+
+.diff-panel {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.diff-panel h3 {
+    margin: 0;
+    padding: 10px 15px;
+    background: var(--background-secondary);
+    border-bottom: 1px solid var(--background-modifier-border);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-normal);
+}
+
+.diff-content {
+    flex: 1;
+    overflow: auto;
+    padding: 10px;
+    background: var(--background-primary);
+}
+
+/* 确认对话框 */
+.modal-button-container {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 20px;
+}
+
+.modal-button-container button {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+}
+
+.modal-button-container button:first-child {
+    background: var(--interactive-normal);
+    color: var(--text-normal);
+}
+
+.modal-button-container button:first-child:hover {
+    background: var(--interactive-hover);
+}
+
+.modal-button-container button.mod-warning {
+    background: var(--color-red);
+    color: white;
+}
+
+.modal-button-container button.mod-warning:hover {
+    background: var(--color-red);
+    opacity: 0.9;
+}
+
+/* 响应式设计 */
+@media (max-width: 768px) {
+    .version-item {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .version-actions {
+        width: 100%;
+        justify-content: flex-end;
+    }
+
+    .diff-split {
+        grid-template-columns: 1fr;
+    }
+
+    .diff-modal {
+        width: 95vw;
+        height: 85vh;
+    }
+}
+
+/* 滚动条样式 */
+.version-history-view::-webkit-scrollbar,
+.diff-container::-webkit-scrollbar,
+.diff-content::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+.version-history-view::-webkit-scrollbar-track,
+.diff-container::-webkit-scrollbar-track,
+.diff-content::-webkit-scrollbar-track {
+    background: var(--background-secondary);
+    border-radius: 4px;
+}
+
+.version-history-view::-webkit-scrollbar-thumb,
+.diff-container::-webkit-scrollbar-thumb,
+.diff-content::-webkit-scrollbar-thumb {
+    background: var(--background-modifier-border-hover);
+    border-radius: 4px;
+}
+
+.version-history-view::-webkit-scrollbar-thumb:hover,
+.diff-container::-webkit-scrollbar-thumb:hover,
+.diff-content::-webkit-scrollbar-thumb:hover {
+    background: var(--text-muted);
+}
+
+/* 深色模式优化 */
+.theme-dark .version-item {
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.theme-dark .version-item:hover {
+    background: rgba(255, 255, 255, 0.08);
+}
+
+/* 字符级差异高亮 */
+.diff-char-added {
+    background: rgba(46, 160, 67, 0.4);
+    padding: 0 2px;
+    border-radius: 2px;
+}
+
+.diff-char-removed {
+    background: rgba(248, 81, 73, 0.4);
+    padding: 0 2px;
+    border-radius: 2px;
+}

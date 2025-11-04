@@ -1,0 +1,10 @@
+.lv-toolbar { display:flex; gap:8px; margin-bottom:8px; align-items:center; }
+.lv-diff-body { max-height: 60vh; overflow:auto; padding:8px; }
+.lv-unified { white-space: pre-wrap; font-family: monospace; }
+.lv-added { background: #e6ffed; }
+.lv-removed { background: #ffecec; text-decoration: line-through; }
+.lv-history-row { display:flex; gap:8px; align-items:center; padding:6px 0; border-bottom:1px solid rgba(0,0,0,0.06); }
+.lv-split-wrapper { display:flex; gap:8px; }
+.lv-split-col { flex:1; max-height:60vh; overflow:auto; border:1px solid rgba(0,0,0,0.06); padding:4px; }
+.lv-left { }
+.lv-right { }
