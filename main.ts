@@ -11,9 +11,9 @@ interface VersionData {
     baseVersionId?: string;
     size: number;
     hash?: string;
-    tags?: string[]; // 新增：版本标签
-    note?: string;   // 新增：版本备注
-    starred?: boolean; // 新增：星标标记
+    tags?: string[];
+    note?: string;
+    starred?: boolean;
 }
 
 interface VersionFile {
@@ -49,10 +49,10 @@ interface VersionControlSettings {
     autoSaveOnInterval: boolean;
     autoSaveOnFileSwitch: boolean;
     autoSaveOnFocusLost: boolean;
-    enableQuickPreview: boolean; // 新增：快速预览
-    enableVersionTags: boolean;  // 新增：版本标签
-    defaultTags: string[];       // 新增：默认标签列表
-    showVersionStats: boolean;   // 新增：显示统计信息
+    enableQuickPreview: boolean;
+    enableVersionTags: boolean;
+    defaultTags: string[];
+    showVersionStats: boolean;
 }
 
 const DEFAULT_SETTINGS: VersionControlSettings = {
@@ -65,7 +65,7 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
     maxDays: 30,
     enableMaxDays: false,
     useRelativeTime: false,
-    diffGranularity: 'char',
+    diffGranularity: 'line',
     diffViewMode: 'unified',
     enableDeduplication: true,
     showNotifications: true,
@@ -75,7 +75,7 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
     versionsPerPage: 20,
     rebuildBaseInterval: 10,
     autoSaveOnModify: true,
-    autoSaveDelay: 3,
+    autoSaveDelay: 180,
     autoSaveMinChanges: 10,
     autoSaveOnInterval: false,
     autoSaveOnFileSwitch: true,
@@ -111,18 +111,15 @@ export default class VersionControlPlugin extends Plugin {
             this.activateVersionHistoryView();
         });
 
-        // 命令注册
         this.addCommand({
             id: 'create-version',
             name: '创建版本快照',
-            hotkeys: [{ modifiers: ['Ctrl', 'Shift'], key: 's' }],
             callback: () => this.createManualVersion()
         });
 
         this.addCommand({
             id: 'show-version-history',
             name: '显示版本历史',
-            hotkeys: [{ modifiers: ['Ctrl', 'Shift'], key: 'h' }],
             callback: () => this.activateVersionHistoryView()
         });
 
@@ -135,14 +132,12 @@ export default class VersionControlPlugin extends Plugin {
         this.addCommand({
             id: 'compare-with-version',
             name: '与历史版本对比',
-            hotkeys: [{ modifiers: ['Ctrl', 'Shift'], key: 'd' }],
             callback: () => this.quickCompare()
         });
 
         this.addCommand({
             id: 'restore-last-version',
             name: '恢复到上一版本',
-            hotkeys: [{ modifiers: ['Ctrl', 'Shift'], key: 'z' }],
             callback: () => this.restoreLastVersion()
         });
 
@@ -155,7 +150,6 @@ export default class VersionControlPlugin extends Plugin {
         this.addCommand({
             id: 'quick-preview-version',
             name: '快速预览上一版本',
-            hotkeys: [{ modifiers: ['Ctrl', 'Shift'], key: 'p' }],
             callback: () => this.quickPreviewLastVersion()
         });
 
@@ -573,11 +567,11 @@ export default class VersionControlPlugin extends Plugin {
 
         try {
             if (await adapter.exists(versionPath)) {
-                const rawData = await adapter.readBinary(versionPath);
                 let content: string;
                 
                 if (this.settings.enableCompression) {
                     try {
+                        const rawData = await adapter.readBinary(versionPath);
                         const decompressed = pako.ungzip(new Uint8Array(rawData), { to: 'string' });
                         content = decompressed;
                     } catch (e) {
@@ -697,7 +691,7 @@ export default class VersionControlPlugin extends Plugin {
             const versionFile = await this.loadVersionFile(filePath);
             const index = versionFile.versionIndex?.get(versionId);
             if (index !== undefined) {
-                versionFile.versions[index].tags = tags;
+                versionFile.versions[index].tags = tags.length > 0 ? tags : undefined;
                 await this.saveVersionFile(filePath, versionFile);
                 this.versionCache.set(filePath, versionFile);
                 this.refreshVersionHistoryView();
@@ -712,7 +706,7 @@ export default class VersionControlPlugin extends Plugin {
             const versionFile = await this.loadVersionFile(filePath);
             const index = versionFile.versionIndex?.get(versionId);
             if (index !== undefined) {
-                versionFile.versions[index].note = note;
+                versionFile.versions[index].note = note.trim() || undefined;
                 await this.saveVersionFile(filePath, versionFile);
                 this.versionCache.set(filePath, versionFile);
                 this.refreshVersionHistoryView();
@@ -949,22 +943,18 @@ export default class VersionControlPlugin extends Plugin {
             for (const file of files.files) {
                 if (file.endsWith('.json')) {
                     try {
-                        // 获取文件大小
                         const stat = await adapter.stat(file);
                         const fileSize = stat?.size || 0;
                         totalSize += fileSize;
                         
-                        // 读取并解析版本文件
                         let versionFile: VersionFile;
                         
                         if (this.settings.enableCompression) {
                             try {
-                                // 尝试作为压缩文件读取
                                 const rawData = await adapter.readBinary(file);
                                 const decompressed = pako.ungzip(new Uint8Array(rawData), { to: 'string' });
                                 versionFile = JSON.parse(decompressed) as VersionFile;
                             } catch (e) {
-                                // 如果解压失败，尝试作为普通文本读取
                                 const content = await adapter.read(file);
                                 versionFile = JSON.parse(content) as VersionFile;
                             }
@@ -973,19 +963,16 @@ export default class VersionControlPlugin extends Plugin {
                             versionFile = JSON.parse(content) as VersionFile;
                         }
                         
-                        // 统计版本信息
                         if (versionFile.versions && Array.isArray(versionFile.versions)) {
                             versionCount += versionFile.versions.length;
                             
                             versionFile.versions.forEach(v => {
-                                // 计算原始大小
                                 if (v.content) {
                                     totalOriginalSize += v.content.length;
                                 } else if (v.diff) {
                                     totalOriginalSize += v.diff.length;
                                 }
                                 
-                                // 统计星标和标签
                                 if (v.starred) starredCount++;
                                 if (v.tags && v.tags.length > 0) taggedCount++;
                             });
@@ -1089,7 +1076,6 @@ export default class VersionControlPlugin extends Plugin {
     }
 }
 
-// 快速预览模态框
 class QuickPreviewModal extends Modal {
     plugin: VersionControlPlugin;
     file: TFile;
@@ -1112,39 +1098,84 @@ class QuickPreviewModal extends Modal {
             const version = versions.find(v => v.id === this.versionId);
 
             const header = contentEl.createEl('div', { cls: 'preview-header' });
-            header.createEl('h2', { text: '快速预览' });
+            header.createEl('h2', { text: '📄 快速预览' });
             
             if (version) {
                 const info = header.createEl('div', { cls: 'preview-info' });
-                info.createEl('span', { text: this.plugin.formatTime(version.timestamp) });
-                info.createEl('span', { text: version.message });
+                info.createEl('span', { 
+                    text: `⏰ ${this.plugin.formatTime(version.timestamp)}`,
+                    cls: 'preview-time'
+                });
+                info.createEl('span', { 
+                    text: `💬 ${version.message}`,
+                    cls: 'preview-message'
+                });
+                info.createEl('span', { 
+                    text: `📦 ${this.plugin.formatFileSize(version.size)}`,
+                    cls: 'preview-size'
+                });
             }
 
             const toolbar = contentEl.createEl('div', { cls: 'preview-toolbar' });
             
-            const restoreBtn = toolbar.createEl('button', { text: '恢复此版本', cls: 'mod-cta' });
+            const copyBtn = toolbar.createEl('button', { 
+                text: '📋 复制内容',
+                cls: 'mod-cta'
+            });
+            copyBtn.addEventListener('click', () => {
+                navigator.clipboard.writeText(content).then(() => {
+                    new Notice('✅ 内容已复制到剪贴板');
+                }).catch(() => {
+                    new Notice('❌ 复制失败');
+                });
+            });
+
+            const restoreBtn = toolbar.createEl('button', { 
+                text: '↩️ 恢复此版本'
+            });
             restoreBtn.addEventListener('click', async () => {
                 this.close();
                 await this.plugin.restoreVersion(this.file, this.versionId);
             });
 
-            const compareBtn = toolbar.createEl('button', { text: '详细对比' });
+            const compareBtn = toolbar.createEl('button', { 
+                text: '🔀 详细对比'
+            });
             compareBtn.addEventListener('click', () => {
                 this.close();
                 new DiffModal(this.app, this.plugin, this.file, this.versionId).open();
             });
 
-            const exportBtn = toolbar.createEl('button', { text: '导出为文件' });
+            const exportBtn = toolbar.createEl('button', { 
+                text: '💾 导出文件'
+            });
             exportBtn.addEventListener('click', async () => {
                 await this.plugin.exportVersionAsFile(this.file.path, this.versionId);
             });
 
             const contentContainer = contentEl.createEl('div', { cls: 'preview-content' });
+            
+            const lines = content.split('\n');
+            const lineNumbers = contentContainer.createEl('div', { cls: 'preview-line-numbers' });
+            lines.forEach((_, index) => {
+                lineNumbers.createEl('div', { 
+                    text: String(index + 1),
+                    cls: 'line-number'
+                });
+            });
+            
             const pre = contentContainer.createEl('pre');
             pre.createEl('code', { text: content });
 
+            const statsBar = contentEl.createEl('div', { cls: 'preview-stats-bar' });
+            statsBar.createEl('span', { text: `📝 ${lines.length} 行` });
+            statsBar.createEl('span', { text: `🔤 ${content.length} 字符` });
+            const words = content.split(/\s+/).filter(w => w.length > 0).length;
+            statsBar.createEl('span', { text: `📄 ${words} 词` });
+
         } catch (error) {
-            contentEl.createEl('p', { text: '加载预览失败' });
+            contentEl.createEl('p', { text: '❌ 加载预览失败' });
+            console.error('预览加载失败:', error);
         }
     }
 
@@ -1214,6 +1245,24 @@ class VersionHistoryView extends ItemView {
             cls: 'version-file-path'
         });
 
+        const fileStats = header.createEl('div', { cls: 'version-file-stats' });
+        try {
+            const currentContent = await this.app.vault.read(file);
+            const stat = await this.app.vault.adapter.stat(file.path);
+            fileStats.createEl('span', { 
+                text: `📄 大小: ${this.plugin.formatFileSize(currentContent.length)}`,
+                cls: 'file-stat-item'
+            });
+            if (stat) {
+                fileStats.createEl('span', { 
+                    text: `📅 修改: ${new Date(stat.mtime).toLocaleString('zh-CN')}`,
+                    cls: 'file-stat-item'
+                });
+            }
+        } catch (error) {
+            console.error('获取文件信息失败:', error);
+        }
+
         const actions = header.createEl('div', { cls: 'version-header-actions' });
         
         const searchInput = actions.createEl('input', {
@@ -1228,10 +1277,10 @@ class VersionHistoryView extends ItemView {
             this.refresh();
         });
 
-        // 星标筛选按钮
         const starFilterBtn = actions.createEl('button', { 
-            text: this.showStarredOnly ? '⭐ 已筛选' : '⭐ 星标',
-            cls: this.showStarredOnly ? 'mod-cta' : ''
+            text: this.showStarredOnly ? '⭐ 已筛选' : '⭐',
+            cls: this.showStarredOnly ? 'mod-cta' : '',
+            attr: { title: '仅显示星标版本' }
         });
         starFilterBtn.addEventListener('click', () => {
             this.showStarredOnly = !this.showStarredOnly;
@@ -1240,28 +1289,45 @@ class VersionHistoryView extends ItemView {
         });
 
         const createBtn = actions.createEl('button', { 
-            text: '创建版本',
+            text: '+ 创建',
             cls: 'mod-cta'
         });
         createBtn.addEventListener('click', () => {
             this.plugin.createManualVersion();
         });
 
-        const moreBtn = actions.createEl('button', { text: '...' });
+        const moreBtn = actions.createEl('button', { 
+            text: '⋮',
+            attr: { title: '更多操作' }
+        });
         moreBtn.addEventListener('click', (e) => {
             const menu = new Menu();
             menu.addItem((item) =>
-                item.setTitle('导出版本数据')
+                item.setTitle('📊 查看统计')
+                    .setIcon('bar-chart')
+                    .onClick(() => {
+                        this.showDetailedStats();
+                    })
+            );
+            menu.addItem((item) =>
+                item.setTitle('📥 导出版本数据')
                     .setIcon('download')
                     .onClick(() => {
                         this.plugin.exportVersions(file.path);
                     })
             );
             menu.addItem((item) =>
-                item.setTitle('查看统计信息')
-                    .setIcon('bar-chart')
+                item.setTitle('📂 创建全库版本')
+                    .setIcon('folder')
                     .onClick(() => {
-                        this.showStats();
+                        this.plugin.createFullSnapshot();
+                    })
+            );
+            menu.addItem((item) =>
+                item.setTitle('🗑️ 清理旧版本')
+                    .setIcon('trash')
+                    .onClick(async () => {
+                        await this.cleanupOldVersions(file);
                     })
             );
             menu.showAtMouseEvent(e as MouseEvent);
@@ -1275,7 +1341,44 @@ class VersionHistoryView extends ItemView {
             return;
         }
 
-        // 过滤版本
+        if (allVersions.length > 0) {
+            try {
+                const currentContent = await this.app.vault.read(file);
+                const lastVersion = allVersions[0];
+                const lastContent = await this.plugin.getVersionContent(file.path, lastVersion.id);
+                
+                if (currentContent !== lastContent) {
+                    const diffResult = Diff.diffLines(lastContent, currentContent);
+                    const added = diffResult.filter(d => d.added).length;
+                    const removed = diffResult.filter(d => d.removed).length;
+                    
+                    const diffBanner = container.createEl('div', { cls: 'version-diff-banner' });
+                    diffBanner.createEl('span', { text: '⚠️ 文件已修改' });
+                    diffBanner.createEl('span', { 
+                        text: `+${added} -${removed}`,
+                        cls: 'diff-stats'
+                    });
+                    
+                    const quickSaveBtn = diffBanner.createEl('button', { 
+                        text: '💾 立即保存',
+                        cls: 'mod-cta'
+                    });
+                    quickSaveBtn.addEventListener('click', () => {
+                        this.plugin.createManualVersion();
+                    });
+
+                    const viewDiffBtn = diffBanner.createEl('button', { 
+                        text: '👁️ 查看差异'
+                    });
+                    viewDiffBtn.addEventListener('click', () => {
+                        new DiffModal(this.app, this.plugin, file, lastVersion.id).open();
+                    });
+                }
+            } catch (error) {
+                console.error('检查文件差异失败:', error);
+            }
+        }
+
         let filteredVersions = allVersions;
         
         if (this.showStarredOnly) {
@@ -1301,8 +1404,7 @@ class VersionHistoryView extends ItemView {
             return;
         }
 
-        // 分页逻辑
-        const perPage = this.plugin.settings.versionsPerPage;
+        const perPage = this.plugin.settings.versionsPerPage || filteredVersions.length;
         const totalPages = Math.ceil(filteredVersions.length / perPage);
         const start = this.currentPage * perPage;
         const end = Math.min(start + perPage, filteredVersions.length);
@@ -1349,11 +1451,10 @@ class VersionHistoryView extends ItemView {
                 this.refresh();
             });
 
-            const info = listContainer.createEl('div', { cls: 'version-info' });
+            const info = item.createEl('div', { cls: 'version-info' });
             
             const timeRow = info.createEl('div', { cls: 'version-time-row' });
             
-            // 星标按钮
             const starBtn = timeRow.createEl('span', { 
                 text: version.starred ? '⭐' : '☆',
                 cls: 'version-star-btn'
@@ -1369,7 +1470,6 @@ class VersionHistoryView extends ItemView {
             
             const messageEl = info.createEl('div', { cls: 'version-message-row' });
             
-            // 自动标签
             if (version.message.includes('[Auto Save]')) {
                 messageEl.createEl('span', { 
                     text: '自动保存',
@@ -1387,7 +1487,6 @@ class VersionHistoryView extends ItemView {
                 });
             }
             
-            // 存储类型标签
             if (version.diff) {
                 messageEl.createEl('span', { 
                     text: '增量',
@@ -1400,7 +1499,6 @@ class VersionHistoryView extends ItemView {
                 });
             }
             
-            // 用户标签
             if (version.tags && version.tags.length > 0) {
                 version.tags.forEach(tag => {
                     const tagEl = messageEl.createEl('span', { 
@@ -1420,7 +1518,6 @@ class VersionHistoryView extends ItemView {
                 cls: 'version-message'
             });
             
-            // 版本备注
             if (version.note) {
                 info.createEl('div', { 
                     text: `📝 ${version.note}`,
@@ -1435,7 +1532,6 @@ class VersionHistoryView extends ItemView {
 
             const actions = item.createEl('div', { cls: 'version-actions' });
             
-            // 快速预览按钮
             if (this.plugin.settings.enableQuickPreview) {
                 const previewBtn = actions.createEl('button', { 
                     text: '👁',
@@ -1462,11 +1558,6 @@ class VersionHistoryView extends ItemView {
             diffBtn.addEventListener('click', () => {
                 this.showDiffModal(file, version.id);
             });
-            
-            diffBtn.addEventListener('contextmenu', (e) => {
-                e.preventDefault();
-                this.showVersionContextMenu(e as MouseEvent, file, version);
-            });
 
             const moreBtn = actions.createEl('button', { 
                 text: '⋮',
@@ -1477,7 +1568,6 @@ class VersionHistoryView extends ItemView {
             });
         }
 
-        // 分页控件
         if (totalPages > 1) {
             const pagination = container.createEl('div', { cls: 'version-pagination' });
             
@@ -1598,7 +1688,7 @@ class VersionHistoryView extends ItemView {
         menu.showAtMouseEvent(event);
     }
 
-    async showStats() {
+    async showDetailedStats() {
         const file = this.currentFile;
         if (!file) return;
 
@@ -1606,15 +1696,50 @@ class VersionHistoryView extends ItemView {
         const starredCount = versions.filter(v => v.starred).length;
         const taggedCount = versions.filter(v => v.tags && v.tags.length > 0).length;
         const totalSize = versions.reduce((sum, v) => sum + v.size, 0);
+        const autoSaveCount = versions.filter(v => v.message.includes('[Auto Save]')).length;
+        const manualSaveCount = versions.length - autoSaveCount;
+
+        let timeSpan = '';
+        if (versions.length > 0) {
+            const oldest = versions[versions.length - 1].timestamp;
+            const newest = versions[0].timestamp;
+            const days = Math.floor((newest - oldest) / (1000 * 60 * 60 * 24));
+            timeSpan = days > 0 ? `${days} 天` : '不足1天';
+        }
 
         new Notice(
-            `📊 统计信息\n` +
+            `📊 ${file.basename} 统计\n\n` +
             `总版本数: ${versions.length}\n` +
-            `星标版本: ${starredCount}\n` +
-            `已标签版本: ${taggedCount}\n` +
-            `总大小: ${this.plugin.formatFileSize(totalSize)}`,
-            5000
+            `⭐ 星标: ${starredCount}\n` +
+            `🏷️ 已标签: ${taggedCount}\n` +
+            `🤖 自动: ${autoSaveCount}\n` +
+            `✋ 手动: ${manualSaveCount}\n` +
+            `📦 总大小: ${this.plugin.formatFileSize(totalSize)}\n` +
+            `📅 时间跨度: ${timeSpan}`,
+            8000
         );
+    }
+
+    async cleanupOldVersions(file: TFile) {
+        new ConfirmModal(
+            this.app,
+            '清理旧版本',
+            '根据设置的清理规则删除旧版本\n\n是否继续?',
+            async () => {
+                const versionFile = await this.plugin.loadVersionFile(file.path);
+                const beforeCount = versionFile.versions.length;
+                const removed = this.plugin.cleanupVersionsInMemory(versionFile);
+                
+                if (removed > 0) {
+                    await this.plugin.saveVersionFile(file.path, versionFile);
+                    this.plugin.versionCache.set(file.path, versionFile);
+                    new Notice(`✅ 已清理 ${removed} 个旧版本`);
+                    this.refresh();
+                } else {
+                    new Notice('ℹ️ 没有需要清理的版本');
+                }
+            }
+        ).open();
     }
 
     renderEmptyState(container: HTMLElement, message: string) {
@@ -1688,7 +1813,6 @@ class VersionHistoryView extends ItemView {
     }
 }
 
-// 标签编辑模态框
 class TagEditModal extends Modal {
     plugin: VersionControlPlugin;
     filePath: string;
@@ -1711,7 +1835,6 @@ class TagEditModal extends Modal {
 
         const container = contentEl.createEl('div', { cls: 'tag-edit-container' });
 
-        // 默认标签
         const defaultSection = container.createEl('div', { cls: 'tag-section' });
         defaultSection.createEl('h3', { text: '常用标签' });
         const defaultTags = defaultSection.createEl('div', { cls: 'tag-list' });
@@ -1732,17 +1855,17 @@ class TagEditModal extends Modal {
             });
         });
 
-        // 自定义标签
         const customSection = container.createEl('div', { cls: 'tag-section' });
         customSection.createEl('h3', { text: '自定义标签' });
         
-        const input = customSection.createEl('input', {
+        const inputContainer = customSection.createEl('div', { cls: 'tag-input-container' });
+        const input = inputContainer.createEl('input', {
             type: 'text',
             placeholder: '输入新标签...'
         });
         input.style.width = '100%';
 
-        const addBtn = customSection.createEl('button', { text: '添加', cls: 'mod-cta' });
+        const addBtn = inputContainer.createEl('button', { text: '添加', cls: 'mod-cta' });
         addBtn.addEventListener('click', () => {
             const tag = input.value.trim();
             if (tag && !this.selectedTags.has(tag)) {
@@ -1758,13 +1881,11 @@ class TagEditModal extends Modal {
             }
         });
 
-        // 已选标签
         const selectedSection = container.createEl('div', { cls: 'tag-section' });
         selectedSection.createEl('h3', { text: '已选标签' });
         const selectedTagsContainer = selectedSection.createEl('div', { cls: 'tag-list' });
         this.renderSelectedTags(selectedTagsContainer);
 
-        // 按钮
         const btnContainer = contentEl.createEl('div', { cls: 'modal-button-container' });
         
         const cancelBtn = btnContainer.createEl('button', { text: '取消' });
@@ -1796,7 +1917,6 @@ class TagEditModal extends Modal {
     }
 }
 
-// 备注编辑模态框
 class NoteEditModal extends Modal {
     plugin: VersionControlPlugin;
     filePath: string;
@@ -1968,6 +2088,9 @@ class DiffModal extends Modal {
     currentDiffIndex: number = 0;
     totalDiffs: number = 0;
     diffElements: HTMLElement[] = [];
+    showContext: boolean = false;
+    contextLines: number = 3;
+    collapsedSections: Set<number> = new Set();
 
     constructor(app: App, plugin: VersionControlPlugin, file: TFile, versionId: string, secondVersionId?: string) {
         super(app);
@@ -1985,22 +2108,49 @@ class DiffModal extends Modal {
 
         const toolbar = contentEl.createEl('div', { cls: 'diff-toolbar' });
         
-        const prevBtn = toolbar.createEl('button', { text: '⬆ 上一个差异' });
-        const nextBtn = toolbar.createEl('button', { text: '⬇ 下一个差异' });
-        const statsEl = toolbar.createEl('span', { cls: 'diff-stats' });
+        const navGroup = toolbar.createEl('div', { cls: 'diff-nav-group' });
+        const prevBtn = navGroup.createEl('button', { text: '⬆', attr: { title: '上一个差异 (↑)' } });
+        const statsEl = navGroup.createEl('span', { cls: 'diff-stats' });
+        const nextBtn = navGroup.createEl('button', { text: '⬇', attr: { title: '下一个差异 (↓)' } });
+
+        const viewGroup = toolbar.createEl('div', { cls: 'diff-view-group' });
         
-        const granularitySelect = toolbar.createEl('select');
+        const contextToggleBtn = viewGroup.createEl('button', { 
+            text: '📄 上下文',
+            cls: 'diff-context-toggle'
+        });
+        contextToggleBtn.addEventListener('click', () => {
+            this.showContext = !this.showContext;
+            contextToggleBtn.toggleClass('active', this.showContext);
+            renderDiff();
+        });
+        
+        const granularitySelect = viewGroup.createEl('select', { cls: 'diff-select' });
         granularitySelect.createEl('option', { text: '字符级', value: 'char' });
         granularitySelect.createEl('option', { text: '单词级', value: 'word' });
         granularitySelect.createEl('option', { text: '行级', value: 'line' });
         granularitySelect.value = this.plugin.settings.diffGranularity;
         
-        const modeSelect = toolbar.createEl('select');
+        const modeSelect = viewGroup.createEl('select', { cls: 'diff-select' });
         modeSelect.createEl('option', { text: '统一视图', value: 'unified' });
         modeSelect.createEl('option', { text: '左右分栏', value: 'split' });
         modeSelect.value = this.plugin.settings.diffViewMode;
 
-        const copyBtn = toolbar.createEl('button', { text: '📋 复制差异' });
+        const actionGroup = toolbar.createEl('div', { cls: 'diff-action-group' });
+        
+        const expandAllBtn = actionGroup.createEl('button', { 
+            text: '展开全部',
+            attr: { title: '展开所有折叠区域' }
+        });
+        expandAllBtn.addEventListener('click', () => {
+            this.collapsedSections.clear();
+            renderDiff();
+        });
+
+        const copyBtn = actionGroup.createEl('button', { 
+            text: '📋', 
+            attr: { title: '复制差异' }
+        });
         copyBtn.addEventListener('click', () => {
             this.copyDiffToClipboard();
         });
@@ -2043,6 +2193,7 @@ class DiffModal extends Modal {
             diffContainer.empty();
             this.diffElements = [];
             this.currentDiffIndex = 0;
+            this.totalDiffs = 0; 
             
             const granularity = granularitySelect.value as 'char' | 'word' | 'line';
             
@@ -2052,22 +2203,26 @@ class DiffModal extends Modal {
                 this.renderSplitDiff(diffContainer, leftContent, rightContent, granularity, leftLabel, rightLabel);
             }
 
+            this.totalDiffs = this.diffElements.length;
             if (this.totalDiffs > 0) {
                 statsEl.setText(`${this.currentDiffIndex + 1} / ${this.totalDiffs}`);
                 prevBtn.disabled = false;
-                nextBtn.disabled = false;
+                nextBtn.disabled = this.totalDiffs === 1;
+                setTimeout(() => this.scrollToDiff(), 100);
             } else {
-                statsEl.setText('无差异');
+                statsEl.setText(leftContent === rightContent ? '内容相同' : '无差异');
                 prevBtn.disabled = true;
                 nextBtn.disabled = true;
             }
         };
 
         granularitySelect.addEventListener('change', () => {
+            this.collapsedSections.clear();
             renderDiff();
         });
         
         modeSelect.addEventListener('change', () => {
+            this.collapsedSections.clear();
             renderDiff();
         });
         
@@ -2076,6 +2231,8 @@ class DiffModal extends Modal {
                 this.currentDiffIndex--;
                 this.scrollToDiff();
                 statsEl.setText(`${this.currentDiffIndex + 1} / ${this.totalDiffs}`);
+                prevBtn.disabled = this.currentDiffIndex === 0;
+                nextBtn.disabled = false;
             }
         });
 
@@ -2084,7 +2241,19 @@ class DiffModal extends Modal {
                 this.currentDiffIndex++;
                 this.scrollToDiff();
                 statsEl.setText(`${this.currentDiffIndex + 1} / ${this.totalDiffs}`);
+                prevBtn.disabled = false;
+                nextBtn.disabled = this.currentDiffIndex >= this.totalDiffs - 1;
             }
+        });
+
+        this.scope.register([], 'ArrowUp', () => {
+            if (!prevBtn.disabled) prevBtn.click();
+            return false;
+        });
+
+        this.scope.register([], 'ArrowDown', () => {
+            if (!nextBtn.disabled) nextBtn.click();
+            return false;
         });
 
         renderDiff();
@@ -2101,61 +2270,217 @@ class DiffModal extends Modal {
             diffResult = Diff.diffLines(left, right);
         }
         
-        this.totalDiffs = diffResult.filter(part => part.added || part.removed).length;
-
         if (granularity === 'line') {
-            let lineNumber = 1;
-            let diffIndex = 0;
-
-            for (const part of diffResult) {
-                const lines = part.value.split('\n');
-                if (lines[lines.length - 1] === '') lines.pop();
-
-                for (const line of lines) {
-                    const lineEl = container.createEl('div', { cls: 'diff-line' });
-                    
-                    if (part.added || part.removed) {
-                        lineEl.dataset.diffIndex = String(diffIndex);
-                        this.diffElements.push(lineEl);
-                    }
-
-                    if (part.added) {
-                        lineEl.addClass('diff-added');
-                        lineEl.createEl('span', { cls: 'line-number', text: String(lineNumber) });
-                        lineEl.createEl('span', { text: `+ ${line}` });
-                        lineNumber++;
-                        diffIndex++;
-                    } else if (part.removed) {
-                        lineEl.addClass('diff-removed');
-                        lineEl.createEl('span', { cls: 'line-number', text: '' });
-                        lineEl.createEl('span', { text: `- ${line}` });
-                        diffIndex++;
-                    } else {
-                        lineEl.createEl('span', { cls: 'line-number', text: String(lineNumber) });
-                        lineEl.createEl('span', { text: `  ${line}` });
-                        lineNumber++;
-                    }
-                }
-            }
+            this.renderLineDiff(container, diffResult, 'unified');
         } else {
-            const wrapper = container.createEl('div', { cls: 'diff-line-inline-wrapper' });
-            
-            for (const part of diffResult) {
-                const span = wrapper.createEl('span');
-                span.textContent = part.value;
-                
+            this.renderInlineDiff(container, diffResult, 'unified');
+        }
+    }
+
+    renderLineDiff(container: HTMLElement, diffResult: any[], mode: 'unified' | 'split') {
+        interface DiffLine {
+            lineNumber: number | null;
+            content: string;
+            type: 'added' | 'removed' | 'context';
+            diffIndex?: number;
+        }
+
+        const lines: DiffLine[] = [];
+        let lineNumber = 1;
+        let diffIndex = 0;
+
+        for (const part of diffResult) {
+            const partLines = part.value.split('\n');
+            if (partLines[partLines.length - 1] === '') partLines.pop();
+
+            for (const line of partLines) {
                 if (part.added) {
-                    span.addClass('diff-char-added');
-                    this.diffElements.push(span);
+                    lines.push({ 
+                        lineNumber: lineNumber++, 
+                        content: line, 
+                        type: 'added',
+                        diffIndex: diffIndex++
+                    });
                 } else if (part.removed) {
-                    span.addClass('diff-char-removed');
-                    this.diffElements.push(span);
+                    lines.push({ 
+                        lineNumber: null, 
+                        content: line, 
+                        type: 'removed',
+                        diffIndex: diffIndex++
+                    });
+                } else {
+                    lines.push({ 
+                        lineNumber: lineNumber++, 
+                        content: line, 
+                        type: 'context'
+                    });
                 }
             }
         }
 
-        if (this.totalDiffs > 0) {
-            setTimeout(() => this.scrollToDiff(), 100);
+        const groups: { type: 'diff' | 'context', lines: DiffLine[], startLine: number }[] = [];
+        let currentGroup: DiffLine[] = [];
+        let currentType: 'diff' | 'context' | null = null;
+        let groupStartLine = 1;
+
+        for (const line of lines) {
+            const lineType = line.type === 'context' ? 'context' : 'diff';
+            
+            if (lineType !== currentType) {
+                if (currentGroup.length > 0) {
+                    groups.push({ type: currentType!, lines: currentGroup, startLine: groupStartLine });
+                }
+                currentGroup = [line];
+                currentType = lineType;
+                groupStartLine = line.lineNumber || groupStartLine;
+            } else {
+                currentGroup.push(line);
+            }
+        }
+        
+        if (currentGroup.length > 0) {
+            groups.push({ type: currentType!, lines: currentGroup, startLine: groupStartLine });
+        }
+
+        let sectionIndex = 0;
+        for (const group of groups) {
+            if (group.type === 'context' && !this.showContext) {
+                if (group.lines.length > this.contextLines * 2) {
+                    const collapsed = this.collapsedSections.has(sectionIndex);
+                    
+                    for (let i = 0; i < this.contextLines; i++) {
+                        this.renderDiffLine(container, group.lines[i], mode);
+                    }
+                    
+                    const collapseBtn = container.createEl('div', { 
+                        cls: 'diff-collapse-btn',
+                        text: collapsed ? 
+                            `⋯ 展开 ${group.lines.length - this.contextLines * 2} 行未修改内容 ⋯` :
+                            `⋯ 折叠 ${group.lines.length - this.contextLines * 2} 行 ⋯`
+                    });
+                    
+                    const currentSectionIndex = sectionIndex;
+                    collapseBtn.addEventListener('click', () => {
+                        if (this.collapsedSections.has(currentSectionIndex)) {
+                            this.collapsedSections.delete(currentSectionIndex);
+                        } else {
+                            this.collapsedSections.add(currentSectionIndex);
+                        }
+                        this.renderUnifiedDiff(container.parentElement as HTMLElement, '', '', 'line');
+                    });
+                    
+                    if (!collapsed) {
+                        for (let i = this.contextLines; i < group.lines.length - this.contextLines; i++) {
+                            this.renderDiffLine(container, group.lines[i], mode);
+                        }
+                    }
+                    
+                    for (let i = Math.max(this.contextLines, group.lines.length - this.contextLines); i < group.lines.length; i++) {
+                        this.renderDiffLine(container, group.lines[i], mode);
+                    }
+                    
+                    sectionIndex++;
+                    continue;
+                }
+            }
+            
+            for (const line of group.lines) {
+                this.renderDiffLine(container, line, mode);
+            }
+        }
+    }
+
+    renderDiffLine(container: HTMLElement, line: any, mode: 'unified' | 'split') {
+        const lineEl = container.createEl('div', { cls: 'diff-line' });
+        
+        if (line.diffIndex !== undefined) {
+            lineEl.dataset.diffIndex = String(line.diffIndex);
+            this.diffElements.push(lineEl);
+        }
+
+        if (line.type === 'added') {
+            lineEl.addClass('diff-added');
+            lineEl.createEl('span', { cls: 'line-number', text: String(line.lineNumber) });
+            lineEl.createEl('span', { cls: 'diff-marker', text: '+' });
+            lineEl.createEl('span', { cls: 'line-content', text: line.content });
+        } else if (line.type === 'removed') {
+            lineEl.addClass('diff-removed');
+            lineEl.createEl('span', { cls: 'line-number', text: '' });
+            lineEl.createEl('span', { cls: 'diff-marker', text: '-' });
+            lineEl.createEl('span', { cls: 'line-content', text: line.content });
+        } else {
+            lineEl.addClass('diff-context');
+            lineEl.createEl('span', { cls: 'line-number', text: String(line.lineNumber) });
+            lineEl.createEl('span', { cls: 'diff-marker', text: ' ' });
+            lineEl.createEl('span', { cls: 'line-content', text: line.content });
+        }
+    }
+
+    renderInlineDiff(container: HTMLElement, diffResult: any[], mode: 'unified' | 'split') {
+        const wrapper = container.createEl('div', { cls: 'diff-inline-with-lines' });
+        const lineNumbersDiv = wrapper.createEl('div', { cls: 'diff-line-numbers' });
+        const contentDiv = wrapper.createEl('div', { cls: 'diff-line-content' });
+
+        let lines: { number: number, hasChange: boolean, spans: HTMLSpanElement[] }[] = [];
+        let currentLineNumber = 1;
+        let currentLineSpans: HTMLSpanElement[] = [];
+        let currentLineHasChanges = false;
+        let diffIndex = 0;
+
+        for (const part of diffResult) {
+            const partLines = part.value.split('\n');
+            for (let i = 0; i < partLines.length; i++) {
+                const lineText = partLines[i];
+
+                if (i > 0) {
+                    lines.push({ 
+                        number: currentLineNumber, 
+                        hasChange: currentLineHasChanges, 
+                        spans: currentLineSpans 
+                    });
+                    currentLineNumber++;
+                    currentLineSpans = [];
+                    currentLineHasChanges = false;
+                }
+
+                if (lineText) {
+                    const span = document.createElement('span');
+                    span.textContent = lineText;
+                    if (part.added) {
+                        span.className = 'diff-char-added';
+                        span.dataset.diffIndex = String(diffIndex++);
+                        this.diffElements.push(span);
+                        currentLineHasChanges = true;
+                    } else if (part.removed) {
+                        span.className = 'diff-char-removed';
+                        span.dataset.diffIndex = String(diffIndex++);
+                        this.diffElements.push(span);
+                        currentLineHasChanges = true;
+                    }
+                    currentLineSpans.push(span);
+                }
+            }
+        }
+        
+        lines.push({ 
+            number: currentLineNumber, 
+            hasChange: currentLineHasChanges, 
+            spans: currentLineSpans 
+        });
+
+        for (const line of lines) {
+            if (this.showContext || line.hasChange) {
+                lineNumbersDiv.createEl('div', { 
+                    text: String(line.number), 
+                    cls: 'line-number' 
+                });
+                const lineDiv = contentDiv.createEl('div', { cls: 'diff-content-line' });
+                if (line.spans.length === 0) {
+                    lineDiv.innerHTML = '&nbsp;';
+                } else {
+                    lineDiv.innerHTML = line.spans.map(span => span.outerHTML).join('');
+                }
+            }
         }
     }
 
@@ -2181,66 +2506,10 @@ class DiffModal extends Modal {
             diffResult = Diff.diffLines(left, right);
         }
         
-        this.totalDiffs = diffResult.filter(part => part.added || part.removed).length;
-
         if (granularity === 'line') {
-            let leftLine = 1;
-            let rightLine = 1;
-            let diffIndex = 0;
-
-            for (const part of diffResult) {
-                const lines = part.value.split('\n');
-                if (lines[lines.length - 1] === '') lines.pop();
-
-                for (const line of lines) {
-                    if (part.removed) {
-                        const lineEl = leftContent.createEl('div', { cls: 'diff-line diff-removed' });
-                        lineEl.dataset.diffIndex = String(diffIndex);
-                        lineEl.createEl('span', { cls: 'line-number', text: String(leftLine) });
-                        lineEl.createEl('span', { text: line });
-                        this.diffElements.push(lineEl);
-                        leftLine++;
-                        diffIndex++;
-                    } else if (part.added) {
-                        const lineEl = rightContent.createEl('div', { cls: 'diff-line diff-added' });
-                        lineEl.dataset.diffIndex = String(diffIndex);
-                        lineEl.createEl('span', { cls: 'line-number', text: String(rightLine) });
-                        lineEl.createEl('span', { text: line });
-                        this.diffElements.push(lineEl);
-                        rightLine++;
-                        diffIndex++;
-                    } else {
-                        const leftLineEl = leftContent.createEl('div', { cls: 'diff-line' });
-                        leftLineEl.createEl('span', { cls: 'line-number', text: String(leftLine) });
-                        leftLineEl.createEl('span', { text: line });
-
-                        const rightLineEl = rightContent.createEl('div', { cls: 'diff-line' });
-                        rightLineEl.createEl('span', { cls: 'line-number', text: String(rightLine) });
-                        rightLineEl.createEl('span', { text: line });
-
-                        leftLine++;
-                        rightLine++;
-                    }
-                }
-            }
+            this.renderSplitLineDiff(leftContent, rightContent, diffResult);
         } else {
-            const leftWrapper = leftContent.createEl('div', { cls: 'diff-line-inline-wrapper' });
-            const rightWrapper = rightContent.createEl('div', { cls: 'diff-line-inline-wrapper' });
-            
-            for (const part of diffResult) {
-                if (part.removed) {
-                    const span = leftWrapper.createEl('span', { text: part.value });
-                    span.addClass('diff-char-removed');
-                    this.diffElements.push(span);
-                } else if (part.added) {
-                    const span = rightWrapper.createEl('span', { text: part.value });
-                    span.addClass('diff-char-added');
-                    this.diffElements.push(span);
-                } else {
-                    leftWrapper.createEl('span', { text: part.value });
-                    rightWrapper.createEl('span', { text: part.value });
-                }
-            }
+            this.renderSplitInlineDiff(leftContent, rightContent, diffResult);
         }
 
         let isScrolling = false;
@@ -2260,16 +2529,188 @@ class DiffModal extends Modal {
         });
     }
 
+    renderSplitLineDiff(leftContent: HTMLElement, rightContent: HTMLElement, diffResult: any[]) {
+        let leftLine = 1;
+        let rightLine = 1;
+        let diffIndex = 0;
+
+        for (const part of diffResult) {
+            if (!this.showContext && !part.added && !part.removed) {
+                const lines = part.value.split('\n');
+                if (lines[lines.length - 1] === '') lines.pop();
+                
+                if (lines.length > this.contextLines * 2) {
+                    const collapseLeft = leftContent.createEl('div', { cls: 'diff-collapse-btn' });
+                    const collapseRight = rightContent.createEl('div', { cls: 'diff-collapse-btn' });
+                    
+                    collapseLeft.setText(`⋯ ${lines.length} 行未修改 ⋯`);
+                    collapseRight.setText(`⋯ ${lines.length} 行未修改 ⋯`);
+                    
+                    leftLine += lines.length;
+                    rightLine += lines.length;
+                    continue;
+                }
+                
+                for (const line of lines.slice(0, this.contextLines)) {
+                    const leftLineEl = leftContent.createEl('div', { cls: 'diff-line diff-context' });
+                    leftLineEl.createEl('span', { cls: 'line-number', text: String(leftLine) });
+                    leftLineEl.createEl('span', { cls: 'diff-marker', text: ' ' });
+                    leftLineEl.createEl('span', { cls: 'line-content', text: line });
+
+                    const rightLineEl = rightContent.createEl('div', { cls: 'diff-line diff-context' });
+                    rightLineEl.createEl('span', { cls: 'line-number', text: String(rightLine) });
+                    rightLineEl.createEl('span', { cls: 'diff-marker', text: ' ' });
+                    rightLineEl.createEl('span', { cls: 'line-content', text: line });
+
+                    leftLine++;
+                    rightLine++;
+                }
+                
+                leftLine += Math.max(0, lines.length - this.contextLines);
+                rightLine += Math.max(0, lines.length - this.contextLines);
+                continue;
+            }
+
+            const lines = part.value.split('\n');
+            if (lines[lines.length - 1] === '') lines.pop();
+
+            for (const line of lines) {
+                if (part.removed) {
+                    const lineEl = leftContent.createEl('div', { cls: 'diff-line diff-removed' });
+                    lineEl.dataset.diffIndex = String(diffIndex++);
+                    lineEl.createEl('span', { cls: 'line-number', text: String(leftLine) });
+                    lineEl.createEl('span', { cls: 'diff-marker', text: '-' });
+                    lineEl.createEl('span', { cls: 'line-content', text: line });
+                    this.diffElements.push(lineEl);
+                    leftLine++;
+                    
+                    rightContent.createEl('div', { cls: 'diff-line diff-placeholder' });
+                } else if (part.added) {
+                    const lineEl = rightContent.createEl('div', { cls: 'diff-line diff-added' });
+                    lineEl.dataset.diffIndex = String(diffIndex++);
+                    lineEl.createEl('span', { cls: 'line-number', text: String(rightLine) });
+                    lineEl.createEl('span', { cls: 'diff-marker', text: '+' });
+                    lineEl.createEl('span', { cls: 'line-content', text: line });
+                    this.diffElements.push(lineEl);
+                    rightLine++;
+                    
+                    leftContent.createEl('div', { cls: 'diff-line diff-placeholder' });
+                } else {
+                    const leftLineEl = leftContent.createEl('div', { cls: 'diff-line diff-context' });
+                    leftLineEl.createEl('span', { cls: 'line-number', text: String(leftLine) });
+                    leftLineEl.createEl('span', { cls: 'diff-marker', text: ' ' });
+                    leftLineEl.createEl('span', { cls: 'line-content', text: line });
+
+                    const rightLineEl = rightContent.createEl('div', { cls: 'diff-line diff-context' });
+                    rightLineEl.createEl('span', { cls: 'line-number', text: String(rightLine) });
+                    rightLineEl.createEl('span', { cls: 'diff-marker', text: ' ' });
+                    rightLineEl.createEl('span', { cls: 'line-content', text: line });
+
+                    leftLine++;
+                    rightLine++;
+                }
+            }
+        }
+    }
+
+    renderSplitInlineDiff(leftContent: HTMLElement, rightContent: HTMLElement, diffResult: any[]) {
+        const leftWrapper = leftContent.createEl('div', { cls: 'diff-inline-with-lines' });
+        const rightWrapper = rightContent.createEl('div', { cls: 'diff-inline-with-lines' });
+        
+        const leftLineNumbers = leftWrapper.createEl('div', { cls: 'diff-line-numbers' });
+        const leftContentDiv = leftWrapper.createEl('div', { cls: 'diff-line-content' });
+        
+        const rightLineNumbers = rightWrapper.createEl('div', { cls: 'diff-line-numbers' });
+        const rightContentDiv = rightWrapper.createEl('div', { cls: 'diff-line-content' });
+        
+        let lines: { left: number, right: number, hasChange: boolean, leftSpans: HTMLSpanElement[], rightSpans: HTMLSpanElement[] }[] = [];
+        let leftLine = 1, rightLine = 1;
+        let leftSpans: HTMLSpanElement[] = [], rightSpans: HTMLSpanElement[] = [];
+        let lineHasChanges = false;
+        let diffIndex = 0;
+
+        for (const part of diffResult) {
+            const partLines = part.value.split('\n');
+            for (let i = 0; i < partLines.length; i++) {
+                const lineText = partLines[i];
+                
+                if (i > 0) {
+                    lines.push({
+                        left: leftLine,
+                        right: rightLine,
+                        hasChange: lineHasChanges,
+                        leftSpans: leftSpans,
+                        rightSpans: rightSpans
+                    });
+                    leftLine++;
+                    rightLine++;
+                    leftSpans = [];
+                    rightSpans = [];
+                    lineHasChanges = false;
+                }
+
+                if (lineText) {
+                    const span = document.createElement('span');
+                    span.textContent = lineText;
+
+                    if (part.added) {
+                        span.className = 'diff-char-added';
+                        span.dataset.diffIndex = String(diffIndex++);
+                        this.diffElements.push(span);
+                        rightSpans.push(span);
+                        lineHasChanges = true;
+                    } else if (part.removed) {
+                        span.className = 'diff-char-removed';
+                        span.dataset.diffIndex = String(diffIndex++);
+                        this.diffElements.push(span);
+                        leftSpans.push(span);
+                        lineHasChanges = true;
+                    } else {
+                        const leftSpan = document.createElement('span');
+                        leftSpan.textContent = lineText;
+                        leftSpans.push(leftSpan);
+                        
+                        const rightSpan = document.createElement('span');
+                        rightSpan.textContent = lineText;
+                        rightSpans.push(rightSpan);
+                    }
+                }
+            }
+        }
+        
+        lines.push({
+            left: leftLine,
+            right: rightLine,
+            hasChange: lineHasChanges,
+            leftSpans: leftSpans,
+            rightSpans: rightSpans
+        });
+
+        for (const line of lines) {
+            if (this.showContext || line.hasChange) {
+                leftLineNumbers.createEl('div', { text: String(line.left), cls: 'line-number' });
+                const leftLineDiv = leftContentDiv.createEl('div', { cls: 'diff-content-line' });
+                leftLineDiv.innerHTML = line.leftSpans.length > 0 ? line.leftSpans.map(span => span.outerHTML).join('') : '&nbsp;';
+
+                rightLineNumbers.createEl('div', { text: String(line.right), cls: 'line-number' });
+                const rightLineDiv = rightContentDiv.createEl('div', { cls: 'diff-content-line' });
+                rightLineDiv.innerHTML = line.rightSpans.length > 0 ? line.rightSpans.map(span => span.outerHTML).join('') : '&nbsp;';
+            }
+        }
+    }
+
     scrollToDiff() {
         if (this.diffElements.length === 0 || this.currentDiffIndex >= this.diffElements.length) {
             return;
         }
 
         const element = this.diffElements[this.currentDiffIndex];
-        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
         
         this.diffElements.forEach(el => el.removeClass('diff-current'));
+        
         element.addClass('diff-current');
+        
+        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
 
     copyDiffToClipboard() {
@@ -2530,14 +2971,14 @@ class VersionControlSettingTab extends PluginSettingTab {
                 }));
 
         new Setting(containerEl)
-            .setName('保存延迟 (秒)')
+            .setName('保存延迟 (分钟)')
             .setDesc('修改后等待多久才保存,避免频繁创建版本')
             .addSlider(slider => slider
-                .setLimits(1, 30, 1)
-                .setValue(this.plugin.settings.autoSaveDelay)
+                .setLimits(1, 10, 0.5)
+                .setValue(this.plugin.settings.autoSaveDelay / 60)
                 .setDynamicTooltip()
                 .onChange(async (value) => {
-                    this.plugin.settings.autoSaveDelay = value;
+                    this.plugin.settings.autoSaveDelay = Math.round(value * 60);
                     await this.plugin.saveSettings();
                 }));
 
@@ -2827,7 +3268,6 @@ class VersionControlSettingTab extends PluginSettingTab {
                     new Notice('请手动复制 .versions 文件夹进行备份');
                 }));
 
-        // 添加使用说明
         containerEl.createEl('h3', { text: '📖 使用说明' });
         const infoEl = containerEl.createEl('div', { cls: 'version-info-section' });
         
@@ -2839,24 +3279,17 @@ class VersionControlSettingTab extends PluginSettingTab {
         ul1.createEl('li', { text: '版本备注 - 为版本添加详细说明' });
         ul1.createEl('li', { text: '星标标记 - 标记重要版本便于查找' });
         ul1.createEl('li', { text: '高级筛选 - 按标签、星标筛选版本' });
+        ul1.createEl('li', { text: '增强差异对比 - 智能折叠、行号显示、键盘导航' });
         
         const feature2 = infoEl.createEl('div', { cls: 'feature-item' });
-        feature2.createEl('strong', { text: '⌨️ 快捷键:' });
+        feature2.createEl('strong', { text: '💡 使用技巧:' });
         const ul2 = feature2.createEl('ul');
-        ul2.createEl('li', { text: 'Ctrl+Shift+S - 创建版本快照' });
-        ul2.createEl('li', { text: 'Ctrl+Shift+H - 显示版本历史' });
-        ul2.createEl('li', { text: 'Ctrl+Shift+D - 与历史版本对比' });
-        ul2.createEl('li', { text: 'Ctrl+Shift+Z - 恢复到上一版本' });
-        ul2.createEl('li', { text: 'Ctrl+Shift+P - 快速预览上一版本' });
-        
-        const feature3 = infoEl.createEl('div', { cls: 'feature-item' });
-        feature3.createEl('strong', { text: '💡 使用技巧:' });
-        const ul3 = feature3.createEl('ul');
-        ul3.createEl('li', { text: '右键点击版本可查看更多操作选项' });
-        ul3.createEl('li', { text: '点击标签可快速筛选相关版本' });
-        ul3.createEl('li', { text: '使用星标标记重要的里程碑版本' });
-        ul3.createEl('li', { text: '定期运行"优化存储"以保持最佳性能' });
-        ul3.createEl('li', { text: '增量存储和压缩可节省90%以上的空间' });
+        ul2.createEl('li', { text: '右键点击版本可查看更多操作选项' });
+        ul2.createEl('li', { text: '点击标签可快速筛选相关版本' });
+        ul2.createEl('li', { text: '使用星标标记重要的里程碑版本' });
+        ul2.createEl('li', { text: '定期运行"优化存储"以保持最佳性能' });
+        ul2.createEl('li', { text: '增量存储和压缩可节省90%以上的空间' });
+        ul2.createEl('li', { text: '差异对比中使用方向键 ↑/↓ 快速导航' });
     }
 
     async clearAllVersions() {
