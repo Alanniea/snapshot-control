@@ -53,6 +53,7 @@ interface VersionControlSettings {
     enableVersionTags: boolean;
     defaultTags: string[];
     showVersionStats: boolean;
+    enableStatusBarDiff: boolean;
 }
 
 const DEFAULT_SETTINGS: VersionControlSettings = {
@@ -83,7 +84,8 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
     enableQuickPreview: true,
     enableVersionTags: true,
     defaultTags: ['重要', '里程碑', '发布', '备份', '草稿'],
-    showVersionStats: true
+    showVersionStats: true,
+    enableStatusBarDiff: true
 };
 
 export default class VersionControlPlugin extends Plugin {
@@ -101,6 +103,14 @@ export default class VersionControlPlugin extends Plugin {
 
         this.statusBarItem = this.addStatusBarItem();
         this.updateStatusBar();
+
+        // 状态栏点击事件 - 快速对比
+        if (this.settings.enableStatusBarDiff) {
+            this.statusBarItem.addClass('version-control-statusbar-clickable');
+            this.statusBarItem.addEventListener('click', () => {
+                this.quickDiffFromStatusBar();
+            });
+        }
 
         this.registerView(
             'version-history',
@@ -217,6 +227,7 @@ export default class VersionControlPlugin extends Plugin {
     updateStatusBar() {
         if (!this.settings.autoSave) {
             this.statusBarItem.setText('⏸ 版本控制: 已暂停');
+            this.statusBarItem.title = '点击快速对比当前文件';
             return;
         }
 
@@ -231,6 +242,27 @@ export default class VersionControlPlugin extends Plugin {
         } else {
             this.statusBarItem.setText('⏱ 版本控制: 已启用');
         }
+        
+        this.statusBarItem.title = '点击快速对比当前文件与最新版本';
+    }
+
+    async quickDiffFromStatusBar() {
+        if (!this.settings.enableStatusBarDiff) return;
+        
+        const file = this.app.workspace.getActiveFile();
+        if (!file) {
+            new Notice('没有打开的文件');
+            return;
+        }
+
+        const versions = await this.getAllVersions(file.path);
+        if (versions.length === 0) {
+            new Notice('没有历史版本可对比');
+            return;
+        }
+
+        const lastVersion = versions[0];
+        new DiffModal(this.app, this, file, lastVersion.id).open();
     }
 
     async ensureVersionFolder() {
@@ -542,14 +574,21 @@ export default class VersionControlPlugin extends Plugin {
     cleanupVersionsInMemory(versionFile: VersionFile) {
         let versionsToKeep = versionFile.versions;
 
+        // 保留星标版本
+        const starredVersions = versionsToKeep.filter(v => v.starred);
+        let nonStarredVersions = versionsToKeep.filter(v => !v.starred);
+
         if (this.settings.enableMaxVersions) {
-            versionsToKeep = versionsToKeep.slice(0, this.settings.maxVersions);
+            const maxNonStarred = Math.max(this.settings.maxVersions - starredVersions.length, 10);
+            nonStarredVersions = nonStarredVersions.slice(0, maxNonStarred);
         }
 
         if (this.settings.enableMaxDays) {
             const cutoffTime = Date.now() - (this.settings.maxDays * 24 * 60 * 60 * 1000);
-            versionsToKeep = versionsToKeep.filter(v => v.timestamp >= cutoffTime);
+            nonStarredVersions = nonStarredVersions.filter(v => v.timestamp >= cutoffTime);
         }
+
+        versionsToKeep = [...starredVersions, ...nonStarredVersions].sort((a, b) => b.timestamp - a.timestamp);
 
         const removedCount = versionFile.versions.length - versionsToKeep.length;
         versionFile.versions = versionsToKeep;
@@ -1583,7 +1622,7 @@ class VersionHistoryView extends ItemView {
                 }
             });
 
-            const pageInfo = pagination.createEl('span', { 
+            pagination.createEl('span', { 
                 text: `第 ${this.currentPage + 1} / ${totalPages} 页`,
                 cls: 'version-pagination-info'
             });
@@ -2091,6 +2130,12 @@ class DiffModal extends Modal {
     showContext: boolean = false;
     contextLines: number = 3;
     collapsedSections: Set<number> = new Set();
+    ignoreWhitespace: boolean = false;
+    showLineNumbers: boolean = true;
+    wrapLines: boolean = false;
+    highlightSyntax: boolean = false;
+    leftContent: string = '';
+    rightContent: string = '';
 
     constructor(app: App, plugin: VersionControlPlugin, file: TFile, versionId: string, secondVersionId?: string) {
         super(app);
@@ -2104,20 +2149,53 @@ class DiffModal extends Modal {
         const { contentEl } = this;
         contentEl.addClass('diff-modal');
 
-        contentEl.createEl('h2', { text: '版本差异对比' });
+        contentEl.createEl('h2', { text: '📊 版本差异对比' });
 
         const toolbar = contentEl.createEl('div', { cls: 'diff-toolbar' });
         
+        // 导航组
         const navGroup = toolbar.createEl('div', { cls: 'diff-nav-group' });
-        const prevBtn = navGroup.createEl('button', { text: '⬆', attr: { title: '上一个差异 (↑)' } });
+        const prevBtn = navGroup.createEl('button', { 
+            text: '⬆',
+            attr: { 
+                title: '上一个差异',
+                'aria-label': '上一个差异 (↑)'
+            } 
+        });
         const statsEl = navGroup.createEl('span', { cls: 'diff-stats' });
-        const nextBtn = navGroup.createEl('button', { text: '⬇', attr: { title: '下一个差异 (↓)' } });
+        const nextBtn = navGroup.createEl('button', { 
+            text: '⬇',
+            attr: { 
+                title: '下一个差异',
+                'aria-label': '下一个差异 (↓)'
+            } 
+        });
+        
+        const firstDiffBtn = navGroup.createEl('button', { 
+            text: '⇈',
+            attr: { 
+                title: '第一个差异',
+                'aria-label': '跳转到第一个差异'
+            } 
+        });
+        const lastDiffBtn = navGroup.createEl('button', { 
+            text: '⇊',
+            attr: { 
+                title: '最后一个差异',
+                'aria-label': '跳转到最后一个差异'
+            } 
+        });
 
+        // 视图组
         const viewGroup = toolbar.createEl('div', { cls: 'diff-view-group' });
         
         const contextToggleBtn = viewGroup.createEl('button', { 
-            text: '📄 上下文',
-            cls: 'diff-context-toggle'
+            text: '📄',
+            cls: 'diff-context-toggle',
+            attr: { 
+                title: '显示/隐藏上下文',
+                'aria-label': '上下文'
+            }
         });
         contextToggleBtn.addEventListener('click', () => {
             this.showContext = !this.showContext;
@@ -2125,45 +2203,167 @@ class DiffModal extends Modal {
             renderDiff();
         });
         
-        const granularitySelect = viewGroup.createEl('select', { cls: 'diff-select' });
-        granularitySelect.createEl('option', { text: '字符级', value: 'char' });
-        granularitySelect.createEl('option', { text: '单词级', value: 'word' });
-        granularitySelect.createEl('option', { text: '行级', value: 'line' });
-        granularitySelect.value = this.plugin.settings.diffGranularity;
+        const contextLinesInput = viewGroup.createEl('input', {
+            type: 'number',
+            attr: { 
+                min: '1', 
+                max: '10', 
+                value: String(this.contextLines),
+                title: '上下文行数',
+                'aria-label': '上下文行数'
+            }
+        });
+        contextLinesInput.style.width = '50px';
+        contextLinesInput.addEventListener('change', () => {
+            const val = parseInt(contextLinesInput.value);
+            if (!isNaN(val) && val > 0 && val <= 10) {
+                this.contextLines = val;
+                renderDiff();
+            }
+        });
+
+        const lineNumberBtn = viewGroup.createEl('button', { 
+            text: '🔢',
+            cls: this.showLineNumbers ? 'active' : '',
+            attr: { 
+                title: '显示/隐藏行号',
+                'aria-label': '行号'
+            }
+        });
+        lineNumberBtn.addEventListener('click', () => {
+            this.showLineNumbers = !this.showLineNumbers;
+            lineNumberBtn.toggleClass('active', this.showLineNumbers);
+            renderDiff();
+        });
+
+        // 自动换行默认开启
+        this.wrapLines = true;
+        const wrapBtn = viewGroup.createEl('button', { 
+            text: '↩️',
+            cls: 'active',
+            attr: { 
+                title: '自动换行',
+                'aria-label': '自动换行'
+            }
+        });
+        wrapBtn.addEventListener('click', () => {
+            this.wrapLines = !this.wrapLines;
+            wrapBtn.toggleClass('active', this.wrapLines);
+            renderDiff();
+        });
+
+        const whitespaceBtn = viewGroup.createEl('button', { 
+            text: '␣',
+            cls: this.ignoreWhitespace ? 'active' : '',
+            attr: { 
+                title: '忽略空白字符',
+                'aria-label': '忽略空白'
+            }
+        });
+        whitespaceBtn.addEventListener('click', () => {
+            this.ignoreWhitespace = !this.ignoreWhitespace;
+            whitespaceBtn.toggleClass('active', this.ignoreWhitespace);
+            renderDiff();
+        });
         
-        const modeSelect = viewGroup.createEl('select', { cls: 'diff-select' });
+        // 只保留行级对比
+        const modeSelect = viewGroup.createEl('select', { 
+            cls: 'diff-select',
+            attr: {
+                title: '视图模式',
+                'aria-label': '视图模式'
+            }
+        });
         modeSelect.createEl('option', { text: '统一视图', value: 'unified' });
         modeSelect.createEl('option', { text: '左右分栏', value: 'split' });
         modeSelect.value = this.plugin.settings.diffViewMode;
 
+        // 操作组
         const actionGroup = toolbar.createEl('div', { cls: 'diff-action-group' });
         
         const expandAllBtn = actionGroup.createEl('button', { 
             text: '展开全部',
-            attr: { title: '展开所有折叠区域' }
+            attr: { 
+                title: '展开所有折叠区域',
+                'aria-label': '展开全部'
+            }
         });
         expandAllBtn.addEventListener('click', () => {
             this.collapsedSections.clear();
             renderDiff();
         });
 
+        const collapseAllBtn = actionGroup.createEl('button', { 
+            text: '折叠全部',
+            attr: { 
+                title: '折叠所有未修改区域',
+                'aria-label': '折叠全部'
+            }
+        });
+        collapseAllBtn.addEventListener('click', () => {
+            const diffContainer = contentEl.querySelector('.diff-container');
+            if (diffContainer) {
+                const collapseBtns = diffContainer.querySelectorAll('.diff-collapse-btn');
+                collapseBtns.forEach((btn, idx) => {
+                    if (!this.collapsedSections.has(idx)) {
+                        this.collapsedSections.add(idx);
+                    }
+                });
+                renderDiff();
+            }
+        });
+
+        const searchBtn = actionGroup.createEl('button', { 
+            text: '🔍',
+            attr: { 
+                title: '搜索差异内容 (Ctrl+F)',
+                'aria-label': '搜索'
+            }
+        });
+        searchBtn.addEventListener('click', () => {
+            this.showSearchBox();
+        });
+
+        const statsBtn = actionGroup.createEl('button', { 
+            text: '📈',
+            attr: { 
+                title: '显示详细统计',
+                'aria-label': '统计'
+            }
+        });
+        statsBtn.addEventListener('click', () => {
+            this.showDetailedStats();
+        });
+
         const copyBtn = actionGroup.createEl('button', { 
             text: '📋', 
-            attr: { title: '复制差异' }
+            attr: { 
+                title: '复制差异',
+                'aria-label': '复制'
+            }
         });
         copyBtn.addEventListener('click', () => {
             this.copyDiffToClipboard();
         });
 
-        let leftContent: string;
-        let rightContent: string;
+        const exportBtn = actionGroup.createEl('button', { 
+            text: '💾',
+            attr: { 
+                title: '导出差异报告',
+                'aria-label': '导出'
+            }
+        });
+        exportBtn.addEventListener('click', () => {
+            this.exportDiffReport();
+        });
+
         let leftLabel: string;
         let rightLabel: string;
 
         try {
             if (this.secondVersionId) {
-                leftContent = await this.plugin.getVersionContent(this.file.path, this.versionId);
-                rightContent = await this.plugin.getVersionContent(this.file.path, this.secondVersionId);
+                this.leftContent = await this.plugin.getVersionContent(this.file.path, this.versionId);
+                this.rightContent = await this.plugin.getVersionContent(this.file.path, this.secondVersionId);
                 
                 const versions = await this.plugin.getAllVersions(this.file.path);
                 const leftVersion = versions.find(v => v.id === this.versionId);
@@ -2172,8 +2372,8 @@ class DiffModal extends Modal {
                 leftLabel = leftVersion ? `版本 A: ${this.plugin.formatTime(leftVersion.timestamp)}` : '版本 A';
                 rightLabel = rightVersion ? `版本 B: ${this.plugin.formatTime(rightVersion.timestamp)}` : '版本 B';
             } else {
-                leftContent = await this.plugin.getVersionContent(this.file.path, this.versionId);
-                rightContent = await this.app.vault.read(this.file);
+                this.leftContent = await this.plugin.getVersionContent(this.file.path, this.versionId);
+                this.rightContent = await this.app.vault.read(this.file);
                 
                 const versions = await this.plugin.getAllVersions(this.file.path);
                 const version = versions.find(v => v.id === this.versionId);
@@ -2187,20 +2387,41 @@ class DiffModal extends Modal {
             return;
         }
 
+        // 精简的差异信息横幅
+        const infoBanner = contentEl.createEl('div', { cls: 'diff-info-banner-compact' });
+        this.updateCompactDiffInfo(infoBanner);
+
         const diffContainer = contentEl.createEl('div', { cls: 'diff-container' });
 
         const renderDiff = () => {
             diffContainer.empty();
             this.diffElements = [];
             this.currentDiffIndex = 0;
-            this.totalDiffs = 0; 
+            this.totalDiffs = 0;
             
-            const granularity = granularitySelect.value as 'char' | 'word' | 'line';
+            // 只使用行级对比
+            const granularity = 'line';
+            
+            // 处理空白字符
+            let leftProcessed = this.leftContent;
+            let rightProcessed = this.rightContent;
+            
+            if (this.ignoreWhitespace) {
+                leftProcessed = this.leftContent.replace(/\s+/g, ' ').trim();
+                rightProcessed = this.rightContent.replace(/\s+/g, ' ').trim();
+            }
             
             if (modeSelect.value === 'unified') {
-                this.renderUnifiedDiff(diffContainer, leftContent, rightContent, granularity);
+                this.renderUnifiedDiff(diffContainer, leftProcessed, rightProcessed, granularity);
             } else {
-                this.renderSplitDiff(diffContainer, leftContent, rightContent, granularity, leftLabel, rightLabel);
+                this.renderSplitDiff(diffContainer, leftProcessed, rightProcessed, granularity, leftLabel, rightLabel);
+            }
+
+            // 应用换行设置
+            if (this.wrapLines) {
+                diffContainer.addClass('diff-wrap-lines');
+            } else {
+                diffContainer.removeClass('diff-wrap-lines');
             }
 
             this.totalDiffs = this.diffElements.length;
@@ -2208,18 +2429,22 @@ class DiffModal extends Modal {
                 statsEl.setText(`${this.currentDiffIndex + 1} / ${this.totalDiffs}`);
                 prevBtn.disabled = false;
                 nextBtn.disabled = this.totalDiffs === 1;
+                firstDiffBtn.disabled = false;
+                lastDiffBtn.disabled = this.totalDiffs === 1;
                 setTimeout(() => this.scrollToDiff(), 100);
             } else {
-                statsEl.setText(leftContent === rightContent ? '内容相同' : '无差异');
+                statsEl.setText(leftProcessed === rightProcessed ? '✅ 相同' : '📊 无差异');
                 prevBtn.disabled = true;
                 nextBtn.disabled = true;
+                firstDiffBtn.disabled = true;
+                lastDiffBtn.disabled = true;
             }
-        };
 
-        granularitySelect.addEventListener('change', () => {
-            this.collapsedSections.clear();
-            renderDiff();
-        });
+            this.updateCompactDiffInfo(infoBanner);
+            
+            // 通知侧边栏刷新
+            this.plugin.refreshVersionHistoryView();
+        };
         
         modeSelect.addEventListener('change', () => {
             this.collapsedSections.clear();
@@ -2233,6 +2458,7 @@ class DiffModal extends Modal {
                 statsEl.setText(`${this.currentDiffIndex + 1} / ${this.totalDiffs}`);
                 prevBtn.disabled = this.currentDiffIndex === 0;
                 nextBtn.disabled = false;
+                firstDiffBtn.disabled = this.currentDiffIndex === 0;
             }
         });
 
@@ -2243,9 +2469,35 @@ class DiffModal extends Modal {
                 statsEl.setText(`${this.currentDiffIndex + 1} / ${this.totalDiffs}`);
                 prevBtn.disabled = false;
                 nextBtn.disabled = this.currentDiffIndex >= this.totalDiffs - 1;
+                lastDiffBtn.disabled = this.currentDiffIndex >= this.totalDiffs - 1;
             }
         });
 
+        firstDiffBtn.addEventListener('click', () => {
+            if (this.currentDiffIndex > 0) {
+                this.currentDiffIndex = 0;
+                this.scrollToDiff();
+                statsEl.setText(`${this.currentDiffIndex + 1} / ${this.totalDiffs}`);
+                prevBtn.disabled = true;
+                nextBtn.disabled = false;
+                firstDiffBtn.disabled = true;
+                lastDiffBtn.disabled = false;
+            }
+        });
+
+        lastDiffBtn.addEventListener('click', () => {
+            if (this.currentDiffIndex < this.totalDiffs - 1) {
+                this.currentDiffIndex = this.totalDiffs - 1;
+                this.scrollToDiff();
+                statsEl.setText(`${this.currentDiffIndex + 1} / ${this.totalDiffs}`);
+                prevBtn.disabled = false;
+                nextBtn.disabled = true;
+                firstDiffBtn.disabled = false;
+                lastDiffBtn.disabled = true;
+            }
+        });
+
+        // 键盘快捷键
         this.scope.register([], 'ArrowUp', () => {
             if (!prevBtn.disabled) prevBtn.click();
             return false;
@@ -2256,25 +2508,243 @@ class DiffModal extends Modal {
             return false;
         });
 
+        this.scope.register(['Ctrl'], 'f', (evt) => {
+            evt.preventDefault();
+            this.showSearchBox();
+            return false;
+        });
+
+        this.scope.register(['Mod'], 'f', (evt) => {
+            evt.preventDefault();
+            this.showSearchBox();
+            return false;
+        });
+
         renderDiff();
     }
 
+    updateCompactDiffInfo(container: HTMLElement) {
+        container.empty();
+        
+        const diffResult = Diff.diffLines(this.leftContent, this.rightContent);
+        let addedLines = 0;
+        let removedLines = 0;
+        let changedLines = 0;
+        
+        for (const part of diffResult) {
+            const lineCount = part.value.split('\n').length - 1;
+            if (part.added) {
+                addedLines += lineCount;
+                changedLines += lineCount;
+            } else if (part.removed) {
+                removedLines += lineCount;
+                changedLines += lineCount;
+            }
+        }
+        
+        const totalLines = this.leftContent.split('\n').length;
+        const changePercent = totalLines > 0 ? ((changedLines / totalLines) * 100).toFixed(1) : '0';
+        
+        container.createEl('span', { text: `📊 总行数: ${totalLines}`, cls: 'diff-info-item' });
+        container.createEl('span', { text: `+${addedLines}`, cls: 'diff-info-added' });
+        container.createEl('span', { text: `-${removedLines}`, cls: 'diff-info-removed' });
+        container.createEl('span', { text: `~${changedLines}`, cls: 'diff-info-changed' });
+        container.createEl('span', { text: `变化率: ${changePercent}%`, cls: 'diff-info-percent' });
+    }
+
+    showDetailedStats() {
+        const diffResult = Diff.diffLines(this.leftContent, this.rightContent);
+        let addedLines = 0;
+        let removedLines = 0;
+        let addedChars = 0;
+        let removedChars = 0;
+        
+        for (const part of diffResult) {
+            if (part.added) {
+                addedLines += part.value.split('\n').length - 1;
+                addedChars += part.value.length;
+            } else if (part.removed) {
+                removedLines += part.value.split('\n').length - 1;
+                removedChars += part.value.length;
+            }
+        }
+        
+        const leftLines = this.leftContent.split('\n').length;
+        const rightLines = this.rightContent.split('\n').length;
+        const similarity = this.calculateSimilarity(this.leftContent, this.rightContent);
+        
+        new Notice(
+            '📊 详细统计\n\n' +
+            `左侧版本: ${leftLines} 行, ${this.leftContent.length} 字符\n` +
+            `右侧版本: ${rightLines} 行, ${this.rightContent.length} 字符\n\n` +
+            `新增: ${addedLines} 行, ${addedChars} 字符\n` +
+            `删除: ${removedLines} 行, ${removedChars} 字符\n` +
+            `相似度: ${similarity.toFixed(1)}%\n` +
+            `差异块: ${this.totalDiffs} 个`,
+            10000
+        );
+    }
+
+    calculateSimilarity(text1: string, text2: string): number {
+        const len1 = text1.length;
+        const len2 = text2.length;
+        const maxLen = Math.max(len1, len2);
+        
+        if (maxLen === 0) return 100;
+        
+        let matches = 0;
+        const minLen = Math.min(len1, len2);
+        
+        for (let i = 0; i < minLen; i++) {
+            if (text1[i] === text2[i]) matches++;
+        }
+        
+        return (matches / maxLen) * 100;
+    }
+
+    showSearchBox() {
+        const searchContainer = this.containerEl.createEl('div', { cls: 'diff-search-container' });
+        
+        const searchInput = searchContainer.createEl('input', {
+            type: 'text',
+            placeholder: '搜索差异内容...',
+            cls: 'diff-search-input'
+        });
+        
+        const searchResults = searchContainer.createEl('span', { cls: 'diff-search-results' });
+        const closeBtn = searchContainer.createEl('button', { text: '×', cls: 'diff-search-close' });
+        
+        let searchMatches: HTMLElement[] = [];
+        let currentMatch = 0;
+        
+        searchInput.addEventListener('input', () => {
+            const query = searchInput.value.toLowerCase();
+            
+            // 清除之前的高亮
+            searchMatches.forEach(el => el.removeClass('diff-search-match'));
+            searchMatches = [];
+            currentMatch = 0;
+            
+            if (query.length < 2) {
+                searchResults.setText('');
+                return;
+            }
+            
+            // 搜索差异内容
+            this.diffElements.forEach(el => {
+                const text = el.textContent?.toLowerCase() || '';
+                if (text.includes(query)) {
+                    el.addClass('diff-search-match');
+                    searchMatches.push(el);
+                }
+            });
+            
+            if (searchMatches.length > 0) {
+                searchResults.setText(`${currentMatch + 1} / ${searchMatches.length}`);
+                searchMatches[0].addClass('diff-search-current');
+                searchMatches[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+            } else {
+                searchResults.setText('无结果');
+            }
+        });
+        
+        searchInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                if (searchMatches.length > 0) {
+                    searchMatches[currentMatch].removeClass('diff-search-current');
+                    currentMatch = (currentMatch + 1) % searchMatches.length;
+                    searchMatches[currentMatch].addClass('diff-search-current');
+                    searchMatches[currentMatch].scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    searchResults.setText(`${currentMatch + 1} / ${searchMatches.length}`);
+                }
+            } else if (e.key === 'Escape') {
+                searchContainer.remove();
+            }
+        });
+        
+        closeBtn.addEventListener('click', () => {
+            searchMatches.forEach(el => {
+                el.removeClass('diff-search-match');
+                el.removeClass('diff-search-current');
+            });
+            searchContainer.remove();
+        });
+        
+        const toolbar = this.containerEl.querySelector('.diff-toolbar');
+        if (toolbar) {
+            toolbar.insertAdjacentElement('afterend', searchContainer);
+        }
+        
+        searchInput.focus();
+    }
+
+    async exportDiffReport() {
+        try {
+            const diffResult = Diff.diffLines(this.leftContent, this.rightContent);
+            let report = `# 版本差异报告\n\n`;
+            report += `**文件**: ${this.file.path}\n`;
+            report += `**生成时间**: ${new Date().toLocaleString('zh-CN')}\n\n`;
+            
+            const versions = await this.plugin.getAllVersions(this.file.path);
+            const leftVersion = versions.find(v => v.id === this.versionId);
+            
+            if (leftVersion) {
+                report += `**对比版本**: ${this.plugin.formatTime(leftVersion.timestamp)}\n`;
+            }
+            
+            if (this.secondVersionId) {
+                const rightVersion = versions.find(v => v.id === this.secondVersionId);
+                if (rightVersion) {
+                    report += `**目标版本**: ${this.plugin.formatTime(rightVersion.timestamp)}\n`;
+                }
+            } else {
+                report += `**目标版本**: 当前文件\n`;
+            }
+            
+            report += `\n## 统计信息\n\n`;
+            
+            let addedLines = 0, removedLines = 0, unchangedLines = 0;
+            for (const part of diffResult) {
+                const lineCount = part.value.split('\n').length - 1;
+                if (part.added) addedLines += lineCount;
+                else if (part.removed) removedLines += lineCount;
+                else unchangedLines += lineCount;
+            }
+            
+            report += `- 新增行数: ${addedLines}\n`;
+            report += `- 删除行数: ${removedLines}\n`;
+            report += `- 未变化行数: ${unchangedLines}\n`;
+            report += `- 总行数: ${addedLines + removedLines + unchangedLines}\n\n`;
+            
+            report += `## 差异内容\n\n`;
+            report += `\`\`\`diff\n`;
+            
+            for (const part of diffResult) {
+                const prefix = part.added ? '+' : part.removed ? '-' : ' ';
+                const lines = part.value.split('\n');
+                lines.forEach((line, idx) => {
+                    if (idx < lines.length - 1) {
+                        report += `${prefix} ${line}\n`;
+                    }
+                });
+            }
+            
+            report += `\`\`\`\n`;
+            
+            const fileName = `diff_report_${Date.now()}.md`;
+            await this.app.vault.create(fileName, report);
+            new Notice(`✅ 差异报告已导出: ${fileName}`);
+        } catch (error) {
+            console.error('导出差异报告失败:', error);
+            new Notice('❌ 导出失败');
+        }
+    }
+
     renderUnifiedDiff(container: HTMLElement, left: string, right: string, granularity: 'char' | 'word' | 'line') {
-        let diffResult;
-        
-        if (granularity === 'char') {
-            diffResult = Diff.diffChars(left, right);
-        } else if (granularity === 'word') {
-            diffResult = Diff.diffWords(left, right);
-        } else {
-            diffResult = Diff.diffLines(left, right);
-        }
-        
-        if (granularity === 'line') {
-            this.renderLineDiff(container, diffResult, 'unified');
-        } else {
-            this.renderInlineDiff(container, diffResult, 'unified');
-        }
+        // 只使用行级对比
+        const diffResult = Diff.diffLines(left, right);
+        this.renderLineDiff(container, diffResult, 'unified');
     }
 
     renderLineDiff(container: HTMLElement, diffResult: any[], mode: 'unified' | 'split') {
@@ -2348,10 +2818,12 @@ class DiffModal extends Modal {
                 if (group.lines.length > this.contextLines * 2) {
                     const collapsed = this.collapsedSections.has(sectionIndex);
                     
+                    // 显示前面的上下文行
                     for (let i = 0; i < this.contextLines; i++) {
                         this.renderDiffLine(container, group.lines[i], mode);
                     }
                     
+                    // 折叠按钮
                     const collapseBtn = container.createEl('div', { 
                         cls: 'diff-collapse-btn',
                         text: collapsed ? 
@@ -2366,15 +2838,22 @@ class DiffModal extends Modal {
                         } else {
                             this.collapsedSections.add(currentSectionIndex);
                         }
-                        this.renderUnifiedDiff(container.parentElement as HTMLElement, '', '', 'line');
+                        // 重新渲染
+                        const diffContainer = container.parentElement;
+                        if (diffContainer) {
+                            const granularity = this.containerEl.querySelector('.diff-select') as HTMLSelectElement;
+                            this.renderUnifiedDiff(diffContainer, this.leftContent, this.rightContent, granularity?.value as any || 'line');
+                        }
                     });
                     
+                    // 显示中间的折叠内容
                     if (!collapsed) {
                         for (let i = this.contextLines; i < group.lines.length - this.contextLines; i++) {
                             this.renderDiffLine(container, group.lines[i], mode);
                         }
                     }
                     
+                    // 显示后面的上下文行
                     for (let i = Math.max(this.contextLines, group.lines.length - this.contextLines); i < group.lines.length; i++) {
                         this.renderDiffLine(container, group.lines[i], mode);
                     }
@@ -2384,6 +2863,7 @@ class DiffModal extends Modal {
                 }
             }
             
+            // 渲染所有行
             for (const line of group.lines) {
                 this.renderDiffLine(container, line, mode);
             }
@@ -2400,17 +2880,23 @@ class DiffModal extends Modal {
 
         if (line.type === 'added') {
             lineEl.addClass('diff-added');
-            lineEl.createEl('span', { cls: 'line-number', text: String(line.lineNumber) });
+            if (this.showLineNumbers) {
+                lineEl.createEl('span', { cls: 'line-number', text: String(line.lineNumber) });
+            }
             lineEl.createEl('span', { cls: 'diff-marker', text: '+' });
             lineEl.createEl('span', { cls: 'line-content', text: line.content });
         } else if (line.type === 'removed') {
             lineEl.addClass('diff-removed');
-            lineEl.createEl('span', { cls: 'line-number', text: '' });
+            if (this.showLineNumbers) {
+                lineEl.createEl('span', { cls: 'line-number', text: '' });
+            }
             lineEl.createEl('span', { cls: 'diff-marker', text: '-' });
             lineEl.createEl('span', { cls: 'line-content', text: line.content });
         } else {
             lineEl.addClass('diff-context');
-            lineEl.createEl('span', { cls: 'line-number', text: String(line.lineNumber) });
+            if (this.showLineNumbers) {
+                lineEl.createEl('span', { cls: 'line-number', text: String(line.lineNumber) });
+            }
             lineEl.createEl('span', { cls: 'diff-marker', text: ' ' });
             lineEl.createEl('span', { cls: 'line-content', text: line.content });
         }
@@ -2496,21 +2982,9 @@ class DiffModal extends Modal {
         const leftContent = leftPanel.createEl('div', { cls: 'diff-content' });
         const rightContent = rightPanel.createEl('div', { cls: 'diff-content' });
 
-        let diffResult;
-        
-        if (granularity === 'char') {
-            diffResult = Diff.diffChars(left, right);
-        } else if (granularity === 'word') {
-            diffResult = Diff.diffWords(left, right);
-        } else {
-            diffResult = Diff.diffLines(left, right);
-        }
-        
-        if (granularity === 'line') {
-            this.renderSplitLineDiff(leftContent, rightContent, diffResult);
-        } else {
-            this.renderSplitInlineDiff(leftContent, rightContent, diffResult);
-        }
+        // 只使用行级对比
+        const diffResult = Diff.diffLines(left, right);
+        this.renderSplitLineDiff(leftContent, rightContent, diffResult);
 
         let isScrolling = false;
         
@@ -2706,11 +3180,26 @@ class DiffModal extends Modal {
 
         const element = this.diffElements[this.currentDiffIndex];
         
+        // 移除所有当前高亮
         this.diffElements.forEach(el => el.removeClass('diff-current'));
         
+        // 添加当前高亮
         element.addClass('diff-current');
         
-        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        // 滚动到视图中央
+        element.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+        
+        // 确保元素可见
+        setTimeout(() => {
+            const rect = element.getBoundingClientRect();
+            const container = this.containerEl.querySelector('.diff-container');
+            if (container) {
+                const containerRect = container.getBoundingClientRect();
+                if (rect.top < containerRect.top || rect.bottom > containerRect.bottom) {
+                    element.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+                }
+            }
+        }, 100);
     }
 
     copyDiffToClipboard() {
@@ -2865,6 +3354,23 @@ class VersionControlSettingTab extends PluginSettingTab {
         containerEl.createEl('h3', { text: '⚙️ 基础设置' });
 
         new Setting(containerEl)
+            .setName('启用状态栏快速对比')
+            .setDesc('点击状态栏可快速对比当前文件与最新版本')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.enableStatusBarDiff)
+                .onChange(async (value) => {
+                    this.plugin.settings.enableStatusBarDiff = value;
+                    await this.plugin.saveSettings();
+                    
+                    if (value) {
+                        this.plugin.statusBarItem.addClass('version-control-statusbar-clickable');
+                        new Notice('状态栏快速对比已启用，点击状态栏可快速对比');
+                    } else {
+                        this.plugin.statusBarItem.removeClass('version-control-statusbar-clickable');
+                    }
+                }));
+
+        new Setting(containerEl)
             .setName('版本存储路径')
             .setDesc('指定版本数据的存储位置(相对于库根目录)')
             .addText(text => text
@@ -2971,14 +3477,14 @@ class VersionControlSettingTab extends PluginSettingTab {
                 }));
 
         new Setting(containerEl)
-            .setName('保存延迟 (分钟)')
+            .setName('保存延迟 (秒)')
             .setDesc('修改后等待多久才保存,避免频繁创建版本')
             .addSlider(slider => slider
-                .setLimits(1, 10, 0.5)
-                .setValue(this.plugin.settings.autoSaveDelay / 60)
+                .setLimits(30, 600, 30)
+                .setValue(this.plugin.settings.autoSaveDelay)
                 .setDynamicTooltip()
                 .onChange(async (value) => {
-                    this.plugin.settings.autoSaveDelay = Math.round(value * 60);
+                    this.plugin.settings.autoSaveDelay = value;
                     await this.plugin.saveSettings();
                 }));
 
