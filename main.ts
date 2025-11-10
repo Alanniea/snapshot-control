@@ -2165,7 +2165,7 @@ class DiffModal extends Modal {
     leftContent: string = '';
     rightContent: string = '';
     currentGranularity: 'char' | 'word' | 'line';
-    showOnlyChanges: boolean = false; // <-- 新增状态
+    showOnlyChanges: boolean = false;
 
     constructor(app: App, plugin: VersionControlPlugin, file: TFile, versionId: string, secondVersionId?: string) {
         super(app);
@@ -2293,8 +2293,7 @@ class DiffModal extends Modal {
             whitespaceBtn.toggleClass('active', this.ignoreWhitespace);
             renderDiff();
         });
-
-        // ================== 新增按钮 START ==================
+        
         const showOnlyChangesBtn = viewGroup.createEl('button', {
             text: '仅变更',
             cls: this.showOnlyChanges ? 'active' : '',
@@ -2308,7 +2307,6 @@ class DiffModal extends Modal {
             showOnlyChangesBtn.toggleClass('active', this.showOnlyChanges);
             renderDiff();
         });
-        // ================== 新增按钮 END ==================
         
         const granularitySelect = viewGroup.createEl('select', {
             cls: 'diff-select',
@@ -2865,15 +2863,13 @@ class DiffModal extends Modal {
             groups.push({ type: currentType!, lines: currentGroup, startLine: groupStartLine });
         }
 
-        // ================== 修改逻辑 START ==================
         let groupsToRender = groups;
         if (this.showOnlyChanges) {
             groupsToRender = groups.filter(g => g.type === 'diff');
         }
-        // ================== 修改逻辑 END ==================
 
         let sectionIndex = 0;
-        for (const group of groupsToRender) { // <-- 使用修改后的 groupsToRender
+        for (const group of groupsToRender) {
             if (group.type === 'context' && !this.showContext) {
                 if (group.lines.length > this.contextLines * 2) {
                     const collapsed = this.collapsedSections.has(sectionIndex);
@@ -3006,36 +3002,32 @@ class DiffModal extends Modal {
             spans: currentLineSpans 
         });
 
-        // ================== 修改逻辑 START ==================
         const linesToRender = this.showOnlyChanges ? lines.filter(l => l.hasChange) : lines;
-        // ================== 修改逻辑 END ==================
 
-        for (const line of linesToRender) { // <-- 使用修改后的 linesToRender
-            if (this.showContext || line.hasChange) {
-                if (this.showLineNumbers) {
-                    lineNumbersDiv.createEl('div', { 
-                        text: String(line.number), 
-                        cls: 'line-number' 
-                    });
-                }
+        for (const line of linesToRender) {
+            if (this.showLineNumbers) {
+                lineNumbersDiv.createEl('div', { 
+                    text: String(line.number), 
+                    cls: 'line-number' 
+                });
+            }
 
-                const lineDiv = contentDiv.createEl('div', { cls: 'diff-content-line' });
+            const lineDiv = contentDiv.createEl('div', { cls: 'diff-content-line' });
 
-                if (this.wrapLines) {
-                    lineDiv.style.whiteSpace = 'pre-wrap';
-                    lineDiv.style.wordBreak = 'break-all';
-                }
+            if (this.wrapLines) {
+                lineDiv.style.whiteSpace = 'pre-wrap';
+                lineDiv.style.wordBreak = 'break-all';
+            }
 
-                if (line.spans.length === 0) {
-                    lineDiv.innerHTML = '&nbsp;';
-                } else {
-                    line.spans.forEach(span => {
-                        lineDiv.appendChild(span);
-                        if (span.dataset.diffIndex !== undefined) {
-                            this.diffElements.push(span);
-                        }
-                    });
-                }
+            if (line.spans.length === 0) {
+                lineDiv.innerHTML = '&nbsp;';
+            } else {
+                line.spans.forEach(span => {
+                    lineDiv.appendChild(span);
+                    if (span.dataset.diffIndex !== undefined) {
+                        this.diffElements.push(span);
+                    }
+                });
             }
         }
     }
@@ -3083,11 +3075,12 @@ class DiffModal extends Modal {
         let diffIndex = 0;
 
         for (const part of diffResult) {
-            // ================== 修改逻辑 START ==================
             if (this.showOnlyChanges && !part.added && !part.removed) {
+                const lineCount = (part.value.match(/\n/g) || []).length;
+                leftLine += lineCount;
+                rightLine += lineCount;
                 continue;
             }
-            // ================== 修改逻辑 END ==================
 
             if (!this.showContext && !part.added && !part.removed) {
                 const lines = part.value.split('\n');
@@ -3251,48 +3244,44 @@ class DiffModal extends Modal {
             rightSpans: rightSpans
         });
 
-        // ================== 修改逻辑 START ==================
         const linesToRender = this.showOnlyChanges ? lines.filter(l => l.hasChange) : lines;
-        // ================== 修改逻辑 END ==================
 
-        for (const line of linesToRender) { // <-- 使用修改后的 linesToRender
-            if (this.showContext || line.hasChange) {
-                if (this.showLineNumbers) {
-                    leftLineNumbers.createEl('div', { text: String(line.left), cls: 'line-number' });
-                    rightLineNumbers.createEl('div', { text: String(line.right), cls: 'line-number' });
-                }
+        for (const line of linesToRender) {
+            if (this.showLineNumbers) {
+                leftLineNumbers.createEl('div', { text: String(line.left), cls: 'line-number' });
+                rightLineNumbers.createEl('div', { text: String(line.right), cls: 'line-number' });
+            }
 
-                const leftLineDiv = leftContentDiv.createEl('div', { cls: 'diff-content-line' });
-                const rightLineDiv = rightContentDiv.createEl('div', { cls: 'diff-content-line' });
+            const leftLineDiv = leftContentDiv.createEl('div', { cls: 'diff-content-line' });
+            const rightLineDiv = rightContentDiv.createEl('div', { cls: 'diff-content-line' });
 
-                if (this.wrapLines) {
-                    leftLineDiv.style.whiteSpace = 'pre-wrap';
-                    leftLineDiv.style.wordBreak = 'break-all';
-                    rightLineDiv.style.whiteSpace = 'pre-wrap';
-                    rightLineDiv.style.wordBreak = 'break-all';
-                }
+            if (this.wrapLines) {
+                leftLineDiv.style.whiteSpace = 'pre-wrap';
+                leftLineDiv.style.wordBreak = 'break-all';
+                rightLineDiv.style.whiteSpace = 'pre-wrap';
+                rightLineDiv.style.wordBreak = 'break-all';
+            }
 
-                if (line.leftSpans.length === 0) {
-                    leftLineDiv.innerHTML = '&nbsp;';
-                } else {
-                    line.leftSpans.forEach(span => {
-                        leftLineDiv.appendChild(span);
-                        if (span.dataset.diffIndex !== undefined) {
-                            this.diffElements.push(span);
-                        }
-                    });
-                }
+            if (line.leftSpans.length === 0) {
+                leftLineDiv.innerHTML = '&nbsp;';
+            } else {
+                line.leftSpans.forEach(span => {
+                    leftLineDiv.appendChild(span);
+                    if (span.dataset.diffIndex !== undefined) {
+                        this.diffElements.push(span);
+                    }
+                });
+            }
 
-                if (line.rightSpans.length === 0) {
-                    rightLineDiv.innerHTML = '&nbsp;';
-                } else {
-                    line.rightSpans.forEach(span => {
-                        rightLineDiv.appendChild(span);
-                        if (span.dataset.diffIndex !== undefined) {
-                            this.diffElements.push(span);
-                        }
-                    });
-                }
+            if (line.rightSpans.length === 0) {
+                rightLineDiv.innerHTML = '&nbsp;';
+            } else {
+                line.rightSpans.forEach(span => {
+                    rightLineDiv.appendChild(span);
+                    if (span.dataset.diffIndex !== undefined) {
+                        this.diffElements.push(span);
+                    }
+                });
             }
         }
     }
