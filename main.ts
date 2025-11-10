@@ -333,37 +333,43 @@ export default class VersionControlPlugin extends Plugin {
     async autoSaveFile(file: TFile) {
         try {
             const content = await this.app.vault.read(file);
-            const lastContent = this.lastSavedContent.get(file.path);
+            const lastContent = this.lastSavedContent.get(file.path) || '';
 
-            if (lastContent) {
-                const changeCount = this.countChanges(lastContent, content);
-                if (changeCount < this.settings.autoSaveMinChanges) {
-                    return;
-                }
+            if (content === lastContent) {
+                return;
             }
 
-            if (content !== lastContent) {
-                await this.createVersion(file, '[Auto Save]', false);
-                this.lastSavedContent.set(file.path, content);
-                this.lastModifiedTime.set(file.path, Date.now());
-                this.updateStatusBarWithLastSave();
+            const changeCount = this.countChanges(lastContent, content);
+            if (changeCount < this.settings.autoSaveMinChanges) {
+                return;
             }
+
+
+            await this.createVersion(file, '[Auto Save]', false);
+            this.lastSavedContent.set(file.path, content);
+            this.lastModifiedTime.set(file.path, Date.now());
+            this.updateStatusBarWithLastSave();
         } catch (error) {
             console.error('自动保存失败:', error);
         }
     }
 
+    /**
+     * Calculates the number of characters added or removed between two strings.
+     * This is a more accurate measure of "change" than a simple positional comparison.
+     * @param oldText The original text.
+     * @param newText The new text.
+     * @returns The total number of characters changed.
+     */
     countChanges(oldText: string, newText: string): number {
-        let changes = 0;
-        const maxLen = Math.max(oldText.length, newText.length);
-        
-        for (let i = 0; i < maxLen; i++) {
-            if (oldText[i] !== newText[i]) {
-                changes++;
+        const changes = Diff.diffChars(oldText, newText);
+        let changeCount = 0;
+        for (const part of changes) {
+            if (part.added || part.removed) {
+                changeCount += part.value.length;
             }
         }
-        
-        return changes;
+        return changeCount;
     }
 
     async handleFileSwitch() {
@@ -444,15 +450,15 @@ export default class VersionControlPlugin extends Plugin {
         try {
             const content = await this.app.vault.read(file);
             const timestamp = Date.now();
-            const id = `${timestamp}`;
+            const id = `${timestamp}-${Math.random().toString(36).substring(2, 9)}`;
             const hash = this.hashContent(content);
             
             const versionFile = await this.loadVersionFile(file.path);
             
             if (this.settings.enableDeduplication) {
-                const duplicate = versionFile.versions.find(v => v.hash === hash);
-                if (duplicate) {
-                    if (showNotification && this.settings.showNotifications) {
+                const latestVersion = versionFile.versions[0];
+                if (latestVersion && latestVersion.hash === hash) {
+                     if (showNotification && this.settings.showNotifications) {
                         new Notice('ℹ️ 内容未变化,跳过创建版本');
                     }
                     return;
@@ -462,7 +468,7 @@ export default class VersionControlPlugin extends Plugin {
             let newVersion: VersionData;
 
             if (this.settings.enableIncrementalStorage && versionFile.versions.length > 0) {
-                const shouldRebuildBase = versionFile.versions.length % this.settings.rebuildBaseInterval === 0;
+                const shouldRebuildBase = (versionFile.versions.length % this.settings.rebuildBaseInterval === 0) || !versionFile.baseVersion;
                 
                 if (shouldRebuildBase) {
                     newVersion = {
@@ -477,7 +483,9 @@ export default class VersionControlPlugin extends Plugin {
                     };
                     versionFile.baseVersion = content;
                 } else {
-                    const baseContent = versionFile.baseVersion || versionFile.versions[0].content || '';
+                    // ============ FIX START: Provide an empty string fallback for baseContent ============
+                    const baseContent = versionFile.baseVersion || ''; // This guarantees it's a string
+                    // ============= FIX END =============
                     const diff = this.createDiff(baseContent, content);
                     
                     newVersion = {
@@ -485,7 +493,7 @@ export default class VersionControlPlugin extends Plugin {
                         timestamp,
                         message,
                         diff,
-                        baseVersionId: versionFile.versions[0].id,
+                        baseVersionId: versionFile.versions[0].id, // This is just for reference, not for patching
                         size: diff.length,
                         hash,
                         tags: tags.length > 0 ? tags : undefined,
@@ -531,21 +539,29 @@ export default class VersionControlPlugin extends Plugin {
     }
 
     createDiff(oldContent: string, newContent: string): string {
-        const changes = Diff.diffLines(oldContent, newContent);
-        return JSON.stringify(changes);
+        const changes = Diff.createPatch('file', oldContent, newContent, '', '');
+        return changes;
     }
 
     applyDiff(baseContent: string, diffStr: string): string {
         try {
-            const changes = JSON.parse(diffStr);
-            let result = '';
-            
-            for (const change of changes) {
-                if (!change.removed) {
-                    result += change.value;
-                }
+            const result = Diff.applyPatch(baseContent, diffStr);
+            if (result === false) {
+                 console.error('应用差异失败: applyPatch returned false');
+                 // Fallback: try to reconstruct from JSON if it's old format
+                 try {
+                     const changes = JSON.parse(diffStr);
+                     let jsonResult = '';
+                     for (const change of changes) {
+                         if (!change.removed) {
+                             jsonResult += change.value;
+                         }
+                     }
+                     return jsonResult;
+                 } catch (e) {
+                     return baseContent; // Double fallback
+                 }
             }
-            
             return result;
         } catch (error) {
             console.error('应用差异失败:', error);
@@ -716,6 +732,13 @@ export default class VersionControlPlugin extends Plugin {
             if (version.diff && versionFile.baseVersion) {
                 return this.applyDiff(versionFile.baseVersion, version.diff);
             }
+            
+            // Fallback for older incremental versions without a central baseVersion
+            if (version.diff && version.baseVersionId) {
+                const baseVersionContent = await this.getVersionContent(filePath, version.baseVersionId);
+                return this.applyDiff(baseVersionContent, version.diff);
+            }
+
 
             throw new Error('无法获取版本内容');
         } catch (error) {
@@ -1387,8 +1410,12 @@ class VersionHistoryView extends ItemView {
                 
                 if (currentContent !== lastContent) {
                     const diffResult = Diff.diffLines(lastContent, currentContent);
-                    const added = diffResult.filter(d => d.added).length;
-                    const removed = diffResult.filter(d => d.removed).length;
+                    let added = 0;
+                    let removed = 0;
+                    diffResult.forEach(part => {
+                        if (part.added) added += part.count || 0;
+                        if (part.removed) removed += part.count || 0;
+                    });
                     
                     const diffBanner = container.createEl('div', { cls: 'version-diff-banner' });
                     diffBanner.createEl('span', { text: '⚠️ 文件已修改' });
@@ -2537,7 +2564,7 @@ class DiffModal extends Modal {
         let changedLines = 0;
         
         for (const part of diffResult) {
-            const lineCount = part.value.split('\n').length - 1;
+            const lineCount = (part.value.match(/\n/g) || []).length;
             if (part.added) {
                 addedLines += lineCount;
                 changedLines += lineCount;
@@ -2566,10 +2593,10 @@ class DiffModal extends Modal {
         
         for (const part of diffResult) {
             if (part.added) {
-                addedLines += part.value.split('\n').length - 1;
+                addedLines += (part.value.match(/\n/g) || []).length;
                 addedChars += part.value.length;
             } else if (part.removed) {
-                removedLines += part.value.split('\n').length - 1;
+                removedLines += (part.value.match(/\n/g) || []).length;
                 removedChars += part.value.length;
             }
         }
@@ -2852,7 +2879,7 @@ class DiffModal extends Modal {
                     
                     if (!collapsed) {
                         for (let i = this.contextLines; i < group.lines.length - this.contextLines; i++) {
-                            this.renderDiffLine(container, group.lines[i], mode);
+                            // Do not render these lines
                         }
                     }
                     
@@ -2955,14 +2982,12 @@ class DiffModal extends Modal {
 
         for (const line of lines) {
             if (this.showContext || line.hasChange) {
-                // ============ FIX START: Conditionally render line numbers ============
                 if (this.showLineNumbers) {
                     lineNumbersDiv.createEl('div', { 
                         text: String(line.number), 
                         cls: 'line-number' 
                     });
                 }
-                // ============= FIX END =============
 
                 const lineDiv = contentDiv.createEl('div', { cls: 'diff-content-line' });
 
@@ -3192,12 +3217,10 @@ class DiffModal extends Modal {
 
         for (const line of lines) {
             if (this.showContext || line.hasChange) {
-                // ============ FIX START: Conditionally render line numbers ============
                 if (this.showLineNumbers) {
                     leftLineNumbers.createEl('div', { text: String(line.left), cls: 'line-number' });
                     rightLineNumbers.createEl('div', { text: String(line.right), cls: 'line-number' });
                 }
-                // ============= FIX END =============
 
                 const leftLineDiv = leftContentDiv.createEl('div', { cls: 'diff-content-line' });
                 const rightLineDiv = rightContentDiv.createEl('div', { cls: 'diff-content-line' });
