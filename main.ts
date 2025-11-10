@@ -1337,7 +1337,7 @@ class VersionHistoryView extends ItemView {
         });
 
         const starFilterBtn = actions.createEl('button', { 
-            text: this.showStarredOnly ? '⭐ 已筛选' : '⭐',
+            text: this.showStarredOnly ? '已筛选星标' : '筛选星标',
             cls: this.showStarredOnly ? 'mod-cta' : '',
             attr: { title: '仅显示星标版本' }
         });
@@ -1356,7 +1356,7 @@ class VersionHistoryView extends ItemView {
         });
 
         const moreBtn = actions.createEl('button', { 
-            text: '⋮',
+            text: '更多',
             attr: { title: '更多操作' }
         });
         moreBtn.addEventListener('click', (e) => {
@@ -1597,7 +1597,7 @@ class VersionHistoryView extends ItemView {
             
             if (this.plugin.settings.enableQuickPreview) {
                 const previewBtn = actions.createEl('button', { 
-                    text: '👁',
+                    text: '预览',
                     cls: 'version-btn',
                     attr: { title: '快速预览' }
                 });
@@ -1623,7 +1623,7 @@ class VersionHistoryView extends ItemView {
             });
 
             const moreBtn = actions.createEl('button', { 
-                text: '⋮',
+                text: '更多',
                 cls: 'version-btn'
             });
             moreBtn.addEventListener('click', (e) => {
@@ -2186,7 +2186,7 @@ class DiffModal extends Modal {
         
         const navGroup = toolbar.createEl('div', { cls: 'diff-nav-group' });
         const prevBtn = navGroup.createEl('button', { 
-            text: '⬆',
+            text: '上一个',
             attr: { 
                 title: '上一个差异',
                 'aria-label': '上一个差异 (↑)'
@@ -2194,7 +2194,7 @@ class DiffModal extends Modal {
         });
         const statsEl = navGroup.createEl('span', { cls: 'diff-stats' });
         const nextBtn = navGroup.createEl('button', { 
-            text: '⬇',
+            text: '下一个',
             attr: { 
                 title: '下一个差异',
                 'aria-label': '下一个差异 (↓)'
@@ -2202,14 +2202,14 @@ class DiffModal extends Modal {
         });
         
         const firstDiffBtn = navGroup.createEl('button', { 
-            text: '⇈',
+            text: '第一个',
             attr: { 
                 title: '第一个差异',
                 'aria-label': '跳转到第一个差异'
             } 
         });
         const lastDiffBtn = navGroup.createEl('button', { 
-            text: '⇊',
+            text: '最后一个',
             attr: { 
                 title: '最后一个差异',
                 'aria-label': '跳转到最后一个差异'
@@ -2219,7 +2219,7 @@ class DiffModal extends Modal {
         const viewGroup = toolbar.createEl('div', { cls: 'diff-view-group' });
         
         const contextToggleBtn = viewGroup.createEl('button', { 
-            text: '📄',
+            text: '上下文',
             cls: 'diff-context-toggle',
             attr: { 
                 title: '显示/隐藏上下文',
@@ -2252,7 +2252,7 @@ class DiffModal extends Modal {
         });
 
         const lineNumberBtn = viewGroup.createEl('button', { 
-            text: '🔢',
+            text: '行号',
             cls: this.showLineNumbers ? 'active' : '',
             attr: { 
                 title: '显示/隐藏行号',
@@ -2267,7 +2267,7 @@ class DiffModal extends Modal {
 
         this.wrapLines = true;
         const wrapBtn = viewGroup.createEl('button', { 
-            text: '↩️',
+            text: '换行',
             cls: 'active',
             attr: { 
                 title: '自动换行',
@@ -2281,7 +2281,7 @@ class DiffModal extends Modal {
         });
 
         const whitespaceBtn = viewGroup.createEl('button', { 
-            text: '␣',
+            text: '忽略空白',
             cls: this.ignoreWhitespace ? 'active' : '',
             attr: { 
                 title: '忽略空白字符',
@@ -2371,7 +2371,7 @@ class DiffModal extends Modal {
         });
 
         const searchBtn = actionGroup.createEl('button', { 
-            text: '🔍',
+            text: '搜索',
             attr: { 
                 title: '搜索差异内容 (Ctrl+F)',
                 'aria-label': '搜索'
@@ -2382,7 +2382,7 @@ class DiffModal extends Modal {
         });
 
         const statsBtn = actionGroup.createEl('button', { 
-            text: '📈',
+            text: '统计',
             attr: { 
                 title: '显示详细统计',
                 'aria-label': '统计'
@@ -2393,7 +2393,7 @@ class DiffModal extends Modal {
         });
 
         const copyBtn = actionGroup.createEl('button', { 
-            text: '📋', 
+            text: '复制', 
             attr: { 
                 title: '复制差异',
                 'aria-label': '复制'
@@ -2404,7 +2404,7 @@ class DiffModal extends Modal {
         });
 
         const exportBtn = actionGroup.createEl('button', { 
-            text: '💾',
+            text: '导出',
             attr: { 
                 title: '导出差异报告',
                 'aria-label': '导出'
