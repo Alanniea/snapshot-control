@@ -483,9 +483,7 @@ export default class VersionControlPlugin extends Plugin {
                     };
                     versionFile.baseVersion = content;
                 } else {
-                    // ============ FIX START: Provide an empty string fallback for baseContent ============
-                    const baseContent = versionFile.baseVersion || ''; // This guarantees it's a string
-                    // ============= FIX END =============
+                    const baseContent = versionFile.baseVersion || '';
                     const diff = this.createDiff(baseContent, content);
                     
                     newVersion = {
@@ -2167,6 +2165,7 @@ class DiffModal extends Modal {
     leftContent: string = '';
     rightContent: string = '';
     currentGranularity: 'char' | 'word' | 'line';
+    showOnlyChanges: boolean = false; // <-- 新增状态
 
     constructor(app: App, plugin: VersionControlPlugin, file: TFile, versionId: string, secondVersionId?: string) {
         super(app);
@@ -2294,6 +2293,22 @@ class DiffModal extends Modal {
             whitespaceBtn.toggleClass('active', this.ignoreWhitespace);
             renderDiff();
         });
+
+        // ================== 新增按钮 START ==================
+        const showOnlyChangesBtn = viewGroup.createEl('button', {
+            text: '仅变更',
+            cls: this.showOnlyChanges ? 'active' : '',
+            attr: {
+                title: '仅显示有变化的内容',
+                'aria-label': '仅显示变更'
+            }
+        });
+        showOnlyChangesBtn.addEventListener('click', () => {
+            this.showOnlyChanges = !this.showOnlyChanges;
+            showOnlyChangesBtn.toggleClass('active', this.showOnlyChanges);
+            renderDiff();
+        });
+        // ================== 新增按钮 END ==================
         
         const granularitySelect = viewGroup.createEl('select', {
             cls: 'diff-select',
@@ -2850,8 +2865,15 @@ class DiffModal extends Modal {
             groups.push({ type: currentType!, lines: currentGroup, startLine: groupStartLine });
         }
 
+        // ================== 修改逻辑 START ==================
+        let groupsToRender = groups;
+        if (this.showOnlyChanges) {
+            groupsToRender = groups.filter(g => g.type === 'diff');
+        }
+        // ================== 修改逻辑 END ==================
+
         let sectionIndex = 0;
-        for (const group of groups) {
+        for (const group of groupsToRender) { // <-- 使用修改后的 groupsToRender
             if (group.type === 'context' && !this.showContext) {
                 if (group.lines.length > this.contextLines * 2) {
                     const collapsed = this.collapsedSections.has(sectionIndex);
@@ -2984,7 +3006,11 @@ class DiffModal extends Modal {
             spans: currentLineSpans 
         });
 
-        for (const line of lines) {
+        // ================== 修改逻辑 START ==================
+        const linesToRender = this.showOnlyChanges ? lines.filter(l => l.hasChange) : lines;
+        // ================== 修改逻辑 END ==================
+
+        for (const line of linesToRender) { // <-- 使用修改后的 linesToRender
             if (this.showContext || line.hasChange) {
                 if (this.showLineNumbers) {
                     lineNumbersDiv.createEl('div', { 
@@ -3057,6 +3083,12 @@ class DiffModal extends Modal {
         let diffIndex = 0;
 
         for (const part of diffResult) {
+            // ================== 修改逻辑 START ==================
+            if (this.showOnlyChanges && !part.added && !part.removed) {
+                continue;
+            }
+            // ================== 修改逻辑 END ==================
+
             if (!this.showContext && !part.added && !part.removed) {
                 const lines = part.value.split('\n');
                 if (lines[lines.length - 1] === '') lines.pop();
@@ -3219,7 +3251,11 @@ class DiffModal extends Modal {
             rightSpans: rightSpans
         });
 
-        for (const line of lines) {
+        // ================== 修改逻辑 START ==================
+        const linesToRender = this.showOnlyChanges ? lines.filter(l => l.hasChange) : lines;
+        // ================== 修改逻辑 END ==================
+
+        for (const line of linesToRender) { // <-- 使用修改后的 linesToRender
             if (this.showContext || line.hasChange) {
                 if (this.showLineNumbers) {
                     leftLineNumbers.createEl('div', { text: String(line.left), cls: 'line-number' });
