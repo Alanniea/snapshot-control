@@ -66,7 +66,7 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
     maxDays: 30,
     enableMaxDays: false,
     useRelativeTime: false,
-    diffGranularity: 'line',
+    diffGranularity: 'char',
     diffViewMode: 'unified',
     enableDeduplication: true,
     showNotifications: true,
@@ -104,7 +104,6 @@ export default class VersionControlPlugin extends Plugin {
         this.statusBarItem = this.addStatusBarItem();
         this.updateStatusBar();
 
-        // 状态栏点击事件 - 快速对比
         if (this.settings.enableStatusBarDiff) {
             this.statusBarItem.addClass('version-control-statusbar-clickable');
             this.statusBarItem.addEventListener('click', () => {
@@ -574,7 +573,6 @@ export default class VersionControlPlugin extends Plugin {
     cleanupVersionsInMemory(versionFile: VersionFile) {
         let versionsToKeep = versionFile.versions;
 
-        // 保留星标版本
         const starredVersions = versionsToKeep.filter(v => v.starred);
         let nonStarredVersions = versionsToKeep.filter(v => !v.starred);
 
@@ -2136,6 +2134,7 @@ class DiffModal extends Modal {
     highlightSyntax: boolean = false;
     leftContent: string = '';
     rightContent: string = '';
+    currentGranularity: 'char' | 'word' | 'line';
 
     constructor(app: App, plugin: VersionControlPlugin, file: TFile, versionId: string, secondVersionId?: string) {
         super(app);
@@ -2143,6 +2142,7 @@ class DiffModal extends Modal {
         this.file = file;
         this.versionId = versionId;
         this.secondVersionId = secondVersionId;
+        this.currentGranularity = this.plugin.settings.diffGranularity;
     }
 
     async onOpen() {
@@ -2153,7 +2153,6 @@ class DiffModal extends Modal {
 
         const toolbar = contentEl.createEl('div', { cls: 'diff-toolbar' });
         
-        // 导航组
         const navGroup = toolbar.createEl('div', { cls: 'diff-nav-group' });
         const prevBtn = navGroup.createEl('button', { 
             text: '⬆',
@@ -2186,7 +2185,6 @@ class DiffModal extends Modal {
             } 
         });
 
-        // 视图组
         const viewGroup = toolbar.createEl('div', { cls: 'diff-view-group' });
         
         const contextToggleBtn = viewGroup.createEl('button', { 
@@ -2236,7 +2234,6 @@ class DiffModal extends Modal {
             renderDiff();
         });
 
-        // 自动换行默认开启
         this.wrapLines = true;
         const wrapBtn = viewGroup.createEl('button', { 
             text: '↩️',
@@ -2266,7 +2263,23 @@ class DiffModal extends Modal {
             renderDiff();
         });
         
-        // 只保留行级对比
+        const granularitySelect = viewGroup.createEl('select', {
+            cls: 'diff-select',
+            attr: {
+                title: '差异粒度',
+                'aria-label': '差异粒度'
+            }
+        });
+        granularitySelect.createEl('option', { text: '字符', value: 'char' });
+        granularitySelect.createEl('option', { text: '单词', value: 'word' });
+        granularitySelect.createEl('option', { text: '行', value: 'line' });
+        granularitySelect.value = this.currentGranularity;
+        granularitySelect.addEventListener('change', () => {
+            this.currentGranularity = granularitySelect.value as 'char' | 'word' | 'line';
+            this.collapsedSections.clear();
+            renderDiff();
+        });
+
         const modeSelect = viewGroup.createEl('select', { 
             cls: 'diff-select',
             attr: {
@@ -2278,7 +2291,6 @@ class DiffModal extends Modal {
         modeSelect.createEl('option', { text: '左右分栏', value: 'split' });
         modeSelect.value = this.plugin.settings.diffViewMode;
 
-        // 操作组
         const actionGroup = toolbar.createEl('div', { cls: 'diff-action-group' });
         
         const expandAllBtn = actionGroup.createEl('button', { 
@@ -2387,7 +2399,6 @@ class DiffModal extends Modal {
             return;
         }
 
-        // 精简的差异信息横幅
         const infoBanner = contentEl.createEl('div', { cls: 'diff-info-banner-compact' });
         this.updateCompactDiffInfo(infoBanner);
 
@@ -2399,10 +2410,6 @@ class DiffModal extends Modal {
             this.currentDiffIndex = 0;
             this.totalDiffs = 0;
             
-            // 只使用行级对比
-            const granularity = 'line';
-            
-            // 处理空白字符
             let leftProcessed = this.leftContent;
             let rightProcessed = this.rightContent;
             
@@ -2412,12 +2419,11 @@ class DiffModal extends Modal {
             }
             
             if (modeSelect.value === 'unified') {
-                this.renderUnifiedDiff(diffContainer, leftProcessed, rightProcessed, granularity);
+                this.renderUnifiedDiff(diffContainer, leftProcessed, rightProcessed, this.currentGranularity);
             } else {
-                this.renderSplitDiff(diffContainer, leftProcessed, rightProcessed, granularity, leftLabel, rightLabel);
+                this.renderSplitDiff(diffContainer, leftProcessed, rightProcessed, this.currentGranularity, leftLabel, rightLabel);
             }
 
-            // 应用换行设置
             if (this.wrapLines) {
                 diffContainer.addClass('diff-wrap-lines');
             } else {
@@ -2442,7 +2448,6 @@ class DiffModal extends Modal {
 
             this.updateCompactDiffInfo(infoBanner);
             
-            // 通知侧边栏刷新
             this.plugin.refreshVersionHistoryView();
         };
         
@@ -2497,7 +2502,6 @@ class DiffModal extends Modal {
             }
         });
 
-        // 键盘快捷键
         this.scope.register([], 'ArrowUp', () => {
             if (!prevBtn.disabled) prevBtn.click();
             return false;
@@ -2620,7 +2624,6 @@ class DiffModal extends Modal {
         searchInput.addEventListener('input', () => {
             const query = searchInput.value.toLowerCase();
             
-            // 清除之前的高亮
             searchMatches.forEach(el => el.removeClass('diff-search-match'));
             searchMatches = [];
             currentMatch = 0;
@@ -2630,7 +2633,6 @@ class DiffModal extends Modal {
                 return;
             }
             
-            // 搜索差异内容
             this.diffElements.forEach(el => {
                 const text = el.textContent?.toLowerCase() || '';
                 if (text.includes(query)) {
@@ -2742,9 +2744,13 @@ class DiffModal extends Modal {
     }
 
     renderUnifiedDiff(container: HTMLElement, left: string, right: string, granularity: 'char' | 'word' | 'line') {
-        // 只使用行级对比
-        const diffResult = Diff.diffLines(left, right);
-        this.renderLineDiff(container, diffResult, 'unified');
+        if (granularity === 'line') {
+            const diffResult = Diff.diffLines(left, right);
+            this.renderLineDiff(container, diffResult, 'unified');
+        } else {
+            const diffResult = granularity === 'word' ? Diff.diffWords(left, right) : Diff.diffChars(left, right);
+            this.renderInlineDiff(container, diffResult, 'unified');
+        }
     }
 
     renderLineDiff(container: HTMLElement, diffResult: any[], mode: 'unified' | 'split') {
@@ -2818,12 +2824,10 @@ class DiffModal extends Modal {
                 if (group.lines.length > this.contextLines * 2) {
                     const collapsed = this.collapsedSections.has(sectionIndex);
                     
-                    // 显示前面的上下文行
                     for (let i = 0; i < this.contextLines; i++) {
                         this.renderDiffLine(container, group.lines[i], mode);
                     }
                     
-                    // 折叠按钮
                     const collapseBtn = container.createEl('div', { 
                         cls: 'diff-collapse-btn',
                         text: collapsed ? 
@@ -2838,7 +2842,6 @@ class DiffModal extends Modal {
                         } else {
                             this.collapsedSections.add(currentSectionIndex);
                         }
-                        // 重新渲染
                         const diffContainer = container.parentElement;
                         if (diffContainer) {
                             const granularity = this.containerEl.querySelector('.diff-select') as HTMLSelectElement;
@@ -2846,14 +2849,12 @@ class DiffModal extends Modal {
                         }
                     });
                     
-                    // 显示中间的折叠内容
                     if (!collapsed) {
                         for (let i = this.contextLines; i < group.lines.length - this.contextLines; i++) {
                             this.renderDiffLine(container, group.lines[i], mode);
                         }
                     }
                     
-                    // 显示后面的上下文行
                     for (let i = Math.max(this.contextLines, group.lines.length - this.contextLines); i < group.lines.length; i++) {
                         this.renderDiffLine(container, group.lines[i], mode);
                     }
@@ -2863,7 +2864,6 @@ class DiffModal extends Modal {
                 }
             }
             
-            // 渲染所有行
             for (const line of group.lines) {
                 this.renderDiffLine(container, line, mode);
             }
@@ -2935,12 +2935,10 @@ class DiffModal extends Modal {
                     if (part.added) {
                         span.className = 'diff-char-added';
                         span.dataset.diffIndex = String(diffIndex++);
-                        this.diffElements.push(span);
                         currentLineHasChanges = true;
                     } else if (part.removed) {
                         span.className = 'diff-char-removed';
                         span.dataset.diffIndex = String(diffIndex++);
-                        this.diffElements.push(span);
                         currentLineHasChanges = true;
                     }
                     currentLineSpans.push(span);
@@ -2964,7 +2962,12 @@ class DiffModal extends Modal {
                 if (line.spans.length === 0) {
                     lineDiv.innerHTML = '&nbsp;';
                 } else {
-                    lineDiv.innerHTML = line.spans.map(span => span.outerHTML).join('');
+                    line.spans.forEach(span => {
+                        lineDiv.appendChild(span);
+                        if (span.dataset.diffIndex !== undefined) {
+                            this.diffElements.push(span);
+                        }
+                    });
                 }
             }
         }
@@ -2982,9 +2985,13 @@ class DiffModal extends Modal {
         const leftContent = leftPanel.createEl('div', { cls: 'diff-content' });
         const rightContent = rightPanel.createEl('div', { cls: 'diff-content' });
 
-        // 只使用行级对比
-        const diffResult = Diff.diffLines(left, right);
-        this.renderSplitLineDiff(leftContent, rightContent, diffResult);
+        if (granularity === 'line') {
+            const diffResult = Diff.diffLines(left, right);
+            this.renderSplitLineDiff(leftContent, rightContent, diffResult);
+        } else {
+            const diffResult = granularity === 'word' ? Diff.diffWords(left, right) : Diff.diffChars(left, right);
+            this.renderSplitInlineDiff(leftContent, rightContent, diffResult);
+        }
 
         let isScrolling = false;
         
@@ -3124,19 +3131,18 @@ class DiffModal extends Modal {
                 }
 
                 if (lineText) {
-                    const span = document.createElement('span');
-                    span.textContent = lineText;
-
                     if (part.added) {
+                        const span = document.createElement('span');
+                        span.textContent = lineText;
                         span.className = 'diff-char-added';
                         span.dataset.diffIndex = String(diffIndex++);
-                        this.diffElements.push(span);
                         rightSpans.push(span);
                         lineHasChanges = true;
                     } else if (part.removed) {
+                        const span = document.createElement('span');
+                        span.textContent = lineText;
                         span.className = 'diff-char-removed';
                         span.dataset.diffIndex = String(diffIndex++);
-                        this.diffElements.push(span);
                         leftSpans.push(span);
                         lineHasChanges = true;
                     } else {
@@ -3164,11 +3170,29 @@ class DiffModal extends Modal {
             if (this.showContext || line.hasChange) {
                 leftLineNumbers.createEl('div', { text: String(line.left), cls: 'line-number' });
                 const leftLineDiv = leftContentDiv.createEl('div', { cls: 'diff-content-line' });
-                leftLineDiv.innerHTML = line.leftSpans.length > 0 ? line.leftSpans.map(span => span.outerHTML).join('') : '&nbsp;';
+                if (line.leftSpans.length === 0) {
+                    leftLineDiv.innerHTML = '&nbsp;';
+                } else {
+                    line.leftSpans.forEach(span => {
+                        leftLineDiv.appendChild(span);
+                        if (span.dataset.diffIndex !== undefined) {
+                            this.diffElements.push(span);
+                        }
+                    });
+                }
 
                 rightLineNumbers.createEl('div', { text: String(line.right), cls: 'line-number' });
                 const rightLineDiv = rightContentDiv.createEl('div', { cls: 'diff-content-line' });
-                rightLineDiv.innerHTML = line.rightSpans.length > 0 ? line.rightSpans.map(span => span.outerHTML).join('') : '&nbsp;';
+                if (line.rightSpans.length === 0) {
+                    rightLineDiv.innerHTML = '&nbsp;';
+                } else {
+                    line.rightSpans.forEach(span => {
+                        rightLineDiv.appendChild(span);
+                        if (span.dataset.diffIndex !== undefined) {
+                            this.diffElements.push(span);
+                        }
+                    });
+                }
             }
         }
     }
@@ -3180,16 +3204,12 @@ class DiffModal extends Modal {
 
         const element = this.diffElements[this.currentDiffIndex];
         
-        // 移除所有当前高亮
         this.diffElements.forEach(el => el.removeClass('diff-current'));
         
-        // 添加当前高亮
         element.addClass('diff-current');
         
-        // 滚动到视图中央
         element.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
         
-        // 确保元素可见
         setTimeout(() => {
             const rect = element.getBoundingClientRect();
             const container = this.containerEl.querySelector('.diff-container');
@@ -3364,7 +3384,7 @@ class VersionControlSettingTab extends PluginSettingTab {
                     
                     if (value) {
                         this.plugin.statusBarItem.addClass('version-control-statusbar-clickable');
-                        new Notice('状态栏快速对比已启用，点击状态栏可快速对比');
+                        new Notice('状态栏快速对比已启用,点击状态栏可快速对比');
                     } else {
                         this.plugin.statusBarItem.removeClass('version-control-statusbar-clickable');
                     }
@@ -3535,7 +3555,7 @@ class VersionControlSettingTab extends PluginSettingTab {
                 }));
 
         new Setting(containerEl)
-            .setName('🔄 切换文件时保存')
+            .setName('📄 切换文件时保存')
             .setDesc('切换到其他文件时自动保存当前文件')
             .addToggle(toggle => toggle
                 .setValue(this.plugin.settings.autoSaveOnFileSwitch)
@@ -3725,7 +3745,7 @@ class VersionControlSettingTab extends PluginSettingTab {
             .setName('差异粒度')
             .setDesc('选择差异计算的精细程度')
             .addDropdown(dropdown => dropdown
-                .addOption('char', '字符级 - 最精确,显示每个字符的变化')
+                .addOption('char', '字符级 - (默认) 最精确,显示每个字符的变化')
                 .addOption('word', '单词级 - 按单词显示差异')
                 .addOption('line', '行级 - 按行显示差异')
                 .setValue(this.plugin.settings.diffGranularity)
