@@ -2955,13 +2955,17 @@ class DiffModal extends Modal {
 
         for (const line of lines) {
             if (this.showContext || line.hasChange) {
-                lineNumbersDiv.createEl('div', { 
-                    text: String(line.number), 
-                    cls: 'line-number' 
-                });
+                // ============ FIX START: Conditionally render line numbers ============
+                if (this.showLineNumbers) {
+                    lineNumbersDiv.createEl('div', { 
+                        text: String(line.number), 
+                        cls: 'line-number' 
+                    });
+                }
+                // ============= FIX END =============
+
                 const lineDiv = contentDiv.createEl('div', { cls: 'diff-content-line' });
 
-                // FIX: Apply wrap styles if enabled
                 if (this.wrapLines) {
                     lineDiv.style.whiteSpace = 'pre-wrap';
                     lineDiv.style.wordBreak = 'break-all';
@@ -3042,12 +3046,16 @@ class DiffModal extends Modal {
                 
                 for (const line of lines.slice(0, this.contextLines)) {
                     const leftLineEl = leftContent.createEl('div', { cls: 'diff-line diff-context' });
-                    leftLineEl.createEl('span', { cls: 'line-number', text: String(leftLine) });
+                    if (this.showLineNumbers) {
+                        leftLineEl.createEl('span', { cls: 'line-number', text: String(leftLine) });
+                    }
                     leftLineEl.createEl('span', { cls: 'diff-marker', text: ' ' });
                     leftLineEl.createEl('span', { cls: 'line-content', text: line });
 
                     const rightLineEl = rightContent.createEl('div', { cls: 'diff-line diff-context' });
-                    rightLineEl.createEl('span', { cls: 'line-number', text: String(rightLine) });
+                    if (this.showLineNumbers) {
+                        rightLineEl.createEl('span', { cls: 'line-number', text: String(rightLine) });
+                    }
                     rightLineEl.createEl('span', { cls: 'diff-marker', text: ' ' });
                     rightLineEl.createEl('span', { cls: 'line-content', text: line });
 
@@ -3067,7 +3075,9 @@ class DiffModal extends Modal {
                 if (part.removed) {
                     const lineEl = leftContent.createEl('div', { cls: 'diff-line diff-removed' });
                     lineEl.dataset.diffIndex = String(diffIndex++);
-                    lineEl.createEl('span', { cls: 'line-number', text: String(leftLine) });
+                    if (this.showLineNumbers) {
+                        lineEl.createEl('span', { cls: 'line-number', text: String(leftLine) });
+                    }
                     lineEl.createEl('span', { cls: 'diff-marker', text: '-' });
                     lineEl.createEl('span', { cls: 'line-content', text: line });
                     this.diffElements.push(lineEl);
@@ -3077,7 +3087,9 @@ class DiffModal extends Modal {
                 } else if (part.added) {
                     const lineEl = rightContent.createEl('div', { cls: 'diff-line diff-added' });
                     lineEl.dataset.diffIndex = String(diffIndex++);
-                    lineEl.createEl('span', { cls: 'line-number', text: String(rightLine) });
+                    if (this.showLineNumbers) {
+                        lineEl.createEl('span', { cls: 'line-number', text: String(rightLine) });
+                    }
                     lineEl.createEl('span', { cls: 'diff-marker', text: '+' });
                     lineEl.createEl('span', { cls: 'line-content', text: line });
                     this.diffElements.push(lineEl);
@@ -3086,12 +3098,16 @@ class DiffModal extends Modal {
                     leftContent.createEl('div', { cls: 'diff-line diff-placeholder' });
                 } else {
                     const leftLineEl = leftContent.createEl('div', { cls: 'diff-line diff-context' });
-                    leftLineEl.createEl('span', { cls: 'line-number', text: String(leftLine) });
+                    if (this.showLineNumbers) {
+                        leftLineEl.createEl('span', { cls: 'line-number', text: String(leftLine) });
+                    }
                     leftLineEl.createEl('span', { cls: 'diff-marker', text: ' ' });
                     leftLineEl.createEl('span', { cls: 'line-content', text: line });
 
                     const rightLineEl = rightContent.createEl('div', { cls: 'diff-line diff-context' });
-                    rightLineEl.createEl('span', { cls: 'line-number', text: String(rightLine) });
+                    if (this.showLineNumbers) {
+                        rightLineEl.createEl('span', { cls: 'line-number', text: String(rightLine) });
+                    }
                     rightLineEl.createEl('span', { cls: 'diff-marker', text: ' ' });
                     rightLineEl.createEl('span', { cls: 'line-content', text: line });
 
@@ -3176,13 +3192,16 @@ class DiffModal extends Modal {
 
         for (const line of lines) {
             if (this.showContext || line.hasChange) {
-                leftLineNumbers.createEl('div', { text: String(line.left), cls: 'line-number' });
+                // ============ FIX START: Conditionally render line numbers ============
+                if (this.showLineNumbers) {
+                    leftLineNumbers.createEl('div', { text: String(line.left), cls: 'line-number' });
+                    rightLineNumbers.createEl('div', { text: String(line.right), cls: 'line-number' });
+                }
+                // ============= FIX END =============
+
                 const leftLineDiv = leftContentDiv.createEl('div', { cls: 'diff-content-line' });
-                
-                rightLineNumbers.createEl('div', { text: String(line.right), cls: 'line-number' });
                 const rightLineDiv = rightContentDiv.createEl('div', { cls: 'diff-content-line' });
 
-                // FIX: Apply wrap styles if enabled
                 if (this.wrapLines) {
                     leftLineDiv.style.whiteSpace = 'pre-wrap';
                     leftLineDiv.style.wordBreak = 'break-all';
