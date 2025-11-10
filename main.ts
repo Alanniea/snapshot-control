@@ -1,3 +1,4 @@
+
 import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, Modal, ItemView, WorkspaceLeaf, Menu, TextComponent } from 'obsidian';
 import * as Diff from 'diff';
 import * as pako from 'pako';
@@ -2424,7 +2425,7 @@ class DiffModal extends Modal {
                 this.renderSplitDiff(diffContainer, leftProcessed, rightProcessed, this.currentGranularity, leftLabel, rightLabel);
             }
 
-            if (this.wrapLines) {
+            if (this.wrapLines && this.currentGranularity === 'line') {
                 diffContainer.addClass('diff-wrap-lines');
             } else {
                 diffContainer.removeClass('diff-wrap-lines');
@@ -2959,6 +2960,13 @@ class DiffModal extends Modal {
                     cls: 'line-number' 
                 });
                 const lineDiv = contentDiv.createEl('div', { cls: 'diff-content-line' });
+
+                // FIX: Apply wrap styles if enabled
+                if (this.wrapLines) {
+                    lineDiv.style.whiteSpace = 'pre-wrap';
+                    lineDiv.style.wordBreak = 'break-all';
+                }
+
                 if (line.spans.length === 0) {
                     lineDiv.innerHTML = '&nbsp;';
                 } else {
@@ -3170,6 +3178,18 @@ class DiffModal extends Modal {
             if (this.showContext || line.hasChange) {
                 leftLineNumbers.createEl('div', { text: String(line.left), cls: 'line-number' });
                 const leftLineDiv = leftContentDiv.createEl('div', { cls: 'diff-content-line' });
+                
+                rightLineNumbers.createEl('div', { text: String(line.right), cls: 'line-number' });
+                const rightLineDiv = rightContentDiv.createEl('div', { cls: 'diff-content-line' });
+
+                // FIX: Apply wrap styles if enabled
+                if (this.wrapLines) {
+                    leftLineDiv.style.whiteSpace = 'pre-wrap';
+                    leftLineDiv.style.wordBreak = 'break-all';
+                    rightLineDiv.style.whiteSpace = 'pre-wrap';
+                    rightLineDiv.style.wordBreak = 'break-all';
+                }
+
                 if (line.leftSpans.length === 0) {
                     leftLineDiv.innerHTML = '&nbsp;';
                 } else {
@@ -3181,8 +3201,6 @@ class DiffModal extends Modal {
                     });
                 }
 
-                rightLineNumbers.createEl('div', { text: String(line.right), cls: 'line-number' });
-                const rightLineDiv = rightContentDiv.createEl('div', { cls: 'diff-content-line' });
                 if (line.rightSpans.length === 0) {
                     rightLineDiv.innerHTML = '&nbsp;';
                 } else {
