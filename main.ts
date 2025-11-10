@@ -2145,6 +2145,10 @@ class ConfirmModal extends Modal {
     }
 }
 
+// =========================================================================
+// ======================= ENHANCED DIFF MODAL START =======================
+// =========================================================================
+
 class DiffModal extends Modal {
     plugin: VersionControlPlugin;
     file: TFile;
@@ -3299,6 +3303,10 @@ class DiffModal extends Modal {
         contentEl.empty();
     }
 }
+
+// =======================================================================
+// ======================= ENHANCED DIFF MODAL END =======================
+// =======================================================================
 
 class VersionSelectModal extends Modal {
     plugin: VersionControlPlugin;
