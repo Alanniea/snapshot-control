@@ -658,6 +658,7 @@
     border-color: var(--interactive-accent);
 }
 
+/* [新增] 交换对比侧按钮样式 */
 .diff-swap-btn {
     background: none;
     border: none;
