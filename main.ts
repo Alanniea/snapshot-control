@@ -1,3 +1,4 @@
+
 import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, Modal, ItemView, WorkspaceLeaf, Menu, TextComponent, MarkdownRenderer } from 'obsidian';
 import * as Diff from 'diff';
 import * as pako from 'pako';
@@ -442,7 +443,6 @@ export default class VersionControlPlugin extends Plugin {
         }).open();
     }
 
-    // [修改] createVersion 方法
     async createVersion(file: TFile, message: string, showNotification: boolean = false, tags: string[] = []) {
         try {
             const content = await this.app.vault.read(file);
@@ -464,7 +464,6 @@ export default class VersionControlPlugin extends Plugin {
 
             let newVersion: VersionData;
 
-            // [新增] 计算变更量
             let addedLines = 0;
             let removedLines = 0;
             if (versionFile.versions.length > 0) {
@@ -475,7 +474,6 @@ export default class VersionControlPlugin extends Plugin {
                     if (part.removed) removedLines += part.count || 0;
                 });
             } else {
-                // 第一个版本，所有行都是新增
                 addedLines = content.split('\n').length;
             }
 
@@ -542,7 +540,6 @@ export default class VersionControlPlugin extends Plugin {
             const result = Diff.applyPatch(baseContent, diffStr);
             if (result === false) {
                  console.error('应用差异失败: applyPatch returned false');
-                 // Fallback: try to reconstruct from JSON if it's old format
                  try {
                      const changes = JSON.parse(diffStr);
                      let jsonResult = '';
@@ -553,7 +550,7 @@ export default class VersionControlPlugin extends Plugin {
                      }
                      return jsonResult;
                  } catch (e) {
-                     return baseContent; // Double fallback
+                     return baseContent;
                  }
             }
             return result;
@@ -727,7 +724,6 @@ export default class VersionControlPlugin extends Plugin {
                 return this.applyDiff(versionFile.baseVersion, version.diff);
             }
             
-            // Fallback for older incremental versions without a central baseVersion
             if (version.diff && version.baseVersionId) {
                 const baseVersionContent = await this.getVersionContent(filePath, version.baseVersionId);
                 return this.applyDiff(baseVersionContent, version.diff);
@@ -1246,7 +1242,7 @@ class QuickPreviewModal extends Modal {
     }
 }
 
-// [修改] VersionHistoryView 类
+// [修改] VersionHistoryView 类 (已包含日期分组功能)
 class VersionHistoryView extends ItemView {
     plugin: VersionControlPlugin;
     selectedVersions: Set<string> = new Set();
@@ -1285,7 +1281,31 @@ class VersionHistoryView extends ItemView {
         await this.refresh();
     }
 
-    // [新增] 异步计算并缓存变更量的函数
+    // [新增] 日期分组辅助函数
+    getRelativeDateGroup(timestamp: number): string {
+        const now = new Date();
+        const date = new Date(timestamp);
+
+        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+        
+        const versionDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+
+        if (versionDate.getTime() === today.getTime()) {
+            return '今天';
+        }
+        if (versionDate.getTime() === yesterday.getTime()) {
+            return '昨天';
+        }
+        if (now.getFullYear() === date.getFullYear() && now.getMonth() === date.getMonth()) {
+            return '本月';
+        }
+        if (now.getFullYear() === date.getFullYear()) {
+            return `${date.getMonth() + 1}月`;
+        }
+        return `${date.getFullYear()}年`;
+    }
+
     async calculateAndCacheDiffStats(versionFile: VersionFile, versionIndex: number) {
         const version = versionFile.versions[versionIndex];
         if (typeof version.addedLines === 'number' && typeof version.removedLines === 'number') {
@@ -1541,172 +1561,185 @@ class VersionHistoryView extends ItemView {
 
         const listContainer = container.createEl('div', { cls: 'version-list' });
 
-        for (const version of pageVersions) {
-            const item = listContainer.createEl('div', { cls: 'version-item' });
-            if (version.starred) {
-                item.addClass('version-starred');
+        const groupedVersions: { [key: string]: VersionData[] } = {};
+        pageVersions.forEach(version => {
+            const group = this.getRelativeDateGroup(version.timestamp);
+            if (!groupedVersions[group]) {
+                groupedVersions[group] = [];
             }
+            groupedVersions[group].push(version);
+        });
+
+        for (const groupName in groupedVersions) {
+            listContainer.createEl('h4', { text: groupName, cls: 'version-group-header' });
             
-            const checkbox = item.createEl('input', { 
-                type: 'checkbox',
-                cls: 'version-checkbox'
-            });
-            checkbox.checked = this.selectedVersions.has(version.id);
-            checkbox.addEventListener('change', () => {
-                if (checkbox.checked) {
-                    this.selectedVersions.add(version.id);
-                } else {
-                    this.selectedVersions.delete(version.id);
+            const versionsInGroup = groupedVersions[groupName];
+            for (const version of versionsInGroup) {
+                const item = listContainer.createEl('div', { cls: 'version-item' });
+                if (version.starred) {
+                    item.addClass('version-starred');
                 }
-                this.refresh();
-            });
-
-            const info = item.createEl('div', { cls: 'version-info' });
-            
-            const timeRow = info.createEl('div', { cls: 'version-time-row' });
-            
-            const starBtn = timeRow.createEl('span', { 
-                text: version.starred ? '⭐' : '☆',
-                cls: 'version-star-btn'
-            });
-            starBtn.addEventListener('click', async () => {
-                await this.plugin.toggleVersionStar(file.path, version.id);
-            });
-            
-            timeRow.createEl('span', { 
-                text: this.plugin.formatTime(version.timestamp),
-                cls: 'version-time'
-            });
-            
-            const messageEl = info.createEl('div', { cls: 'version-message-row' });
-            
-            if (version.message.includes('[Auto Save]')) {
-                messageEl.createEl('span', { 
-                    text: '自动保存',
-                    cls: 'version-tag version-tag-auto'
+                
+                const checkbox = item.createEl('input', { 
+                    type: 'checkbox',
+                    cls: 'version-checkbox'
                 });
-            } else if (version.message.includes('[Full Snapshot]')) {
-                messageEl.createEl('span', { 
-                    text: '全库版本',
-                    cls: 'version-tag version-tag-snapshot'
-                });
-            } else if (version.message.includes('[Before Restore]')) {
-                messageEl.createEl('span', { 
-                    text: '恢复前备份',
-                    cls: 'version-tag version-tag-backup'
-                });
-            }
-            
-            if (version.diff) {
-                messageEl.createEl('span', { 
-                    text: '增量',
-                    cls: 'version-tag version-tag-incremental'
-                });
-            } else if (version.content) {
-                messageEl.createEl('span', { 
-                    text: '完整',
-                    cls: 'version-tag version-tag-full'
-                });
-            }
-            
-            if (version.tags && version.tags.length > 0) {
-                version.tags.forEach(tag => {
-                    const tagEl = messageEl.createEl('span', { 
-                        text: tag,
-                        cls: 'version-tag version-tag-custom'
-                    });
-                    tagEl.addEventListener('click', () => {
-                        this.filterTag = tag;
-                        this.currentPage = 0;
-                        this.refresh();
-                    });
-                });
-            }
-            
-            messageEl.createEl('span', { 
-                text: version.message.replace(/\[.*?\]/g, '').trim() || '无描述',
-                cls: 'version-message'
-            });
-            
-            if (version.note) {
-                info.createEl('div', { 
-                    text: `📝 ${version.note}`,
-                    cls: 'version-note'
-                });
-            }
-            
-            const statsRow = info.createEl('div', { cls: 'version-stats-row' });
-            statsRow.createEl('span', { 
-                text: this.plugin.formatFileSize(version.size),
-                cls: 'version-size'
-            });
-
-            // [新增] 渲染变更量可视化
-            const diffStatsContainer = statsRow.createEl('div', { cls: 'version-diff-stats' });
-            if (typeof version.addedLines === 'number' && typeof version.removedLines === 'number') {
-                const totalChanges = version.addedLines + version.removedLines;
-                if (totalChanges > 0) {
-                    const addedWidth = (version.addedLines / totalChanges) * 100;
-                    const removedWidth = (version.removedLines / totalChanges) * 100;
-                    
-                    const bar = diffStatsContainer.createEl('div', { cls: 'diff-stats-bar' });
-                    if (version.addedLines > 0) {
-                        bar.createEl('div', { cls: 'diff-stats-added', attr: { style: `width: ${addedWidth}%` } });
+                checkbox.checked = this.selectedVersions.has(version.id);
+                checkbox.addEventListener('change', () => {
+                    if (checkbox.checked) {
+                        this.selectedVersions.add(version.id);
+                    } else {
+                        this.selectedVersions.delete(version.id);
                     }
-                    if (version.removedLines > 0) {
-                        bar.createEl('div', { cls: 'diff-stats-removed', attr: { style: `width: ${removedWidth}%` } });
+                    this.refresh();
+                });
+
+                const info = item.createEl('div', { cls: 'version-info' });
+                
+                const timeRow = info.createEl('div', { cls: 'version-time-row' });
+                
+                const starBtn = timeRow.createEl('span', { 
+                    text: version.starred ? '⭐' : '☆',
+                    cls: 'version-star-btn'
+                });
+                starBtn.addEventListener('click', async () => {
+                    await this.plugin.toggleVersionStar(file.path, version.id);
+                });
+                
+                timeRow.createEl('span', { 
+                    text: this.plugin.formatTime(version.timestamp),
+                    cls: 'version-time'
+                });
+                
+                const messageEl = info.createEl('div', { cls: 'version-message-row' });
+                
+                if (version.message.includes('[Auto Save]')) {
+                    messageEl.createEl('span', { 
+                        text: '自动保存',
+                        cls: 'version-tag version-tag-auto'
+                    });
+                } else if (version.message.includes('[Full Snapshot]')) {
+                    messageEl.createEl('span', { 
+                        text: '全库版本',
+                        cls: 'version-tag version-tag-snapshot'
+                    });
+                } else if (version.message.includes('[Before Restore]')) {
+                    messageEl.createEl('span', { 
+                        text: '恢复前备份',
+                        cls: 'version-tag version-tag-backup'
+                    });
+                }
+                
+                if (version.diff) {
+                    messageEl.createEl('span', { 
+                        text: '增量',
+                        cls: 'version-tag version-tag-incremental'
+                    });
+                } else if (version.content) {
+                    messageEl.createEl('span', { 
+                        text: '完整',
+                        cls: 'version-tag version-tag-full'
+                    });
+                }
+                
+                if (version.tags && version.tags.length > 0) {
+                    version.tags.forEach(tag => {
+                        const tagEl = messageEl.createEl('span', { 
+                            text: tag,
+                            cls: 'version-tag version-tag-custom'
+                        });
+                        tagEl.addEventListener('click', () => {
+                            this.filterTag = tag;
+                            this.currentPage = 0;
+                            this.refresh();
+                        });
+                    });
+                }
+                
+                messageEl.createEl('span', { 
+                    text: version.message.replace(/\[.*?\]/g, '').trim() || '无描述',
+                    cls: 'version-message'
+                });
+                
+                if (version.note) {
+                    info.createEl('div', { 
+                        text: `📝 ${version.note}`,
+                        cls: 'version-note'
+                    });
+                }
+                
+                const statsRow = info.createEl('div', { cls: 'version-stats-row' });
+                statsRow.createEl('span', { 
+                    text: this.plugin.formatFileSize(version.size),
+                    cls: 'version-size'
+                });
+
+                const diffStatsContainer = statsRow.createEl('div', { cls: 'version-diff-stats' });
+                if (typeof version.addedLines === 'number' && typeof version.removedLines === 'number') {
+                    const totalChanges = version.addedLines + version.removedLines;
+                    if (totalChanges > 0) {
+                        const addedWidth = (version.addedLines / totalChanges) * 100;
+                        const removedWidth = (version.removedLines / totalChanges) * 100;
+                        
+                        const bar = diffStatsContainer.createEl('div', { cls: 'diff-stats-bar' });
+                        if (version.addedLines > 0) {
+                            bar.createEl('div', { cls: 'diff-stats-added', attr: { style: `width: ${addedWidth}%` } });
+                        }
+                        if (version.removedLines > 0) {
+                            bar.createEl('div', { cls: 'diff-stats-removed', attr: { style: `width: ${removedWidth}%` } });
+                        }
+                        
+                        diffStatsContainer.createEl('span', { text: `+${version.addedLines}`, cls: 'diff-stats-text-added' });
+                        diffStatsContainer.createEl('span', { text: `-${version.removedLines}`, cls: 'diff-stats-text-removed' });
+                        diffStatsContainer.title = `新增 ${version.addedLines} 行, 删除 ${version.removedLines} 行`;
+                    } else {
+                        diffStatsContainer.setText('无代码变更');
                     }
-                    
-                    diffStatsContainer.createEl('span', { text: `+${version.addedLines}`, cls: 'diff-stats-text-added' });
-                    diffStatsContainer.createEl('span', { text: `-${version.removedLines}`, cls: 'diff-stats-text-removed' });
-                    diffStatsContainer.title = `新增 ${version.addedLines} 行, 删除 ${version.removedLines} 行`;
                 } else {
-                    diffStatsContainer.setText('无代码变更');
+                    diffStatsContainer.setText('计算中...');
+                    const versionIndex = allVersions.findIndex(v => v.id === version.id);
+                    if (versionIndex !== -1) {
+                        this.calculateAndCacheDiffStats(versionFile, versionIndex);
+                    }
                 }
-            } else {
-                diffStatsContainer.setText('计算中...');
-                const versionIndex = allVersions.findIndex(v => v.id === version.id);
-                if (versionIndex !== -1) {
-                    this.calculateAndCacheDiffStats(versionFile, versionIndex);
+
+                const actions = item.createEl('div', { cls: 'version-actions' });
+                
+                if (this.plugin.settings.enableQuickPreview) {
+                    const previewBtn = actions.createEl('button', { 
+                        text: '预览',
+                        cls: 'version-btn',
+                        attr: { title: '快速预览' }
+                    });
+                    previewBtn.addEventListener('click', () => {
+                        new QuickPreviewModal(this.app, this.plugin, file, version.id).open();
+                    });
                 }
-            }
-
-            const actions = item.createEl('div', { cls: 'version-actions' });
-            
-            if (this.plugin.settings.enableQuickPreview) {
-                const previewBtn = actions.createEl('button', { 
-                    text: '预览',
-                    cls: 'version-btn',
-                    attr: { title: '快速预览' }
+                
+                const restoreBtn = actions.createEl('button', { 
+                    text: '恢复',
+                    cls: 'version-btn'
                 });
-                previewBtn.addEventListener('click', () => {
-                    new QuickPreviewModal(this.app, this.plugin, file, version.id).open();
+                restoreBtn.addEventListener('click', () => {
+                    this.confirmRestore(file, version.id);
+                });
+
+                const diffBtn = actions.createEl('button', { 
+                    text: '比较',
+                    cls: 'version-btn'
+                });
+                diffBtn.addEventListener('click', () => {
+                    this.showDiffModal(file, version.id);
+                });
+
+                const moreBtn = actions.createEl('button', { 
+                    text: '更多',
+                    cls: 'version-btn'
+                });
+                moreBtn.addEventListener('click', (e) => {
+                    this.showVersionContextMenu(e as MouseEvent, file, version);
                 });
             }
-            
-            const restoreBtn = actions.createEl('button', { 
-                text: '恢复',
-                cls: 'version-btn'
-            });
-            restoreBtn.addEventListener('click', () => {
-                this.confirmRestore(file, version.id);
-            });
-
-            const diffBtn = actions.createEl('button', { 
-                text: '比较',
-                cls: 'version-btn'
-            });
-            diffBtn.addEventListener('click', () => {
-                this.showDiffModal(file, version.id);
-            });
-
-            const moreBtn = actions.createEl('button', { 
-                text: '更多',
-                cls: 'version-btn'
-            });
-            moreBtn.addEventListener('click', (e) => {
-                this.showVersionContextMenu(e as MouseEvent, file, version);
-            });
         }
 
         if (totalPages > 1) {
@@ -2220,10 +2253,6 @@ class ConfirmModal extends Modal {
         contentEl.empty();
     }
 }
-
-// =========================================================================
-// ======================= ENHANCED DIFF MODAL START =======================
-// =========================================================================
 
 type ProcessedDiff = {
     type: 'context' | 'added' | 'removed' | 'moved-from' | 'moved-to';
@@ -3509,10 +3538,6 @@ class DiffModal extends Modal {
         contentEl.empty();
     }
 }
-
-// =======================================================================
-// ======================= ENHANCED DIFF MODAL END =======================
-// =======================================================================
 
 class VersionSelectModal extends Modal {
     plugin: VersionControlPlugin;

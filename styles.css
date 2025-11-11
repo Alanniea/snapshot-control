@@ -1,3 +1,18 @@
+/* [新增] 版本历史日期分组标题样式 */
+.version-group-header {
+    font-size: 1.1em;
+    font-weight: bold;
+    color: var(--text-accent);
+    padding: 12px 8px 4px;
+    border-bottom: 1px solid var(--background-modifier-border);
+    margin-top: 10px;
+}
+
+/* 第一个分组标题不需要上边距 */
+.version-list .version-group-header:first-child {
+    margin-top: 0;
+}
+
 /* 状态栏可点击样式 */
 .version-control-statusbar-clickable {
     cursor: pointer;
