@@ -188,6 +188,8 @@ export default class VersionControlPlugin extends Plugin {
                 if (this.settings.autoSave && this.settings.autoSaveOnFileSwitch) {
                     this.handleFileSwitch();
                 }
+                // [修改] 切换文件时，总是更新状态栏
+                this.updateStatusBar();
             })
         );
 
@@ -228,6 +230,7 @@ export default class VersionControlPlugin extends Plugin {
         this.updateStatusBar();
     }
 
+    // [修改] 合并了 updateStatusBar 和 updateStatusBarWithLastSave 的逻辑
     updateStatusBar() {
         if (!this.settings.autoSave) {
             this.statusBarItem.setText('⏸ 版本控制: 已暂停');
@@ -235,19 +238,39 @@ export default class VersionControlPlugin extends Plugin {
             return;
         }
 
-        const modes: string[] = [];
-        if (this.settings.autoSaveOnModify) modes.push('修改');
-        if (this.settings.autoSaveOnInterval) modes.push(`${this.settings.autoSaveInterval}分钟`);
-        if (this.settings.autoSaveOnFileSwitch) modes.push('切换');
-        if (this.settings.autoSaveOnFocusLost) modes.push('失焦');
+        const file = this.app.workspace.getActiveFile();
+        const lastSaveTime = file ? this.lastModifiedTime.get(file.path) : undefined;
 
-        if (modes.length > 0) {
-            this.statusBarItem.setText(`⏱ 版本控制: ${modes.join(' | ')}`);
+        if (lastSaveTime) {
+            const elapsed = Date.now() - lastSaveTime;
+            const seconds = Math.floor(elapsed / 1000);
+            
+            let relativeTime;
+            if (seconds < 2) {
+                relativeTime = '刚刚';
+            } else if (seconds < 60) {
+                relativeTime = `${seconds}秒前`;
+            } else {
+                const minutes = Math.floor(seconds / 60);
+                relativeTime = `${minutes}分钟前`;
+            }
+            
+            this.statusBarItem.setText(`上次保存: ${relativeTime}`);
+            this.statusBarItem.title = `上次保存于 ${new Date(lastSaveTime).toLocaleString('zh-CN')}. 点击可快速对比。`;
         } else {
-            this.statusBarItem.setText('⏱ 版本控制: 已启用');
+            const modes: string[] = [];
+            if (this.settings.autoSaveOnModify) modes.push('修改');
+            if (this.settings.autoSaveOnInterval) modes.push(`${this.settings.autoSaveInterval}分钟`);
+            if (this.settings.autoSaveOnFileSwitch) modes.push('切换');
+            if (this.settings.autoSaveOnFocusLost) modes.push('失焦');
+
+            if (modes.length > 0) {
+                this.statusBarItem.setText(`⏱ 版本控制: ${modes.join(' | ')}`);
+            } else {
+                this.statusBarItem.setText('⏱ 版本控制: 已启用');
+            }
+            this.statusBarItem.title = '点击快速对比当前文件与最新版本';
         }
-        
-        this.statusBarItem.title = '点击快速对比当前文件与最新版本';
     }
 
     async quickDiffFromStatusBar() {
@@ -352,7 +375,8 @@ export default class VersionControlPlugin extends Plugin {
             await this.createVersion(file, '[Auto Save]', false);
             this.lastSavedContent.set(file.path, content);
             this.lastModifiedTime.set(file.path, Date.now());
-            this.updateStatusBarWithLastSave();
+            // [修改] 调用新的状态栏更新函数
+            this.updateStatusBar();
         } catch (error) {
             console.error('自动保存失败:', error);
         }
@@ -397,23 +421,7 @@ export default class VersionControlPlugin extends Plugin {
         await this.autoSaveFile(file);
     }
 
-    updateStatusBarWithLastSave() {
-        const file = this.app.workspace.getActiveFile();
-        if (!file) return;
-
-        const lastSaveTime = this.lastModifiedTime.get(file.path);
-        if (lastSaveTime) {
-            const elapsed = Date.now() - lastSaveTime;
-            const seconds = Math.floor(elapsed / 1000);
-            
-            if (seconds < 60) {
-                this.statusBarItem.title = `最近保存: ${seconds}秒前`;
-            } else {
-                const minutes = Math.floor(seconds / 60);
-                this.statusBarItem.title = `最近保存: ${minutes}分钟前`;
-            }
-        }
-    }
+    // [删除] updateStatusBarWithLastSave 函数已被合并
 
     async autoSaveCurrentFile() {
         const file = this.app.workspace.getActiveFile();
@@ -1127,6 +1135,7 @@ export default class VersionControlPlugin extends Plugin {
     }
 }
 
+// ... The rest of the classes (QuickPreviewModal, VersionHistoryView, etc.) remain unchanged ...
 class QuickPreviewModal extends Modal {
     plugin: VersionControlPlugin;
     file: TFile;
