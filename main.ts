@@ -1783,6 +1783,7 @@ class VersionHistoryView extends ItemView {
         stats.createEl('span', { text: ` · 显示 ${start + 1}-${end}` });
     }
 
+    // [修改] showVersionContextMenu 方法
     showVersionContextMenu(event: MouseEvent, file: TFile, version: VersionData) {
         const menu = new Menu();
         
@@ -1794,8 +1795,9 @@ class VersionHistoryView extends ItemView {
                 })
         );
         
+        // [新增] 对比任意两个版本的选项
         menu.addItem((item) =>
-            item.setTitle('选择另一个版本对比')
+            item.setTitle('与另一个版本对比')
                 .setIcon('files')
                 .onClick(() => {
                     this.selectVersionForCompare(file, version.id);
@@ -1980,6 +1982,7 @@ class VersionHistoryView extends ItemView {
         new DiffModal(this.app, this.plugin, file, versionId).open();
     }
 
+    // [新增] selectVersionForCompare 方法
     selectVersionForCompare(file: TFile, firstVersionId: string) {
         new VersionSelectModal(this.app, this.plugin, file, firstVersionId, (secondVersionId) => {
             new DiffModal(this.app, this.plugin, file, firstVersionId, secondVersionId).open();
@@ -3539,6 +3542,7 @@ class DiffModal extends Modal {
     }
 }
 
+// [新增] VersionSelectModal 类
 class VersionSelectModal extends Modal {
     plugin: VersionControlPlugin;
     file: TFile;
