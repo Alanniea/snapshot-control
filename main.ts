@@ -1,9 +1,8 @@
-
 import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, Modal, ItemView, WorkspaceLeaf, Menu, TextComponent, MarkdownRenderer } from 'obsidian';
 import * as Diff from 'diff';
 import * as pako from 'pako';
 
-// ... (接口定义和常量部分保持不变) ...
+// [修改] VersionData 接口
 interface VersionData {
     id: string;
     timestamp: number;
@@ -16,6 +15,8 @@ interface VersionData {
     tags?: string[];
     note?: string;
     starred?: boolean;
+    addedLines?: number;   // [新增] 缓存新增行数
+    removedLines?: number; // [新增] 缓存删除行数
 }
 
 interface VersionFile {
@@ -441,6 +442,7 @@ export default class VersionControlPlugin extends Plugin {
         }).open();
     }
 
+    // [修改] createVersion 方法
     async createVersion(file: TFile, message: string, showNotification: boolean = false, tags: string[] = []) {
         try {
             const content = await this.app.vault.read(file);
@@ -462,19 +464,29 @@ export default class VersionControlPlugin extends Plugin {
 
             let newVersion: VersionData;
 
+            // [新增] 计算变更量
+            let addedLines = 0;
+            let removedLines = 0;
+            if (versionFile.versions.length > 0) {
+                const previousContent = await this.getVersionContent(file.path, versionFile.versions[0].id);
+                const diffResult = Diff.diffLines(previousContent, content);
+                diffResult.forEach(part => {
+                    if (part.added) addedLines += part.count || 0;
+                    if (part.removed) removedLines += part.count || 0;
+                });
+            } else {
+                // 第一个版本，所有行都是新增
+                addedLines = content.split('\n').length;
+            }
+
             if (this.settings.enableIncrementalStorage && versionFile.versions.length > 0) {
                 const shouldRebuildBase = (versionFile.versions.length % this.settings.rebuildBaseInterval === 0) || !versionFile.baseVersion;
                 
                 if (shouldRebuildBase) {
                     newVersion = {
-                        id,
-                        timestamp,
-                        message,
-                        content,
-                        size: content.length,
-                        hash,
+                        id, timestamp, message, content, size: content.length, hash,
                         tags: tags.length > 0 ? tags : undefined,
-                        starred: false
+                        starred: false, addedLines, removedLines
                     };
                     versionFile.baseVersion = content;
                 } else {
@@ -482,27 +494,16 @@ export default class VersionControlPlugin extends Plugin {
                     const diff = this.createDiff(baseContent, content);
                     
                     newVersion = {
-                        id,
-                        timestamp,
-                        message,
-                        diff,
-                        baseVersionId: versionFile.versions[0].id, // This is just for reference, not for patching
-                        size: diff.length,
-                        hash,
+                        id, timestamp, message, diff, baseVersionId: versionFile.versions[0].id, size: diff.length, hash,
                         tags: tags.length > 0 ? tags : undefined,
-                        starred: false
+                        starred: false, addedLines, removedLines
                     };
                 }
             } else {
                 newVersion = {
-                    id,
-                    timestamp,
-                    message,
-                    content,
-                    size: content.length,
-                    hash,
+                    id, timestamp, message, content, size: content.length, hash,
                     tags: tags.length > 0 ? tags : undefined,
-                    starred: false
+                    starred: false, addedLines, removedLines
                 };
                 
                 if (this.settings.enableIncrementalStorage) {
@@ -1245,6 +1246,7 @@ class QuickPreviewModal extends Modal {
     }
 }
 
+// [修改] VersionHistoryView 类
 class VersionHistoryView extends ItemView {
     plugin: VersionControlPlugin;
     selectedVersions: Set<string> = new Set();
@@ -1281,6 +1283,49 @@ class VersionHistoryView extends ItemView {
         );
 
         await this.refresh();
+    }
+
+    // [新增] 异步计算并缓存变更量的函数
+    async calculateAndCacheDiffStats(versionFile: VersionFile, versionIndex: number) {
+        const version = versionFile.versions[versionIndex];
+        if (typeof version.addedLines === 'number' && typeof version.removedLines === 'number') {
+            return; // 已经有缓存了
+        }
+
+        try {
+            const currentContent = await this.plugin.getVersionContent(versionFile.filePath, version.id);
+            const previousVersion = versionFile.versions[versionIndex + 1];
+            
+            let added = 0;
+            let removed = 0;
+
+            if (previousVersion) {
+                const previousContent = await this.plugin.getVersionContent(versionFile.filePath, previousVersion.id);
+                const diffResult = Diff.diffLines(previousContent, currentContent);
+                diffResult.forEach(part => {
+                    if (part.added) added += part.count || 0;
+                    if (part.removed) removed += part.count || 0;
+                });
+            } else {
+                // 这是第一个版本
+                added = currentContent.split('\n').length;
+            }
+
+            // 更新数据模型
+            version.addedLines = added;
+            version.removedLines = removed;
+
+            // 异步保存更新后的文件，不阻塞UI
+            this.plugin.saveVersionFile(versionFile.filePath, versionFile).catch(err => {
+                console.error("Failed to save version file after caching diff stats:", err);
+            });
+
+            // 触发一次轻量级刷新来更新UI
+            this.refresh();
+
+        } catch (error) {
+            console.error(`Failed to calculate diff stats for version ${version.id}:`, error);
+        }
     }
 
     async refresh() {
@@ -1393,7 +1438,8 @@ class VersionHistoryView extends ItemView {
             menu.showAtMouseEvent(e as MouseEvent);
         });
 
-        const allVersions = await this.plugin.getAllVersions(file.path);
+        const versionFile = await this.plugin.loadVersionFile(file.path);
+        const allVersions = versionFile.versions;
         this.totalVersions = allVersions.length;
 
         if (this.totalVersions === 0) {
@@ -1589,10 +1635,41 @@ class VersionHistoryView extends ItemView {
                 });
             }
             
-            info.createEl('div', { 
+            const statsRow = info.createEl('div', { cls: 'version-stats-row' });
+            statsRow.createEl('span', { 
                 text: this.plugin.formatFileSize(version.size),
                 cls: 'version-size'
             });
+
+            // [新增] 渲染变更量可视化
+            const diffStatsContainer = statsRow.createEl('div', { cls: 'version-diff-stats' });
+            if (typeof version.addedLines === 'number' && typeof version.removedLines === 'number') {
+                const totalChanges = version.addedLines + version.removedLines;
+                if (totalChanges > 0) {
+                    const addedWidth = (version.addedLines / totalChanges) * 100;
+                    const removedWidth = (version.removedLines / totalChanges) * 100;
+                    
+                    const bar = diffStatsContainer.createEl('div', { cls: 'diff-stats-bar' });
+                    if (version.addedLines > 0) {
+                        bar.createEl('div', { cls: 'diff-stats-added', attr: { style: `width: ${addedWidth}%` } });
+                    }
+                    if (version.removedLines > 0) {
+                        bar.createEl('div', { cls: 'diff-stats-removed', attr: { style: `width: ${removedWidth}%` } });
+                    }
+                    
+                    diffStatsContainer.createEl('span', { text: `+${version.addedLines}`, cls: 'diff-stats-text-added' });
+                    diffStatsContainer.createEl('span', { text: `-${version.removedLines}`, cls: 'diff-stats-text-removed' });
+                    diffStatsContainer.title = `新增 ${version.addedLines} 行, 删除 ${version.removedLines} 行`;
+                } else {
+                    diffStatsContainer.setText('无代码变更');
+                }
+            } else {
+                diffStatsContainer.setText('计算中...');
+                const versionIndex = allVersions.findIndex(v => v.id === version.id);
+                if (versionIndex !== -1) {
+                    this.calculateAndCacheDiffStats(versionFile, versionIndex);
+                }
+            }
 
             const actions = item.createEl('div', { cls: 'version-actions' });
             
@@ -2176,7 +2253,6 @@ class DiffModal extends Modal {
     enableMoveDetection: boolean = true;
     showWhitespace: boolean = false;
 
-    // [新增] 渲染预览相关状态和元素
     private currentView: 'text' | 'rendered' = 'text';
     private textDiffContainer: HTMLElement;
     private renderedDiffContainer: HTMLElement;
@@ -2244,7 +2320,6 @@ class DiffModal extends Modal {
 
         contentEl.createEl('h2', { text: '📊 版本差异对比' });
 
-        // [修改] 整体布局调整
         const headerContainer = contentEl.createEl('div');
         const mainContainer = contentEl.createEl('div', { cls: 'diff-main-container' });
         this.textDiffContainer = mainContainer.createEl('div', { cls: 'diff-container' });
@@ -2252,7 +2327,6 @@ class DiffModal extends Modal {
 
         const toolbar = headerContainer.createEl('div', { cls: 'diff-toolbar' });
         
-        // [新增] 视图切换器
         const viewSwitcher = toolbar.createEl('div', { cls: 'diff-view-switcher' });
         const textDiffBtn = viewSwitcher.createEl('button', { text: '文本差异', cls: 'active' });
         const renderedDiffBtn = viewSwitcher.createEl('button', { text: '渲染预览' });
@@ -2548,7 +2622,6 @@ class DiffModal extends Modal {
         const infoBanner = headerContainer.createEl('div', { cls: 'diff-info-banner-compact' });
         this.updateCompactDiffInfo(infoBanner);
 
-        // [修改] 视图切换逻辑
         const switchView = (view: 'text' | 'rendered') => {
             this.currentView = view;
             if (view === 'text') {
@@ -2556,14 +2629,12 @@ class DiffModal extends Modal {
                 renderedDiffBtn.removeClass('active');
                 this.textDiffContainer.style.display = '';
                 this.renderedDiffContainer.style.display = 'none';
-                // 显示文本差异相关的工具
                 [navGroup, viewGroup, actionGroup].forEach(g => g.style.display = 'flex');
             } else {
                 textDiffBtn.removeClass('active');
                 renderedDiffBtn.addClass('active');
                 this.textDiffContainer.style.display = 'none';
                 this.renderedDiffContainer.style.display = '';
-                // 隐藏文本差异相关的工具
                 [navGroup, viewGroup, actionGroup].forEach(g => g.style.display = 'none');
                 
                 if (!this.isRenderedViewBuilt) {
@@ -2677,7 +2748,6 @@ class DiffModal extends Modal {
         this.renderTextDiff();
     }
 
-    // [新增] 渲染“渲染预览”视图的函数
     async renderRenderedView(leftLabel: string, rightLabel: string) {
         this.renderedDiffContainer.empty();
         
@@ -2693,7 +2763,6 @@ class DiffModal extends Modal {
         await MarkdownRenderer.renderMarkdown(this.leftContent, leftContent, this.file.path, this.plugin);
         await MarkdownRenderer.renderMarkdown(this.rightContent, rightContent, this.file.path, this.plugin);
 
-        // 同步滚动
         let isScrolling = false;
         const syncScroll = (source: HTMLElement, target: HTMLElement) => {
             if (isScrolling) return;
@@ -2706,7 +2775,6 @@ class DiffModal extends Modal {
         rightContent.addEventListener('scroll', () => syncScroll(rightContent, leftContent));
     }
 
-    // [修改] 将原 renderDiff 重命名为 renderTextDiff
     renderTextDiff() {
         const container = this.textDiffContainer;
         container.empty();
