@@ -1,4 +1,3 @@
-
 /* 状态栏可点击样式 */
 .version-control-statusbar-clickable {
     cursor: pointer;
@@ -317,9 +316,54 @@
     padding-left: 20px;
 }
 
+.version-stats-row {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    margin-top: 4px;
+}
+
 .version-size {
     font-size: 11px;
     color: var(--text-faint);
+}
+
+.version-diff-stats {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    cursor: help;
+    color: var(--text-muted);
+}
+
+.diff-stats-bar {
+    display: flex;
+    width: 80px;
+    height: 8px;
+    background-color: var(--background-modifier-border);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.diff-stats-added {
+    background-color: var(--color-green);
+    height: 100%;
+}
+
+.diff-stats-removed {
+    background-color: var(--color-red);
+    height: 100%;
+}
+
+.diff-stats-text-added {
+    color: var(--color-green);
+    font-weight: 600;
+}
+
+.diff-stats-text-removed {
+    color: var(--color-red);
+    font-weight: 600;
 }
 
 /* 版本操作按钮 */
@@ -555,7 +599,7 @@
     flex: 1;
     overflow: hidden;
     position: relative;
-    display: flex; /* [修正] 添加 flex 布局 */
+    display: flex;
 }
 
 /* 视图切换器 */
@@ -564,7 +608,7 @@
     padding: 2px;
     background-color: var(--background-primary);
     border-radius: 6px;
-    margin-right: auto; /* 将其推到工具栏最左侧 */
+    margin-right: auto;
 }
 
 .diff-view-switcher button {
@@ -585,12 +629,13 @@
 
 /* 渲染预览容器 */
 .rendered-diff-container {
-    flex: 1; /* [修正] 确保填满空间 */
+    flex: 1;
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 10px;
     height: 100%;
     padding: 10px;
+    background-color: var(--background-secondary);
 }
 
 .rendered-diff-panel {
@@ -599,6 +644,7 @@
     border: 1px solid var(--background-modifier-border);
     border-radius: 6px;
     overflow: hidden;
+    background-color: var(--background-primary);
 }
 
 .rendered-diff-panel h3 {
@@ -1237,21 +1283,24 @@
 /* 滚动条增强 */
 .diff-container::-webkit-scrollbar,
 .diff-content::-webkit-scrollbar,
-.diff-line-content::-webkit-scrollbar {
+.diff-line-content::-webkit-scrollbar,
+.rendered-diff-content::-webkit-scrollbar {
     width: 10px;
     height: 10px;
 }
 
 .diff-container::-webkit-scrollbar-track,
 .diff-content::-webkit-scrollbar-track,
-.diff-line-content::-webkit-scrollbar-track {
+.diff-line-content::-webkit-scrollbar-track,
+.rendered-diff-content::-webkit-scrollbar-track {
     background: var(--background-secondary);
     border-radius: 5px;
 }
 
 .diff-container::-webkit-scrollbar-thumb,
 .diff-content::-webkit-scrollbar-thumb,
-.diff-line-content::-webkit-scrollbar-thumb {
+.diff-line-content::-webkit-scrollbar-thumb,
+.rendered-diff-content::-webkit-scrollbar-thumb {
     background: var(--background-modifier-border-hover);
     border-radius: 5px;
     border: 2px solid var(--background-secondary);
@@ -1259,7 +1308,8 @@
 
 .diff-container::-webkit-scrollbar-thumb:hover,
 .diff-content::-webkit-scrollbar-thumb:hover,
-.diff-line-content::-webkit-scrollbar-thumb:hover {
+.diff-line-content::-webkit-scrollbar-thumb:hover,
+.rendered-diff-content::-webkit-scrollbar-thumb:hover {
     background: var(--text-muted);
 }
 
@@ -1573,7 +1623,8 @@
 .diff-container::-webkit-scrollbar,
 .diff-content::-webkit-scrollbar,
 .preview-content pre::-webkit-scrollbar,
-.version-select-list::-webkit-scrollbar {
+.version-select-list::-webkit-scrollbar,
+.rendered-diff-content::-webkit-scrollbar {
     width: 8px;
     height: 8px;
 }
@@ -1582,7 +1633,8 @@
 .diff-container::-webkit-scrollbar-track,
 .diff-content::-webkit-scrollbar-track,
 .preview-content pre::-webkit-scrollbar-track,
-.version-select-list::-webkit-scrollbar-track {
+.version-select-list::-webkit-scrollbar-track,
+.rendered-diff-content::-webkit-scrollbar-track {
     background: var(--background-secondary);
     border-radius: 4px;
 }
@@ -1591,7 +1643,8 @@
 .diff-container::-webkit-scrollbar-thumb,
 .diff-content::-webkit-scrollbar-thumb,
 .preview-content pre::-webkit-scrollbar-thumb,
-.version-select-list::-webkit-scrollbar-thumb {
+.version-select-list::-webkit-scrollbar-thumb,
+.rendered-diff-content::-webkit-scrollbar-thumb {
     background: var(--background-modifier-border-hover);
     border-radius: 4px;
 }
@@ -1600,7 +1653,8 @@
 .diff-container::-webkit-scrollbar-thumb:hover,
 .diff-content::-webkit-scrollbar-thumb:hover,
 .preview-content pre::-webkit-scrollbar-thumb:hover,
-.version-select-list::-webkit-scrollbar-thumb:hover {
+.version-select-list::-webkit-scrollbar-thumb:hover,
+.rendered-diff-content::-webkit-scrollbar-thumb:hover {
     background: var(--text-muted);
 }
 
