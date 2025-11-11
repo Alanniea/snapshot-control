@@ -1,3 +1,4 @@
+
 /* 状态栏可点击样式 */
 .version-control-statusbar-clickable {
     cursor: pointer;
@@ -1647,6 +1648,23 @@
 .theme-dark .diff-line.diff-moved-to .diff-marker {
     color: #e3b341;
 }
+
+/* ======================================================================= */
+/* =================== [新增] 空白字符高亮样式 =================== */
+/* ======================================================================= */
+
+/* 当显示空白字符时，让这些符号的颜色变淡，以免喧宾夺主 */
+.diff-container.show-whitespace-active .line-content {
+    color: var(--text-faint);
+}
+
+/* 同时，让真正的差异高亮（字符/单词）颜色保持正常，以突出重点 */
+.diff-container.show-whitespace-active .diff-char-added,
+.diff-container.show-whitespace-active .diff-char-removed,
+.diff-container.show-whitespace-active .diff-word-added,
+.diff-container.show-whitespace-active .diff-word-removed {
+    color: var(--text-normal);
+}
 ```
 
 ### 主要改动
@@ -1655,41 +1673,18 @@
 
 ```css
 /* ======================================================================= */
-/* ======================= [新增] 移动文本检测样式 ======================= */
+/* =================== [新增] 空白字符高亮样式 =================== */
 /* ======================================================================= */
 
-.diff-line.diff-moved-from,
-.diff-line.diff-moved-to {
-    background: rgba(240, 185, 10, 0.1); /* 淡黄色背景 */
-    border-left: 3px solid #f0b90a; /* 黄色边框 */
+/* 当显示空白字符时，让这些符号的颜色变淡，以免喧宾夺主 */
+.diff-container.show-whitespace-active .line-content {
+    color: var(--text-faint);
 }
 
-.diff-line.diff-moved-from .diff-marker,
-.diff-line.diff-moved-to .diff-marker {
-    color: #f0b90a; /* 黄色箭头 */
-    font-weight: bold;
-}
-
-.diff-line.diff-moved-from:hover,
-.diff-line.diff-moved-to:hover {
-    background: rgba(240, 185, 10, 0.2) !important;
-}
-
-/* 悬停时的高亮效果 */
-.diff-line.diff-move-highlight {
-    outline: 2px solid #f0b90a;
-    box-shadow: 0 0 10px rgba(240, 185, 10, 0.5);
-    z-index: 20; /* 确保高亮在最上层 */
-}
-
-/* 深色模式下的移动文本样式 */
-.theme-dark .diff-line.diff-moved-from,
-.theme-dark .diff-line.diff-moved-to {
-    background: rgba(240, 185, 10, 0.15);
-    border-left-color: #e3b341;
-}
-
-.theme-dark .diff-line.diff-moved-from .diff-marker,
-.theme-dark .diff-line.diff-moved-to .diff-marker {
-    color: #e3b341;
+/* 同时，让真正的差异高亮（字符/单词）颜色保持正常，以突出重点 */
+.diff-container.show-whitespace-active .diff-char-added,
+.diff-container.show-whitespace-active .diff-char-removed,
+.diff-container.show-whitespace-active .diff-word-added,
+.diff-container.show-whitespace-active .diff-word-removed {
+    color: var(--text-normal);
 }

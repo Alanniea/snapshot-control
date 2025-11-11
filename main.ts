@@ -2168,6 +2168,7 @@ class DiffModal extends Modal {
     currentGranularity: 'char' | 'word' | 'line';
     showOnlyChanges: boolean = true;
     enableMoveDetection: boolean = true;
+    showWhitespace: boolean = false; // [新增] 空白字符高亮开关状态
 
     constructor(app: App, plugin: VersionControlPlugin, file: TFile, versionId: string, secondVersionId?: string) {
         super(app);
@@ -2218,6 +2219,12 @@ class DiffModal extends Modal {
         }
 
         return processed;
+    }
+
+    // [新增] 可视化空白字符的辅助函数
+    visualizeWhitespace(text: string): string {
+        // 先替换Tab，再替换空格，避免替换掉Tab转换出的空格
+        return text.replace(/\t/g, '→   ').replace(/ /g, '·');
     }
 
 
@@ -2339,17 +2346,32 @@ class DiffModal extends Modal {
             renderDiff();
         });
 
-        const whitespaceBtn = viewGroup.createEl('button', { 
+        const ignoreWhitespaceBtn = viewGroup.createEl('button', { 
             text: '忽略空白',
             cls: this.ignoreWhitespace ? 'active' : '',
             attr: { 
-                title: '忽略空白字符',
+                title: '忽略空白字符的差异',
                 'aria-label': '忽略空白'
             }
         });
-        whitespaceBtn.addEventListener('click', () => {
+        ignoreWhitespaceBtn.addEventListener('click', () => {
             this.ignoreWhitespace = !this.ignoreWhitespace;
-            whitespaceBtn.toggleClass('active', this.ignoreWhitespace);
+            ignoreWhitespaceBtn.toggleClass('active', this.ignoreWhitespace);
+            renderDiff();
+        });
+
+        // [新增] 显示空白字符按钮
+        const showWhitespaceBtn = viewGroup.createEl('button', {
+            text: '显示空白',
+            cls: this.showWhitespace ? 'active' : '',
+            attr: {
+                title: '可视化显示空格和Tab',
+                'aria-label': '显示空白'
+            }
+        });
+        showWhitespaceBtn.addEventListener('click', () => {
+            this.showWhitespace = !this.showWhitespace;
+            showWhitespaceBtn.toggleClass('active', this.showWhitespace);
             renderDiff();
         });
         
@@ -2522,6 +2544,9 @@ class DiffModal extends Modal {
                 rightProcessed = this.rightContent.replace(/\s+/g, ' ').trim();
             }
             
+            // [新增] 根据开关状态添加/移除CSS类
+            diffContainer.toggleClass('show-whitespace-active', this.showWhitespace);
+
             if (modeSelect.value === 'unified') {
                 this.renderUnifiedDiff(diffContainer, leftProcessed, rightProcessed, this.currentGranularity);
             } else {
@@ -2906,7 +2931,9 @@ class DiffModal extends Modal {
             }
             const marker = type === 'added' ? '+' : type === 'removed' ? '-' : type === 'moved-from' ? '→' : type === 'moved-to' ? '←' : ' ';
             lineEl.createEl('span', { cls: 'diff-marker', text: marker });
-            lineEl.createEl('span', { cls: 'line-content', text: content });
+            // [修改] 应用空白字符可视化
+            const processedContent = this.showWhitespace ? this.visualizeWhitespace(content) : content;
+            lineEl.createEl('span', { cls: 'line-content', text: processedContent });
         };
 
         const renderHighlightedLine = (wordDiff: Diff.Change[], type: 'added' | 'removed', lineNum: number | null) => {
@@ -2925,24 +2952,27 @@ class DiffModal extends Modal {
                 const part = wordDiff[i];
                 const nextPart = wordDiff[i + 1];
 
+                // [修改] 应用空白字符可视化
+                const process = (text: string) => this.showWhitespace ? this.visualizeWhitespace(text) : text;
+
                 if (part.removed && nextPart && nextPart.added) {
                     const charDiff = Diff.diffChars(part.value, nextPart.value);
                     charDiff.forEach(charPart => {
                         if (type === 'removed' && !charPart.added) {
-                            const span = contentEl.createEl('span', { text: charPart.value });
+                            const span = contentEl.createEl('span', { text: process(charPart.value) });
                             if (charPart.removed) span.addClass('diff-char-removed');
                         } else if (type === 'added' && !charPart.removed) {
-                            const span = contentEl.createEl('span', { text: charPart.value });
+                            const span = contentEl.createEl('span', { text: process(charPart.value) });
                             if (charPart.added) span.addClass('diff-char-added');
                         }
                     });
                     i++;
                 } else if (part.added && type === 'added') {
-                    contentEl.createEl('span', { text: part.value, cls: 'diff-word-added' });
+                    contentEl.createEl('span', { text: process(part.value), cls: 'diff-word-added' });
                 } else if (part.removed && type === 'removed') {
-                    contentEl.createEl('span', { text: part.value, cls: 'diff-word-removed' });
+                    contentEl.createEl('span', { text: process(part.value), cls: 'diff-word-removed' });
                 } else if (!part.added && !part.removed) {
-                    contentEl.appendText(part.value);
+                    contentEl.appendText(process(part.value));
                 }
             }
         };
@@ -3024,7 +3054,8 @@ class DiffModal extends Modal {
                 if (fragment === '') continue;
 
                 const span = document.createElement('span');
-                span.textContent = fragment;
+                // [修改] 应用空白字符可视化
+                span.textContent = this.showWhitespace ? this.visualizeWhitespace(fragment) : fragment;
                 currentSpans.push(span);
 
                 if (part.added) {
@@ -3128,7 +3159,8 @@ class DiffModal extends Modal {
             }
             lineEl.createEl('span', { cls: 'diff-marker', text: marker });
             const contentEl = lineEl.createEl('span', { cls: 'line-content' });
-            contentEl.textContent = text;
+            // [修改] 应用空白字符可视化
+            contentEl.textContent = this.showWhitespace ? this.visualizeWhitespace(text) : text;
             if (text === '') contentEl.innerHTML = '&nbsp;';
         };
 
@@ -3210,19 +3242,22 @@ class DiffModal extends Modal {
                 for (let k = 0; k < inlineDiffs.length; k++) {
                     const inlinePart = inlineDiffs[k];
                     const nextInlinePart = inlineDiffs[k + 1];
+                    
+                    // [修改] 应用空白字符可视化
+                    const process = (text: string) => this.showWhitespace ? this.visualizeWhitespace(text) : text;
 
                     if (inlinePart.removed && nextInlinePart && nextInlinePart.added) {
                         const charDiff = Diff.diffChars(inlinePart.value, nextInlinePart.value);
                         charDiff.forEach(charPart => {
                             if (!charPart.added) {
                                 const span = document.createElement('span');
-                                span.textContent = charPart.value;
+                                span.textContent = process(charPart.value);
                                 if (charPart.removed) span.className = 'diff-char-removed';
                                 leftSpans.push(span);
                             }
                             if (!charPart.removed) {
                                 const span = document.createElement('span');
-                                span.textContent = charPart.value;
+                                span.textContent = process(charPart.value);
                                 if (charPart.added) span.className = 'diff-char-added';
                                 rightSpans.push(span);
                             }
@@ -3234,7 +3269,7 @@ class DiffModal extends Modal {
                             const text = fragments[j];
                             if (text) {
                                 const span = document.createElement('span');
-                                span.textContent = text;
+                                span.textContent = process(text);
                                 if (inlinePart.added) {
                                     span.className = 'diff-word-added';
                                     rightSpans.push(span);
