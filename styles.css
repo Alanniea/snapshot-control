@@ -658,7 +658,6 @@
     border-color: var(--interactive-accent);
 }
 
-/* [新增] 交换对比侧按钮样式 */
 .diff-swap-btn {
     background: none;
     border: none;
@@ -748,6 +747,17 @@
     border-radius: 4px;
     font-size: 11px;
     flex-wrap: wrap;
+}
+
+/* [新增] 统计实时更新的动画 */
+@keyframes diff-info-flash {
+    0% { background-color: var(--background-secondary); }
+    50% { background-color: var(--background-modifier-hover); }
+    100% { background-color: var(--background-secondary); }
+}
+
+.diff-info-banner-compact.diff-info-updated {
+    animation: diff-info-flash 0.5s ease-in-out;
 }
 
 .diff-info-item {

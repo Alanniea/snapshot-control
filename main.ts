@@ -1,3 +1,4 @@
+
 import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, Modal, ItemView, WorkspaceLeaf, Menu, TextComponent, MarkdownRenderer } from 'obsidian';
 import * as Diff from 'diff';
 import * as pako from 'pako';
@@ -2293,6 +2294,7 @@ class DiffModal extends Modal {
     private renderedDiffContainer: HTMLElement;
     private isRenderedViewBuilt: boolean = false;
     private allVersions: VersionData[] = []; // [新增] 缓存文件所有版本
+    private infoBannerContainer: HTMLElement; // [新增] 统计横幅的容器
 
     constructor(app: App, plugin: VersionControlPlugin, file: TFile, versionId: string, secondVersionId?: string) {
         super(app);
@@ -2361,7 +2363,6 @@ class DiffModal extends Modal {
         this.textDiffContainer = mainContainer.createEl('div', { cls: 'diff-container' });
         this.renderedDiffContainer = mainContainer.createEl('div', { cls: 'rendered-diff-container', attr: { style: 'display: none;' } });
 
-        // [新增] 先获取所有版本列表以备切换器使用
         try {
             this.allVersions = await this.plugin.getAllVersions(this.file.path);
         } catch (error) {
@@ -2370,8 +2371,10 @@ class DiffModal extends Modal {
             return;
         }
 
-        // [新增] 渲染版本快速切换器UI
         this.renderVersionSelectors(headerContainer);
+        
+        // [新增] 为统计横幅创建一个持久的容器
+        this.infoBannerContainer = headerContainer.createEl('div', { cls: 'diff-info-banner-compact' });
 
         const toolbar = headerContainer.createEl('div', { cls: 'diff-toolbar' });
         
@@ -2760,15 +2763,12 @@ class DiffModal extends Modal {
             }
         });
 
-        // [修改] 初始加载调用新的主函数
         await this.updateDiffView();
     }
 
-    // [修改] 渲染版本选择器UI (添加了交换按钮)
     renderVersionSelectors(container: HTMLElement) {
         const selectorContainer = container.createEl('div', { cls: 'diff-version-selector-container' });
 
-        // 左侧选择器
         const leftSelector = selectorContainer.createEl('div', { cls: 'diff-version-selector' });
         leftSelector.createEl('span', { text: '版本 A:', cls: 'diff-selector-label' });
         const leftBtn = leftSelector.createEl('button', { 
@@ -2780,7 +2780,6 @@ class DiffModal extends Modal {
             this.showVersionSelectionMenu(e as MouseEvent, 'left');
         });
 
-        // [新增] 交换按钮
         const swapBtn = selectorContainer.createEl('button', {
             text: '↔️',
             cls: 'diff-swap-btn',
@@ -2791,7 +2790,6 @@ class DiffModal extends Modal {
             await this.updateDiffView();
         });
 
-        // 右侧选择器
         const rightSelector = selectorContainer.createEl('div', { cls: 'diff-version-selector' });
         rightSelector.createEl('span', { text: '版本 B:', cls: 'diff-selector-label' });
         const rightBtn = rightSelector.createEl('button', { 
@@ -2804,11 +2802,9 @@ class DiffModal extends Modal {
         });
     }
 
-    // [新增] 显示版本选择菜单
     showVersionSelectionMenu(event: MouseEvent, side: 'left' | 'right') {
         const menu = new Menu();
 
-        // 添加 "当前文件" 选项
         menu.addItem((item) =>
             item
                 .setTitle('📄 当前文件')
@@ -2820,7 +2816,6 @@ class DiffModal extends Modal {
 
         menu.addSeparator();
 
-        // 添加所有历史版本
         this.allVersions.forEach((version) => {
             menu.addItem((item) =>
                 item
@@ -2835,21 +2830,20 @@ class DiffModal extends Modal {
         menu.showAtMouseEvent(event);
     }
 
-    // [新增] 处理版本选择变化的逻辑
     async handleVersionChange(side: 'left' | 'right', newVersionId: string) {
         const currentLeft = this.versionId;
         const currentRight = this.secondVersionId;
 
         if (side === 'left') {
-            if (newVersionId === currentLeft) return; // 未改变
-            if (newVersionId === currentRight) { // 如果选择了对方的版本，则交换
+            if (newVersionId === currentLeft) return;
+            if (newVersionId === currentRight) {
                 [this.versionId, this.secondVersionId] = [this.secondVersionId, this.versionId];
             } else {
                 this.versionId = newVersionId;
             }
-        } else { // side === 'right'
-            if (newVersionId === currentRight) return; // 未改变
-            if (newVersionId === currentLeft) { // 如果选择了对方的版本，则交换
+        } else {
+            if (newVersionId === currentRight) return;
+            if (newVersionId === currentLeft) {
                 [this.versionId, this.secondVersionId] = [this.secondVersionId, this.versionId];
             } else {
                 this.secondVersionId = newVersionId;
@@ -2859,34 +2853,27 @@ class DiffModal extends Modal {
         await this.updateDiffView();
     }
 
-    // [新增] 主更新函数，用于加载内容和刷新视图
     async updateDiffView() {
         const loadingNotice = new Notice('正在加载新版本...', 0);
         
         try {
-            // 加载左侧内容
             if (this.versionId === 'current') {
                 this.leftContent = await this.app.vault.read(this.file);
             } else {
                 this.leftContent = await this.plugin.getVersionContent(this.file.path, this.versionId);
             }
 
-            // 加载右侧内容
             if (this.secondVersionId === 'current') {
                 this.rightContent = await this.app.vault.read(this.file);
             } else {
                 this.rightContent = await this.plugin.getVersionContent(this.file.path, this.secondVersionId);
             }
 
-            // 更新选择器按钮的文本
             this.updateSelectorButtonLabels();
-
-            // 重新渲染差异
             this.renderTextDiff();
             
-            // 如果渲染视图已构建，也需要更新
             if (this.isRenderedViewBuilt) {
-                this.isRenderedViewBuilt = false; // 标记为需要重建
+                this.isRenderedViewBuilt = false;
                 if (this.currentView === 'rendered') {
                     this.renderRenderedView();
                     this.isRenderedViewBuilt = true;
@@ -2896,13 +2883,11 @@ class DiffModal extends Modal {
         } catch (error) {
             console.error("加载差异失败:", error);
             new Notice('❌ 加载版本内容失败');
-            // 可以在这里选择关闭模态框或显示错误信息
         } finally {
             loadingNotice.hide();
         }
     }
 
-    // [新增] 更新选择器按钮标签的辅助函数
     updateSelectorButtonLabels() {
         const leftBtn = this.containerEl.querySelector('#diff-left-version-btn') as HTMLButtonElement;
         const rightBtn = this.containerEl.querySelector('#diff-right-version-btn') as HTMLButtonElement;
@@ -2926,7 +2911,7 @@ class DiffModal extends Modal {
         }
     }
 
-    async renderRenderedView() { // [修改] 移除参数，因为内容已是类属性
+    async renderRenderedView() {
         this.renderedDiffContainer.empty();
         
         const leftPanel = this.renderedDiffContainer.createEl('div', { cls: 'rendered-diff-panel' });
@@ -3013,30 +2998,40 @@ class DiffModal extends Modal {
             lastDiffBtn.disabled = true;
         }
         
+        // [修改] 将统计更新也放在这里，确保每次渲染都更新
+        this.updateCompactDiffInfo();
+        
         this.plugin.refreshVersionHistoryView();
     }
     
-    updateCompactDiffInfo(container: HTMLElement) {
+    // [修改] 实时更新统计信息的核心改动
+    updateCompactDiffInfo() {
+        const container = this.infoBannerContainer;
         if (!container) return;
         container.empty();
+
+        // [新增] 根据 ignoreWhitespace 标志处理文本
+        let leftProcessed = this.leftContent;
+        let rightProcessed = this.rightContent;
+        if (this.ignoreWhitespace) {
+            leftProcessed = this.leftContent.replace(/\s+/g, ' ').trim();
+            rightProcessed = this.rightContent.replace(/\s+/g, ' ').trim();
+        }
         
-        const diffResult = Diff.diffLines(this.leftContent, this.rightContent);
+        const diffResult = Diff.diffLines(leftProcessed, rightProcessed);
         let addedLines = 0;
         let removedLines = 0;
-        let changedLines = 0;
         
         for (const part of diffResult) {
-            const lineCount = (part.value.match(/\n/g) || []).length;
             if (part.added) {
-                addedLines += lineCount;
-                changedLines += lineCount;
+                addedLines += part.count || 0;
             } else if (part.removed) {
-                removedLines += lineCount;
-                changedLines += lineCount;
+                removedLines += part.count || 0;
             }
         }
         
         const totalLines = this.leftContent.split('\n').length;
+        const changedLines = addedLines + removedLines;
         const changePercent = totalLines > 0 ? ((changedLines / totalLines) * 100).toFixed(1) : '0';
         
         container.createEl('span', { text: `📊 总行数: ${totalLines}`, cls: 'diff-info-item' });
@@ -3044,6 +3039,12 @@ class DiffModal extends Modal {
         container.createEl('span', { text: `-${removedLines}`, cls: 'diff-info-removed' });
         container.createEl('span', { text: `~${changedLines}`, cls: 'diff-info-changed' });
         container.createEl('span', { text: `变化率: ${changePercent}%`, cls: 'diff-info-percent' });
+
+        // [新增] 添加视觉反馈，提示用户统计已更新
+        container.addClass('diff-info-updated');
+        setTimeout(() => {
+            container.removeClass('diff-info-updated');
+        }, 500);
     }
 
     showDetailedStats() {
