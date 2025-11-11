@@ -1,3 +1,4 @@
+
 /* 状态栏可点击样式 */
 .version-control-statusbar-clickable {
     cursor: pointer;
@@ -543,7 +544,7 @@
     color: var(--text-muted);
 }
 
-/* [修改] Diff Modal 整体布局 */
+/* Diff Modal 整体布局 */
 .diff-modal .modal-content {
     display: flex;
     flex-direction: column;
@@ -554,9 +555,10 @@
     flex: 1;
     overflow: hidden;
     position: relative;
+    display: flex; /* [修正] 添加 flex 布局 */
 }
 
-/* [新增] 视图切换器 */
+/* 视图切换器 */
 .diff-view-switcher {
     display: flex;
     padding: 2px;
@@ -581,8 +583,9 @@
     box-shadow: 0 1px 3px rgba(0,0,0,0.1);
 }
 
-/* [新增] 渲染预览容器 */
+/* 渲染预览容器 */
 .rendered-diff-container {
+    flex: 1; /* [修正] 确保填满空间 */
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 10px;
