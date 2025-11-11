@@ -1,4 +1,3 @@
-
 import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, Modal, ItemView, WorkspaceLeaf, Menu, TextComponent, MarkdownRenderer } from 'obsidian';
 import * as Diff from 'diff';
 import * as pako from 'pako';
@@ -2765,7 +2764,7 @@ class DiffModal extends Modal {
         await this.updateDiffView();
     }
 
-    // [新增] 渲染版本选择器UI
+    // [修改] 渲染版本选择器UI (添加了交换按钮)
     renderVersionSelectors(container: HTMLElement) {
         const selectorContainer = container.createEl('div', { cls: 'diff-version-selector-container' });
 
@@ -2781,7 +2780,7 @@ class DiffModal extends Modal {
             this.showVersionSelectionMenu(e as MouseEvent, 'left');
         });
 
-        // 交换按钮
+        // [新增] 交换按钮
         const swapBtn = selectorContainer.createEl('button', {
             text: '↔️',
             cls: 'diff-swap-btn',
