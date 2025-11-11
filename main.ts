@@ -1,5 +1,5 @@
 
-import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, Modal, ItemView, WorkspaceLeaf, Menu, TextComponent } from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, Modal, ItemView, WorkspaceLeaf, Menu, TextComponent, MarkdownRenderer } from 'obsidian';
 import * as Diff from 'diff';
 import * as pako from 'pako';
 
@@ -1134,6 +1134,11 @@ class QuickPreviewModal extends Modal {
     plugin: VersionControlPlugin;
     file: TFile;
     versionId: string;
+    
+    private isRenderedView: boolean = true;
+    private contentContainer: HTMLElement;
+    private versionContent: string;
+    private toggleButton: HTMLButtonElement;
 
     constructor(app: App, plugin: VersionControlPlugin, file: TFile, versionId: string) {
         super(app);
@@ -1147,7 +1152,7 @@ class QuickPreviewModal extends Modal {
         contentEl.addClass('quick-preview-modal');
 
         try {
-            const content = await this.plugin.getVersionContent(this.file.path, this.versionId);
+            this.versionContent = await this.plugin.getVersionContent(this.file.path, this.versionId);
             const versions = await this.plugin.getAllVersions(this.file.path);
             const version = versions.find(v => v.id === this.versionId);
 
@@ -1156,80 +1161,81 @@ class QuickPreviewModal extends Modal {
             
             if (version) {
                 const info = header.createEl('div', { cls: 'preview-info' });
-                info.createEl('span', { 
-                    text: `⏰ ${this.plugin.formatTime(version.timestamp)}`,
-                    cls: 'preview-time'
-                });
-                info.createEl('span', { 
-                    text: `💬 ${version.message}`,
-                    cls: 'preview-message'
-                });
-                info.createEl('span', { 
-                    text: `📦 ${this.plugin.formatFileSize(version.size)}`,
-                    cls: 'preview-size'
-                });
+                info.createEl('span', { text: `⏰ ${this.plugin.formatTime(version.timestamp)}`, cls: 'preview-time' });
+                info.createEl('span', { text: `💬 ${version.message}`, cls: 'preview-message' });
+                info.createEl('span', { text: `📦 ${this.plugin.formatFileSize(version.size)}`, cls: 'preview-size' });
             }
 
             const toolbar = contentEl.createEl('div', { cls: 'preview-toolbar' });
             
-            const copyBtn = toolbar.createEl('button', { 
-                text: '📋 复制内容',
-                cls: 'mod-cta'
+            this.toggleButton = toolbar.createEl('button', { text: '👓 切换原始文本' });
+            this.toggleButton.addEventListener('click', () => {
+                this.isRenderedView = !this.isRenderedView;
+                this.renderContent();
             });
+
+            const copyBtn = toolbar.createEl('button', { text: '📋 复制内容', cls: 'mod-cta' });
             copyBtn.addEventListener('click', () => {
-                navigator.clipboard.writeText(content).then(() => {
+                navigator.clipboard.writeText(this.versionContent).then(() => {
                     new Notice('✅ 内容已复制到剪贴板');
                 }).catch(() => {
                     new Notice('❌ 复制失败');
                 });
             });
 
-            const restoreBtn = toolbar.createEl('button', { 
-                text: '↩️ 恢复此版本'
-            });
+            const restoreBtn = toolbar.createEl('button', { text: '↩️ 恢复此版本' });
             restoreBtn.addEventListener('click', async () => {
                 this.close();
                 await this.plugin.restoreVersion(this.file, this.versionId);
             });
 
-            const compareBtn = toolbar.createEl('button', { 
-                text: '🔀 详细对比'
-            });
+            const compareBtn = toolbar.createEl('button', { text: '🔀 详细对比' });
             compareBtn.addEventListener('click', () => {
                 this.close();
                 new DiffModal(this.app, this.plugin, this.file, this.versionId).open();
             });
 
-            const exportBtn = toolbar.createEl('button', { 
-                text: '💾 导出文件'
-            });
+            const exportBtn = toolbar.createEl('button', { text: '💾 导出文件' });
             exportBtn.addEventListener('click', async () => {
                 await this.plugin.exportVersionAsFile(this.file.path, this.versionId);
             });
 
-            const contentContainer = contentEl.createEl('div', { cls: 'preview-content' });
+            this.contentContainer = contentEl.createEl('div', { cls: 'preview-content-container' });
             
-            const lines = content.split('\n');
-            const lineNumbers = contentContainer.createEl('div', { cls: 'preview-line-numbers' });
-            lines.forEach((_, index) => {
-                lineNumbers.createEl('div', { 
-                    text: String(index + 1),
-                    cls: 'line-number'
-                });
-            });
-            
-            const pre = contentContainer.createEl('pre');
-            pre.createEl('code', { text: content });
+            this.renderContent();
 
             const statsBar = contentEl.createEl('div', { cls: 'preview-stats-bar' });
+            const lines = this.versionContent.split('\n');
             statsBar.createEl('span', { text: `📝 ${lines.length} 行` });
-            statsBar.createEl('span', { text: `🔤 ${content.length} 字符` });
-            const words = content.split(/\s+/).filter(w => w.length > 0).length;
+            statsBar.createEl('span', { text: `🔤 ${this.versionContent.length} 字符` });
+            const words = this.versionContent.split(/\s+/).filter(w => w.length > 0).length;
             statsBar.createEl('span', { text: `📄 ${words} 词` });
 
         } catch (error) {
             contentEl.createEl('p', { text: '❌ 加载预览失败' });
             console.error('预览加载失败:', error);
+        }
+    }
+
+    async renderContent() {
+        this.contentContainer.empty();
+
+        if (this.isRenderedView) {
+            this.toggleButton.setText('👓 切换原始文本');
+            const renderDiv = this.contentContainer.createEl('div', { cls: 'preview-rendered-content' });
+            await MarkdownRenderer.renderMarkdown(this.versionContent, renderDiv, this.file.path, this.plugin);
+        } else {
+            this.toggleButton.setText('📖 切换渲染视图');
+            const rawContainer = this.contentContainer.createEl('div', { cls: 'preview-raw-container' });
+            
+            const lines = this.versionContent.split('\n');
+            const lineNumbers = rawContainer.createEl('div', { cls: 'preview-line-numbers' });
+            lines.forEach((_, index) => {
+                lineNumbers.createEl('div', { text: String(index + 1), cls: 'line-number' });
+            });
+            
+            const pre = rawContainer.createEl('pre');
+            pre.createEl('code', { text: this.versionContent });
         }
     }
 
@@ -2168,7 +2174,7 @@ class DiffModal extends Modal {
     currentGranularity: 'char' | 'word' | 'line';
     showOnlyChanges: boolean = true;
     enableMoveDetection: boolean = true;
-    showWhitespace: boolean = false; // [新增] 空白字符高亮开关状态
+    showWhitespace: boolean = false;
 
     constructor(app: App, plugin: VersionControlPlugin, file: TFile, versionId: string, secondVersionId?: string) {
         super(app);
@@ -2221,9 +2227,7 @@ class DiffModal extends Modal {
         return processed;
     }
 
-    // [新增] 可视化空白字符的辅助函数
     visualizeWhitespace(text: string): string {
-        // 先替换Tab，再替换空格，避免替换掉Tab转换出的空格
         return text.replace(/\t/g, '→   ').replace(/ /g, '·');
     }
 
@@ -2360,7 +2364,6 @@ class DiffModal extends Modal {
             renderDiff();
         });
 
-        // [新增] 显示空白字符按钮
         const showWhitespaceBtn = viewGroup.createEl('button', {
             text: '显示空白',
             cls: this.showWhitespace ? 'active' : '',
@@ -2544,7 +2547,6 @@ class DiffModal extends Modal {
                 rightProcessed = this.rightContent.replace(/\s+/g, ' ').trim();
             }
             
-            // [新增] 根据开关状态添加/移除CSS类
             diffContainer.toggleClass('show-whitespace-active', this.showWhitespace);
 
             if (modeSelect.value === 'unified') {
@@ -2931,7 +2933,6 @@ class DiffModal extends Modal {
             }
             const marker = type === 'added' ? '+' : type === 'removed' ? '-' : type === 'moved-from' ? '→' : type === 'moved-to' ? '←' : ' ';
             lineEl.createEl('span', { cls: 'diff-marker', text: marker });
-            // [修改] 应用空白字符可视化
             const processedContent = this.showWhitespace ? this.visualizeWhitespace(content) : content;
             lineEl.createEl('span', { cls: 'line-content', text: processedContent });
         };
@@ -2952,7 +2953,6 @@ class DiffModal extends Modal {
                 const part = wordDiff[i];
                 const nextPart = wordDiff[i + 1];
 
-                // [修改] 应用空白字符可视化
                 const process = (text: string) => this.showWhitespace ? this.visualizeWhitespace(text) : text;
 
                 if (part.removed && nextPart && nextPart.added) {
@@ -3054,7 +3054,6 @@ class DiffModal extends Modal {
                 if (fragment === '') continue;
 
                 const span = document.createElement('span');
-                // [修改] 应用空白字符可视化
                 span.textContent = this.showWhitespace ? this.visualizeWhitespace(fragment) : fragment;
                 currentSpans.push(span);
 
@@ -3159,7 +3158,6 @@ class DiffModal extends Modal {
             }
             lineEl.createEl('span', { cls: 'diff-marker', text: marker });
             const contentEl = lineEl.createEl('span', { cls: 'line-content' });
-            // [修改] 应用空白字符可视化
             contentEl.textContent = this.showWhitespace ? this.visualizeWhitespace(text) : text;
             if (text === '') contentEl.innerHTML = '&nbsp;';
         };
@@ -3243,7 +3241,6 @@ class DiffModal extends Modal {
                     const inlinePart = inlineDiffs[k];
                     const nextInlinePart = inlineDiffs[k + 1];
                     
-                    // [修改] 应用空白字符可视化
                     const process = (text: string) => this.showWhitespace ? this.visualizeWhitespace(text) : text;
 
                     if (inlinePart.removed && nextInlinePart && nextInlinePart.added) {
