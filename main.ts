@@ -2176,6 +2176,12 @@ class DiffModal extends Modal {
     enableMoveDetection: boolean = true;
     showWhitespace: boolean = false;
 
+    // [新增] 渲染预览相关状态和元素
+    private currentView: 'text' | 'rendered' = 'text';
+    private textDiffContainer: HTMLElement;
+    private renderedDiffContainer: HTMLElement;
+    private isRenderedViewBuilt: boolean = false;
+
     constructor(app: App, plugin: VersionControlPlugin, file: TFile, versionId: string, secondVersionId?: string) {
         super(app);
         this.plugin = plugin;
@@ -2238,8 +2244,19 @@ class DiffModal extends Modal {
 
         contentEl.createEl('h2', { text: '📊 版本差异对比' });
 
-        const toolbar = contentEl.createEl('div', { cls: 'diff-toolbar' });
+        // [修改] 整体布局调整
+        const headerContainer = contentEl.createEl('div');
+        const mainContainer = contentEl.createEl('div', { cls: 'diff-main-container' });
+        this.textDiffContainer = mainContainer.createEl('div', { cls: 'diff-container' });
+        this.renderedDiffContainer = mainContainer.createEl('div', { cls: 'rendered-diff-container', attr: { style: 'display: none;' } });
+
+        const toolbar = headerContainer.createEl('div', { cls: 'diff-toolbar' });
         
+        // [新增] 视图切换器
+        const viewSwitcher = toolbar.createEl('div', { cls: 'diff-view-switcher' });
+        const textDiffBtn = viewSwitcher.createEl('button', { text: '文本差异', cls: 'active' });
+        const renderedDiffBtn = viewSwitcher.createEl('button', { text: '渲染预览' });
+
         const navGroup = toolbar.createEl('div', { cls: 'diff-nav-group' });
         const prevBtn = navGroup.createEl('button', { 
             text: '上一个',
@@ -2285,7 +2302,7 @@ class DiffModal extends Modal {
         moveDetectionBtn.addEventListener('click', () => {
             this.enableMoveDetection = !this.enableMoveDetection;
             moveDetectionBtn.toggleClass('active', this.enableMoveDetection);
-            renderDiff();
+            this.renderTextDiff();
         });
 
         const contextToggleBtn = viewGroup.createEl('button', { 
@@ -2299,7 +2316,7 @@ class DiffModal extends Modal {
         contextToggleBtn.addEventListener('click', () => {
             this.showContext = !this.showContext;
             contextToggleBtn.toggleClass('active', this.showContext);
-            renderDiff();
+            this.renderTextDiff();
         });
         
         const contextLinesInput = viewGroup.createEl('input', {
@@ -2317,7 +2334,7 @@ class DiffModal extends Modal {
             const val = parseInt(contextLinesInput.value);
             if (!isNaN(val) && val > 0 && val <= 10) {
                 this.contextLines = val;
-                renderDiff();
+                this.renderTextDiff();
             }
         });
 
@@ -2332,7 +2349,7 @@ class DiffModal extends Modal {
         lineNumberBtn.addEventListener('click', () => {
             this.showLineNumbers = !this.showLineNumbers;
             lineNumberBtn.toggleClass('active', this.showLineNumbers);
-            renderDiff();
+            this.renderTextDiff();
         });
 
         this.wrapLines = true;
@@ -2347,7 +2364,7 @@ class DiffModal extends Modal {
         wrapBtn.addEventListener('click', () => {
             this.wrapLines = !this.wrapLines;
             wrapBtn.toggleClass('active', this.wrapLines);
-            renderDiff();
+            this.renderTextDiff();
         });
 
         const ignoreWhitespaceBtn = viewGroup.createEl('button', { 
@@ -2361,7 +2378,7 @@ class DiffModal extends Modal {
         ignoreWhitespaceBtn.addEventListener('click', () => {
             this.ignoreWhitespace = !this.ignoreWhitespace;
             ignoreWhitespaceBtn.toggleClass('active', this.ignoreWhitespace);
-            renderDiff();
+            this.renderTextDiff();
         });
 
         const showWhitespaceBtn = viewGroup.createEl('button', {
@@ -2375,7 +2392,7 @@ class DiffModal extends Modal {
         showWhitespaceBtn.addEventListener('click', () => {
             this.showWhitespace = !this.showWhitespace;
             showWhitespaceBtn.toggleClass('active', this.showWhitespace);
-            renderDiff();
+            this.renderTextDiff();
         });
         
         const showOnlyChangesBtn = viewGroup.createEl('button', {
@@ -2389,7 +2406,7 @@ class DiffModal extends Modal {
         showOnlyChangesBtn.addEventListener('click', () => {
             this.showOnlyChanges = !this.showOnlyChanges;
             showOnlyChangesBtn.toggleClass('active', this.showOnlyChanges);
-            renderDiff();
+            this.renderTextDiff();
         });
         
         const granularitySelect = viewGroup.createEl('select', {
@@ -2406,7 +2423,7 @@ class DiffModal extends Modal {
         granularitySelect.addEventListener('change', () => {
             this.currentGranularity = granularitySelect.value as 'char' | 'word' | 'line';
             this.collapsedSections.clear();
-            renderDiff();
+            this.renderTextDiff();
         });
 
         const modeSelect = viewGroup.createEl('select', { 
@@ -2431,7 +2448,7 @@ class DiffModal extends Modal {
         });
         expandAllBtn.addEventListener('click', () => {
             this.collapsedSections.clear();
-            renderDiff();
+            this.renderTextDiff();
         });
 
         const collapseAllBtn = actionGroup.createEl('button', { 
@@ -2450,7 +2467,7 @@ class DiffModal extends Modal {
                         this.collapsedSections.add(idx);
                     }
                 });
-                renderDiff();
+                this.renderTextDiff();
             }
         });
 
@@ -2528,63 +2545,40 @@ class DiffModal extends Modal {
             return;
         }
 
-        const infoBanner = contentEl.createEl('div', { cls: 'diff-info-banner-compact' });
+        const infoBanner = headerContainer.createEl('div', { cls: 'diff-info-banner-compact' });
         this.updateCompactDiffInfo(infoBanner);
 
-        const diffContainer = contentEl.createEl('div', { cls: 'diff-container' });
-
-        const renderDiff = () => {
-            diffContainer.empty();
-            this.diffElements = [];
-            this.currentDiffIndex = 0;
-            this.totalDiffs = 0;
-            
-            let leftProcessed = this.leftContent;
-            let rightProcessed = this.rightContent;
-            
-            if (this.ignoreWhitespace) {
-                leftProcessed = this.leftContent.replace(/\s+/g, ' ').trim();
-                rightProcessed = this.rightContent.replace(/\s+/g, ' ').trim();
-            }
-            
-            diffContainer.toggleClass('show-whitespace-active', this.showWhitespace);
-
-            if (modeSelect.value === 'unified') {
-                this.renderUnifiedDiff(diffContainer, leftProcessed, rightProcessed, this.currentGranularity);
+        // [修改] 视图切换逻辑
+        const switchView = (view: 'text' | 'rendered') => {
+            this.currentView = view;
+            if (view === 'text') {
+                textDiffBtn.addClass('active');
+                renderedDiffBtn.removeClass('active');
+                this.textDiffContainer.style.display = '';
+                this.renderedDiffContainer.style.display = 'none';
+                // 显示文本差异相关的工具
+                [navGroup, viewGroup, actionGroup].forEach(g => g.style.display = 'flex');
             } else {
-                this.renderSplitDiff(diffContainer, leftProcessed, rightProcessed, this.currentGranularity, leftLabel, rightLabel);
+                textDiffBtn.removeClass('active');
+                renderedDiffBtn.addClass('active');
+                this.textDiffContainer.style.display = 'none';
+                this.renderedDiffContainer.style.display = '';
+                // 隐藏文本差异相关的工具
+                [navGroup, viewGroup, actionGroup].forEach(g => g.style.display = 'none');
+                
+                if (!this.isRenderedViewBuilt) {
+                    this.renderRenderedView(leftLabel, rightLabel);
+                    this.isRenderedViewBuilt = true;
+                }
             }
-
-            if (this.wrapLines) {
-                diffContainer.addClass('diff-wrap-lines');
-            } else {
-                diffContainer.removeClass('diff-wrap-lines');
-            }
-
-            this.totalDiffs = this.diffElements.length;
-            if (this.totalDiffs > 0) {
-                statsEl.setText(`${this.currentDiffIndex + 1} / ${this.totalDiffs}`);
-                prevBtn.disabled = false;
-                nextBtn.disabled = this.totalDiffs === 1;
-                firstDiffBtn.disabled = false;
-                lastDiffBtn.disabled = this.totalDiffs === 1;
-                setTimeout(() => this.scrollToDiff(), 100);
-            } else {
-                statsEl.setText(leftProcessed === rightProcessed ? '✅ 相同' : '📊 无差异');
-                prevBtn.disabled = true;
-                nextBtn.disabled = true;
-                firstDiffBtn.disabled = true;
-                lastDiffBtn.disabled = true;
-            }
-
-            this.updateCompactDiffInfo(infoBanner);
-            
-            this.plugin.refreshVersionHistoryView();
         };
-        
+
+        textDiffBtn.addEventListener('click', () => switchView('text'));
+        renderedDiffBtn.addEventListener('click', () => switchView('rendered'));
+
         modeSelect.addEventListener('change', () => {
             this.collapsedSections.clear();
-            renderDiff();
+            this.renderTextDiff();
         });
         
         prevBtn.addEventListener('click', () => {
@@ -2634,52 +2628,146 @@ class DiffModal extends Modal {
         });
 
         this.scope.register([], 'ArrowUp', () => {
-            if (!prevBtn.disabled) prevBtn.click();
+            if (this.currentView === 'text' && !prevBtn.disabled) prevBtn.click();
             return false;
         });
 
         this.scope.register([], 'ArrowDown', () => {
-            if (!nextBtn.disabled) nextBtn.click();
+            if (this.currentView === 'text' && !nextBtn.disabled) nextBtn.click();
             return false;
         });
 
         this.scope.register(['Ctrl'], 'f', (evt) => {
-            evt.preventDefault();
-            this.showSearchBox();
+            if (this.currentView === 'text') {
+                evt.preventDefault();
+                this.showSearchBox();
+            }
             return false;
         });
 
         this.scope.register(['Mod'], 'f', (evt) => {
-            evt.preventDefault();
-            this.showSearchBox();
+            if (this.currentView === 'text') {
+                evt.preventDefault();
+                this.showSearchBox();
+            }
             return false;
         });
 
-        diffContainer.addEventListener('mouseover', (e) => {
+        this.textDiffContainer.addEventListener('mouseover', (e) => {
             const target = e.target as HTMLElement;
             const line = target.closest('[data-move-id]') as HTMLElement;
             if (line) {
                 const moveId = line.dataset.moveId;
-                diffContainer.querySelectorAll(`[data-move-id="${moveId}"]`).forEach(el => {
+                this.textDiffContainer.querySelectorAll(`[data-move-id="${moveId}"]`).forEach(el => {
                     el.addClass('diff-move-highlight');
                 });
             }
         });
-        diffContainer.addEventListener('mouseout', (e) => {
+        this.textDiffContainer.addEventListener('mouseout', (e) => {
             const target = e.target as HTMLElement;
             const line = target.closest('[data-move-id]') as HTMLElement;
             if (line) {
                 const moveId = line.dataset.moveId;
-                diffContainer.querySelectorAll(`[data-move-id="${moveId}"]`).forEach(el => {
+                this.textDiffContainer.querySelectorAll(`[data-move-id="${moveId}"]`).forEach(el => {
                     el.removeClass('diff-move-highlight');
                 });
             }
         });
 
-        renderDiff();
+        this.renderTextDiff();
+    }
+
+    // [新增] 渲染“渲染预览”视图的函数
+    async renderRenderedView(leftLabel: string, rightLabel: string) {
+        this.renderedDiffContainer.empty();
+        
+        const leftPanel = this.renderedDiffContainer.createEl('div', { cls: 'rendered-diff-panel' });
+        const rightPanel = this.renderedDiffContainer.createEl('div', { cls: 'rendered-diff-panel' });
+
+        leftPanel.createEl('h3', { text: leftLabel });
+        rightPanel.createEl('h3', { text: rightLabel });
+
+        const leftContent = leftPanel.createEl('div', { cls: 'rendered-diff-content' });
+        const rightContent = rightPanel.createEl('div', { cls: 'rendered-diff-content' });
+
+        await MarkdownRenderer.renderMarkdown(this.leftContent, leftContent, this.file.path, this.plugin);
+        await MarkdownRenderer.renderMarkdown(this.rightContent, rightContent, this.file.path, this.plugin);
+
+        // 同步滚动
+        let isScrolling = false;
+        const syncScroll = (source: HTMLElement, target: HTMLElement) => {
+            if (isScrolling) return;
+            isScrolling = true;
+            target.scrollTop = source.scrollTop;
+            setTimeout(() => { isScrolling = false; }, 50);
+        };
+
+        leftContent.addEventListener('scroll', () => syncScroll(leftContent, rightContent));
+        rightContent.addEventListener('scroll', () => syncScroll(rightContent, leftContent));
+    }
+
+    // [修改] 将原 renderDiff 重命名为 renderTextDiff
+    renderTextDiff() {
+        const container = this.textDiffContainer;
+        container.empty();
+        this.diffElements = [];
+        this.currentDiffIndex = 0;
+        this.totalDiffs = 0;
+        
+        let leftProcessed = this.leftContent;
+        let rightProcessed = this.rightContent;
+        
+        if (this.ignoreWhitespace) {
+            leftProcessed = this.leftContent.replace(/\s+/g, ' ').trim();
+            rightProcessed = this.rightContent.replace(/\s+/g, ' ').trim();
+        }
+        
+        container.toggleClass('show-whitespace-active', this.showWhitespace);
+        
+        const modeSelect = this.containerEl.querySelector('.diff-select[aria-label="视图模式"]') as HTMLSelectElement;
+        if (modeSelect.value === 'unified') {
+            this.renderUnifiedDiff(container, leftProcessed, rightProcessed, this.currentGranularity);
+        } else {
+            const leftLabel = this.containerEl.querySelector('.diff-panel h3')?.textContent || '版本 A';
+            const rightLabel = this.containerEl.querySelectorAll('.diff-panel h3')[1]?.textContent || '版本 B';
+            this.renderSplitDiff(container, leftProcessed, rightProcessed, this.currentGranularity, leftLabel, rightLabel);
+        }
+
+        if (this.wrapLines) {
+            container.addClass('diff-wrap-lines');
+        } else {
+            container.removeClass('diff-wrap-lines');
+        }
+
+        this.totalDiffs = this.diffElements.length;
+        const statsEl = this.containerEl.querySelector('.diff-stats') as HTMLElement;
+        const prevBtn = this.containerEl.querySelector('.diff-nav-group button:first-child') as HTMLButtonElement;
+        const nextBtn = this.containerEl.querySelector('.diff-nav-group button:nth-child(3)') as HTMLButtonElement;
+        const firstDiffBtn = this.containerEl.querySelector('.diff-nav-group button:nth-child(4)') as HTMLButtonElement;
+        const lastDiffBtn = this.containerEl.querySelector('.diff-nav-group button:last-child') as HTMLButtonElement;
+
+        if (this.totalDiffs > 0) {
+            statsEl.setText(`${this.currentDiffIndex + 1} / ${this.totalDiffs}`);
+            prevBtn.disabled = false;
+            nextBtn.disabled = this.totalDiffs === 1;
+            firstDiffBtn.disabled = false;
+            lastDiffBtn.disabled = this.totalDiffs === 1;
+            setTimeout(() => this.scrollToDiff(), 100);
+        } else {
+            statsEl.setText(leftProcessed === rightProcessed ? '✅ 相同' : '📊 无差异');
+            prevBtn.disabled = true;
+            nextBtn.disabled = true;
+            firstDiffBtn.disabled = true;
+            lastDiffBtn.disabled = true;
+        }
+
+        this.updateCompactDiffInfo(this.containerEl.querySelector('.diff-info-banner-compact') as HTMLElement);
+        
+        this.plugin.refreshVersionHistoryView();
     }
 
     updateCompactDiffInfo(container: HTMLElement) {
+        if (!container) return;
         container.empty();
         
         const diffResult = Diff.diffLines(this.leftContent, this.rightContent);
