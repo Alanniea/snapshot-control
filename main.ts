@@ -2794,7 +2794,7 @@ class DiffModal extends Modal {
     }
 
     /**
-     * [ENHANCED] Renders line-level diffs with intra-line highlighting for modified lines.
+     * [ENHANCED] Renders line-level diffs with intra-line, character-level sub-highlighting for modified lines.
      */
     renderLineDiff(container: HTMLElement, diffResult: Diff.Change[]) {
         let leftLineNum = 1;
@@ -2828,15 +2828,30 @@ class DiffModal extends Modal {
             lineEl.createEl('span', { cls: 'diff-marker', text: marker });
             const contentEl = lineEl.createEl('span', { cls: 'line-content' });
 
-            wordDiff.forEach(part => {
-                if (part.added && type === 'added') {
+            for (let i = 0; i < wordDiff.length; i++) {
+                const part = wordDiff[i];
+                const nextPart = wordDiff[i + 1];
+
+                if (part.removed && nextPart && nextPart.added) {
+                    const charDiff = Diff.diffChars(part.value, nextPart.value);
+                    charDiff.forEach(charPart => {
+                        if (type === 'removed' && !charPart.added) {
+                            const span = contentEl.createEl('span', { text: charPart.value });
+                            if (charPart.removed) span.addClass('diff-char-removed');
+                        } else if (type === 'added' && !charPart.removed) {
+                            const span = contentEl.createEl('span', { text: charPart.value });
+                            if (charPart.added) span.addClass('diff-char-added');
+                        }
+                    });
+                    i++;
+                } else if (part.added && type === 'added') {
                     contentEl.createEl('span', { text: part.value, cls: 'diff-word-added' });
                 } else if (part.removed && type === 'removed') {
                     contentEl.createEl('span', { text: part.value, cls: 'diff-word-removed' });
                 } else if (!part.added && !part.removed) {
                     contentEl.appendText(part.value);
                 }
-            });
+            }
         };
 
         for (let i = 0; i < diffResult.length; i++) {
@@ -2990,9 +3005,9 @@ class DiffModal extends Modal {
     }
 
     /**
-     * [REFACTORED] This is the primary, advanced rendering method for split view.
+     * [ENHANCED] This is the primary, advanced rendering method for split view.
      * It handles all granularities and performs a two-pass diff (lines then words/chars)
-     * to provide accurate alignment and intra-line highlighting.
+     * to provide accurate alignment and intra-line, character-level sub-highlighting.
      */
     renderSplitAdvanced(leftPanel: HTMLElement, rightPanel: HTMLElement, leftText: string, rightText: string, granularity: 'char' | 'word' | 'line') {
         let leftLineNum = 1;
@@ -3065,26 +3080,48 @@ class DiffModal extends Modal {
                     rightSpans = [];
                 };
 
-                for (const inlinePart of inlineDiffs) {
-                    const fragments = inlinePart.value.split('\n');
-                    for (let j = 0; j < fragments.length; j++) {
-                        const text = fragments[j];
-                        if (text) {
-                            const span = document.createElement('span');
-                            span.textContent = text;
-                            if (inlinePart.added) {
-                                span.className = secondaryGranularity === 'word' ? 'diff-word-added' : 'diff-char-added';
-                                rightSpans.push(span);
-                            } else if (inlinePart.removed) {
-                                span.className = secondaryGranularity === 'word' ? 'diff-word-removed' : 'diff-char-removed';
+                for (let k = 0; k < inlineDiffs.length; k++) {
+                    const inlinePart = inlineDiffs[k];
+                    const nextInlinePart = inlineDiffs[k + 1];
+
+                    if (inlinePart.removed && nextInlinePart && nextInlinePart.added) {
+                        const charDiff = Diff.diffChars(inlinePart.value, nextInlinePart.value);
+                        charDiff.forEach(charPart => {
+                            if (!charPart.added) {
+                                const span = document.createElement('span');
+                                span.textContent = charPart.value;
+                                if (charPart.removed) span.className = 'diff-char-removed';
                                 leftSpans.push(span);
-                            } else {
-                                leftSpans.push(span.cloneNode(true) as HTMLSpanElement);
-                                rightSpans.push(span.cloneNode(true) as HTMLSpanElement);
                             }
-                        }
-                        if (j < fragments.length - 1) {
-                            flushLine();
+                            if (!charPart.removed) {
+                                const span = document.createElement('span');
+                                span.textContent = charPart.value;
+                                if (charPart.added) span.className = 'diff-char-added';
+                                rightSpans.push(span);
+                            }
+                        });
+                        k++;
+                    } else {
+                        const fragments = inlinePart.value.split('\n');
+                        for (let j = 0; j < fragments.length; j++) {
+                            const text = fragments[j];
+                            if (text) {
+                                const span = document.createElement('span');
+                                span.textContent = text;
+                                if (inlinePart.added) {
+                                    span.className = 'diff-word-added';
+                                    rightSpans.push(span);
+                                } else if (inlinePart.removed) {
+                                    span.className = 'diff-word-removed';
+                                    leftSpans.push(span);
+                                } else {
+                                    leftSpans.push(span.cloneNode(true) as HTMLSpanElement);
+                                    rightSpans.push(span.cloneNode(true) as HTMLSpanElement);
+                                }
+                            }
+                            if (j < fragments.length - 1) {
+                                flushLine();
+                            }
                         }
                     }
                 }
@@ -3667,9 +3704,9 @@ class VersionControlSettingTab extends PluginSettingTab {
             .setName('差异粒度')
             .setDesc('选择差异计算的精细程度')
             .addDropdown(dropdown => dropdown
-                .addOption('char', '字符级 - (默认) 最精确,显示每个字符的变化')
+                .addOption('char', '字符级 - 最精确,显示每个字符的变化')
                 .addOption('word', '单词级 - 按单词显示差异')
-                .addOption('line', '行级 - 按行显示差异,并高亮行内变化')
+                .addOption('line', '行级 - [推荐] 按行显示差异,并高亮行内单词/字符变化')
                 .setValue(this.plugin.settings.diffGranularity)
                 .onChange(async (value: 'char' | 'word' | 'line') => {
                     this.plugin.settings.diffGranularity = value;
