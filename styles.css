@@ -1566,3 +1566,44 @@
     margin: 5px 0;
     color: var(--text-muted);
 }
+
+/* ======================================================================= */
+/* ================== 字符级二次高亮 (Sub-Highlighting) 优化 ================= */
+/* ======================================================================= */
+
+/* 单词级变化的基础样式 */
+.diff-word-added {
+    background-color: rgba(46, 160, 67, 0.3);
+    border-radius: 3px;
+}
+.diff-word-removed {
+    background-color: rgba(248, 81, 73, 0.3);
+    border-radius: 3px;
+    text-decoration: line-through;
+}
+
+/* 字符级变化使用更深的背景色来覆盖单词级样式 */
+.diff-char-added {
+    background-color: rgba(46, 160, 67, 0.6) !important;
+    font-weight: bold;
+    border-radius: 2px;
+}
+.diff-char-removed {
+    background-color: rgba(248, 81, 73, 0.6) !important;
+    font-weight: bold;
+    border-radius: 2px;
+    text-decoration: line-through;
+}
+
+/* 在“修改”的行中，应用这些样式 */
+.diff-modified .line-content span {
+    display: inline; /* 确保span不会破坏布局 */
+}
+
+.diff-modified .diff-char-added {
+    padding: 1px 2px;
+}
+
+.diff-modified .diff-char-removed {
+    padding: 1px 2px;
+}
