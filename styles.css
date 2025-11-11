@@ -1607,3 +1607,89 @@
 .diff-modified .diff-char-removed {
     padding: 1px 2px;
 }
+
+/* ======================================================================= */
+/* ======================= [新增] 移动文本检测样式 ======================= */
+/* ======================================================================= */
+
+.diff-line.diff-moved-from,
+.diff-line.diff-moved-to {
+    background: rgba(240, 185, 10, 0.1); /* 淡黄色背景 */
+    border-left: 3px solid #f0b90a; /* 黄色边框 */
+}
+
+.diff-line.diff-moved-from .diff-marker,
+.diff-line.diff-moved-to .diff-marker {
+    color: #f0b90a; /* 黄色箭头 */
+    font-weight: bold;
+}
+
+.diff-line.diff-moved-from:hover,
+.diff-line.diff-moved-to:hover {
+    background: rgba(240, 185, 10, 0.2) !important;
+}
+
+/* 悬停时的高亮效果 */
+.diff-line.diff-move-highlight {
+    outline: 2px solid #f0b90a;
+    box-shadow: 0 0 10px rgba(240, 185, 10, 0.5);
+    z-index: 20; /* 确保高亮在最上层 */
+}
+
+/* 深色模式下的移动文本样式 */
+.theme-dark .diff-line.diff-moved-from,
+.theme-dark .diff-line.diff-moved-to {
+    background: rgba(240, 185, 10, 0.15);
+    border-left-color: #e3b341;
+}
+
+.theme-dark .diff-line.diff-moved-from .diff-marker,
+.theme-dark .diff-line.diff-moved-to .diff-marker {
+    color: #e3b341;
+}
+```
+
+### 主要改动
+
+我在文件末尾添加了以下内容：
+
+```css
+/* ======================================================================= */
+/* ======================= [新增] 移动文本检测样式 ======================= */
+/* ======================================================================= */
+
+.diff-line.diff-moved-from,
+.diff-line.diff-moved-to {
+    background: rgba(240, 185, 10, 0.1); /* 淡黄色背景 */
+    border-left: 3px solid #f0b90a; /* 黄色边框 */
+}
+
+.diff-line.diff-moved-from .diff-marker,
+.diff-line.diff-moved-to .diff-marker {
+    color: #f0b90a; /* 黄色箭头 */
+    font-weight: bold;
+}
+
+.diff-line.diff-moved-from:hover,
+.diff-line.diff-moved-to:hover {
+    background: rgba(240, 185, 10, 0.2) !important;
+}
+
+/* 悬停时的高亮效果 */
+.diff-line.diff-move-highlight {
+    outline: 2px solid #f0b90a;
+    box-shadow: 0 0 10px rgba(240, 185, 10, 0.5);
+    z-index: 20; /* 确保高亮在最上层 */
+}
+
+/* 深色模式下的移动文本样式 */
+.theme-dark .diff-line.diff-moved-from,
+.theme-dark .diff-line.diff-moved-to {
+    background: rgba(240, 185, 10, 0.15);
+    border-left-color: #e3b341;
+}
+
+.theme-dark .diff-line.diff-moved-from .diff-marker,
+.theme-dark .diff-line.diff-moved-to .diff-marker {
+    color: #e3b341;
+}

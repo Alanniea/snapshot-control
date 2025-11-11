@@ -2142,6 +2142,12 @@ class ConfirmModal extends Modal {
 // ======================= ENHANCED DIFF MODAL START =======================
 // =========================================================================
 
+type ProcessedDiff = {
+    type: 'context' | 'added' | 'removed' | 'moved-from' | 'moved-to';
+    moveId?: number;
+} & Diff.Change;
+
+
 class DiffModal extends Modal {
     plugin: VersionControlPlugin;
     file: TFile;
@@ -2161,6 +2167,7 @@ class DiffModal extends Modal {
     rightContent: string = '';
     currentGranularity: 'char' | 'word' | 'line';
     showOnlyChanges: boolean = true;
+    enableMoveDetection: boolean = true;
 
     constructor(app: App, plugin: VersionControlPlugin, file: TFile, versionId: string, secondVersionId?: string) {
         super(app);
@@ -2170,6 +2177,49 @@ class DiffModal extends Modal {
         this.secondVersionId = secondVersionId;
         this.currentGranularity = this.plugin.settings.diffGranularity;
     }
+
+    processDiffForMoves(diffResult: Diff.Change[]): ProcessedDiff[] {
+        const processed: ProcessedDiff[] = diffResult.map(part => ({ ...part, type: part.added ? 'added' : part.removed ? 'removed' : 'context' }));
+
+        const removed = new Map<string, number[]>();
+        const added = new Map<string, number[]>();
+
+        processed.forEach((part, index) => {
+            if (part.removed) {
+                const key = part.value.trim();
+                if (!removed.has(key)) removed.set(key, []);
+                removed.get(key)!.push(index);
+            } else if (part.added) {
+                const key = part.value.trim();
+                if (!added.has(key)) added.set(key, []);
+                added.get(key)!.push(index);
+            }
+        });
+
+        let moveIdCounter = 0;
+        for (const [key, removedIndices] of removed.entries()) {
+            if (added.has(key)) {
+                const addedIndices = added.get(key)!;
+                const pairs = Math.min(removedIndices.length, addedIndices.length);
+
+                for (let i = 0; i < pairs; i++) {
+                    const removedIndex = removedIndices.shift()!;
+                    const addedIndex = addedIndices.shift()!;
+                    
+                    processed[removedIndex].type = 'moved-from';
+                    processed[removedIndex].moveId = moveIdCounter;
+                    
+                    processed[addedIndex].type = 'moved-to';
+                    processed[addedIndex].moveId = moveIdCounter;
+                    
+                    moveIdCounter++;
+                }
+            }
+        }
+
+        return processed;
+    }
+
 
     async onOpen() {
         const { contentEl } = this;
@@ -2213,6 +2263,20 @@ class DiffModal extends Modal {
 
         const viewGroup = toolbar.createEl('div', { cls: 'diff-view-group' });
         
+        const moveDetectionBtn = viewGroup.createEl('button', {
+            text: '检测移动',
+            cls: this.enableMoveDetection ? 'active' : '',
+            attr: {
+                title: '启用/禁用文本移动检测',
+                'aria-label': '检测移动'
+            }
+        });
+        moveDetectionBtn.addEventListener('click', () => {
+            this.enableMoveDetection = !this.enableMoveDetection;
+            moveDetectionBtn.toggleClass('active', this.enableMoveDetection);
+            renderDiff();
+        });
+
         const contextToggleBtn = viewGroup.createEl('button', { 
             text: '上下文',
             cls: 'diff-context-toggle',
@@ -2564,6 +2628,27 @@ class DiffModal extends Modal {
             return false;
         });
 
+        diffContainer.addEventListener('mouseover', (e) => {
+            const target = e.target as HTMLElement;
+            const line = target.closest('[data-move-id]') as HTMLElement;
+            if (line) {
+                const moveId = line.dataset.moveId;
+                diffContainer.querySelectorAll(`[data-move-id="${moveId}"]`).forEach(el => {
+                    el.addClass('diff-move-highlight');
+                });
+            }
+        });
+        diffContainer.addEventListener('mouseout', (e) => {
+            const target = e.target as HTMLElement;
+            const line = target.closest('[data-move-id]') as HTMLElement;
+            if (line) {
+                const moveId = line.dataset.moveId;
+                diffContainer.querySelectorAll(`[data-move-id="${moveId}"]`).forEach(el => {
+                    el.removeClass('diff-move-highlight');
+                });
+            }
+        });
+
         renderDiff();
     }
 
@@ -2786,32 +2871,40 @@ class DiffModal extends Modal {
     renderUnifiedDiff(container: HTMLElement, left: string, right: string, granularity: 'char' | 'word' | 'line') {
         if (granularity === 'line') {
             const diffResult = Diff.diffLines(left, right);
-            this.renderLineDiff(container, diffResult);
+            
+            const processedDiff: ProcessedDiff[] = this.enableMoveDetection 
+                ? this.processDiffForMoves(diffResult) 
+                : diffResult.map(part => ({ 
+                    ...part, 
+                    type: (part.added ? 'added' : part.removed ? 'removed' : 'context') as 'added' | 'removed' | 'context'
+                }));
+
+            this.renderLineDiff(container, processedDiff);
         } else {
             const diffResult = granularity === 'word' ? Diff.diffWordsWithSpace(left, right) : Diff.diffChars(left, right);
             this.renderInlineDiff(container, diffResult);
         }
     }
 
-    /**
-     * [ENHANCED] Renders line-level diffs with intra-line, character-level sub-highlighting for modified lines.
-     */
-    renderLineDiff(container: HTMLElement, diffResult: Diff.Change[]) {
+    renderLineDiff(container: HTMLElement, diffResult: ProcessedDiff[]) {
         let leftLineNum = 1;
         let rightLineNum = 1;
         let diffIdx = 0;
 
-        const renderSimpleLine = (content: string, type: 'added' | 'removed' | 'context', lineNum: number | null) => {
+        const renderSimpleLine = (content: string, type: ProcessedDiff['type'], lineNum: number | null, moveId?: number) => {
             if (this.showOnlyChanges && type === 'context') return;
             const lineEl = container.createEl('div', { cls: `diff-line diff-${type}` });
             if (type !== 'context') {
                 lineEl.dataset.diffIndex = String(diffIdx++);
                 this.diffElements.push(lineEl);
             }
+            if (moveId !== undefined) {
+                lineEl.dataset.moveId = String(moveId);
+            }
             if (this.showLineNumbers) {
                 lineEl.createEl('span', { cls: 'line-number', text: lineNum !== null ? String(lineNum) : '' });
             }
-            const marker = type === 'added' ? '+' : type === 'removed' ? '-' : ' ';
+            const marker = type === 'added' ? '+' : type === 'removed' ? '-' : type === 'moved-from' ? '→' : type === 'moved-to' ? '←' : ' ';
             lineEl.createEl('span', { cls: 'diff-marker', text: marker });
             lineEl.createEl('span', { cls: 'line-content', text: content });
         };
@@ -2857,6 +2950,18 @@ class DiffModal extends Modal {
         for (let i = 0; i < diffResult.length; i++) {
             const part = diffResult[i];
             const nextPart = diffResult[i + 1];
+
+            if (part.type === 'moved-from' || part.type === 'moved-to') {
+                const lines = part.value.replace(/\n$/, '').split('\n');
+                for (const line of lines) {
+                    if (part.type === 'moved-from') {
+                        renderSimpleLine(line, 'moved-from', leftLineNum++, part.moveId);
+                    } else { // moved-to
+                        renderSimpleLine(line, 'moved-to', rightLineNum++, part.moveId);
+                    }
+                }
+                continue;
+            }
 
             if (part.removed && nextPart && nextPart.added) {
                 const wordDiff = Diff.diffWordsWithSpace(part.value, nextPart.value);
@@ -3004,21 +3109,19 @@ class DiffModal extends Modal {
         rightContent.addEventListener('scroll', () => syncScroll(rightContent, leftContent));
     }
 
-    /**
-     * [ENHANCED] This is the primary, advanced rendering method for split view.
-     * It handles all granularities and performs a two-pass diff (lines then words/chars)
-     * to provide accurate alignment and intra-line, character-level sub-highlighting.
-     */
     renderSplitAdvanced(leftPanel: HTMLElement, rightPanel: HTMLElement, leftText: string, rightText: string, granularity: 'char' | 'word' | 'line') {
         let leftLineNum = 1;
         let rightLineNum = 1;
         let diffIdx = 0;
 
-        const renderSimpleLine = (panel: HTMLElement, text: string, type: 'added' | 'removed' | 'context' | 'placeholder', lineNum: number | null, marker: string) => {
+        const renderSimpleLine = (panel: HTMLElement, text: string, type: ProcessedDiff['type'] | 'placeholder', lineNum: number | null, marker: string, moveId?: number) => {
             const lineEl = panel.createEl('div', { cls: `diff-line diff-${type}` });
-            if (type === 'added' || type === 'removed') {
+            if (type === 'added' || type === 'removed' || type === 'moved-from' || type === 'moved-to') {
                 lineEl.dataset.diffIndex = String(diffIdx++);
                 this.diffElements.push(lineEl);
+            }
+            if (moveId !== undefined) {
+                lineEl.dataset.moveId = String(moveId);
             }
             if (this.showLineNumbers) {
                 lineEl.createEl('span', { cls: 'line-number', text: lineNum !== null ? String(lineNum) : '' });
@@ -3030,15 +3133,39 @@ class DiffModal extends Modal {
         };
 
         const lineDiffs = Diff.diffLines(leftText, rightText);
+        
+        const processedDiffs: ProcessedDiff[] = this.enableMoveDetection 
+            ? this.processDiffForMoves(lineDiffs) 
+            : lineDiffs.map(part => ({ 
+                ...part, 
+                type: (part.added ? 'added' : part.removed ? 'removed' : 'context') as 'added' | 'removed' | 'context'
+            }));
 
-        for (let i = 0; i < lineDiffs.length; i++) {
-            const part = lineDiffs[i];
-            const nextPart = lineDiffs[i + 1];
+        for (let i = 0; i < processedDiffs.length; i++) {
+            const part = processedDiffs[i];
+            const nextPart = processedDiffs[i + 1];
 
-            if (this.showOnlyChanges && !part.added && !part.removed) {
+            if (this.showOnlyChanges && part.type === 'context') {
                 const lineCount = (part.value.match(/\n/g) || []).length;
                 leftLineNum += lineCount;
                 rightLineNum += lineCount;
+                continue;
+            }
+
+            if (part.type === 'moved-from') {
+                const lines = part.value.replace(/\n$/, '').split('\n');
+                lines.forEach(line => {
+                    renderSimpleLine(leftPanel, line, 'moved-from', leftLineNum++, '→', part.moveId);
+                    renderSimpleLine(rightPanel, '', 'placeholder', null, ' ');
+                });
+                continue;
+            }
+            if (part.type === 'moved-to') {
+                const lines = part.value.replace(/\n$/, '').split('\n');
+                lines.forEach(line => {
+                    renderSimpleLine(leftPanel, '', 'placeholder', null, ' ');
+                    renderSimpleLine(rightPanel, line, 'moved-to', rightLineNum++, '←', part.moveId);
+                });
                 continue;
             }
 
