@@ -2163,7 +2163,7 @@ class DiffModal extends Modal {
     leftContent: string = '';
     rightContent: string = '';
     currentGranularity: 'char' | 'word' | 'line';
-    showOnlyChanges: boolean = false;
+    showOnlyChanges: boolean = true; // [MODIFIED] Default to true
 
     constructor(app: App, plugin: VersionControlPlugin, file: TFile, versionId: string, secondVersionId?: string) {
         super(app);
