@@ -3,6 +3,7 @@ import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, Modal, ItemView,
 import * as Diff from 'diff';
 import * as pako from 'pako';
 
+// ... (接口定义和常量部分保持不变) ...
 interface VersionData {
     id: string;
     timestamp: number;
@@ -89,7 +90,9 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
     enableStatusBarDiff: true
 };
 
+
 export default class VersionControlPlugin extends Plugin {
+    // ... (VersionControlPlugin 类的所有方法保持不变) ...
     settings: VersionControlSettings;
     autoSaveTimer: NodeJS.Timer | null = null;
     lastSavedContent: Map<string, string> = new Map();
@@ -354,13 +357,6 @@ export default class VersionControlPlugin extends Plugin {
         }
     }
 
-    /**
-     * Calculates the number of characters added or removed between two strings.
-     * This is a more accurate measure of "change" than a simple positional comparison.
-     * @param oldText The original text.
-     * @param newText The new text.
-     * @returns The total number of characters changed.
-     */
     countChanges(oldText: string, newText: string): number {
         const changes = Diff.diffChars(oldText, newText);
         let changeCount = 0;
@@ -1135,6 +1131,7 @@ export default class VersionControlPlugin extends Plugin {
     }
 }
 
+// ... (QuickPreviewModal, VersionHistoryView, and other Modals remain unchanged) ...
 class QuickPreviewModal extends Modal {
     plugin: VersionControlPlugin;
     file: TFile;
@@ -2148,6 +2145,7 @@ class ConfirmModal extends Modal {
 // =========================================================================
 
 class DiffModal extends Modal {
+    // ... (DiffModal 类的属性和构造函数保持不变) ...
     plugin: VersionControlPlugin;
     file: TFile;
     versionId: string;
@@ -2176,6 +2174,7 @@ class DiffModal extends Modal {
         this.currentGranularity = this.plugin.settings.diffGranularity;
     }
 
+    // ... (onOpen 和其他辅助方法保持不变) ...
     async onOpen() {
         const { contentEl } = this;
         contentEl.addClass('diff-modal');
@@ -2469,7 +2468,7 @@ class DiffModal extends Modal {
                 this.renderSplitDiff(diffContainer, leftProcessed, rightProcessed, this.currentGranularity, leftLabel, rightLabel);
             }
 
-            if (this.wrapLines && this.currentGranularity === 'line') {
+            if (this.wrapLines) { // Always wrap for char/word, only conditionally for line
                 diffContainer.addClass('diff-wrap-lines');
             } else {
                 diffContainer.removeClass('diff-wrap-lines');
@@ -2952,68 +2951,96 @@ class DiffModal extends Modal {
         }
     }
 
+    /**
+     * [REFACTORED] Renders character or word-level diffs in a unified view.
+     * This version uses a more robust two-pass approach to correctly handle line numbering.
+     */
     renderInlineDiff(container: HTMLElement, diffResult: any[], mode: 'unified' | 'split') {
         const wrapper = container.createEl('div', { cls: 'diff-inline-with-lines' });
         const lineNumbersDiv = wrapper.createEl('div', { cls: 'diff-line-numbers' });
         const contentDiv = wrapper.createEl('div', { cls: 'diff-line-content' });
 
-        let lines: { number: number, hasChange: boolean, spans: HTMLSpanElement[] }[] = [];
-        let currentLineNumber = 1;
-        let currentLineSpans: HTMLSpanElement[] = [];
-        let currentLineHasChanges = false;
+        interface RenderLine {
+            number: number | null; // Placeholder for line number logic
+            spans: HTMLSpanElement[];
+            hasChange: boolean;
+        }
+
+        // Pass 1: Build logical lines from fragments
+        const renderLines: RenderLine[] = [];
+        let currentSpans: HTMLSpanElement[] = [];
+        let lineHasChange = false;
+        let lineContainsAddedOrContext = false;
         let diffIndex = 0;
 
         for (const part of diffResult) {
-            const partLines = part.value.split('\n');
-            for (let i = 0; i < partLines.length; i++) {
-                const lineText = partLines[i];
+            // Split by newline but keep it in the array to detect line breaks
+            const fragments = part.value.split(/(\n)/g);
 
-                if (i > 0) {
-                    lines.push({ 
-                        number: currentLineNumber, 
-                        hasChange: currentLineHasChanges, 
-                        spans: currentLineSpans 
+            for (const fragment of fragments) {
+                if (fragment === '\n') {
+                    renderLines.push({
+                        number: lineContainsAddedOrContext ? 0 : null, // Use 0 as a placeholder for a line that should get a number
+                        spans: currentSpans,
+                        hasChange: lineHasChange
                     });
-                    currentLineNumber++;
-                    currentLineSpans = [];
-                    currentLineHasChanges = false;
+                    // Reset for the next line
+                    currentSpans = [];
+                    lineHasChange = false;
+                    lineContainsAddedOrContext = false;
+                    continue;
                 }
+                if (fragment === '') continue;
 
-                if (lineText) {
-                    const span = document.createElement('span');
-                    span.textContent = lineText;
-                    if (part.added) {
-                        span.className = 'diff-char-added';
-                        span.dataset.diffIndex = String(diffIndex++);
-                        currentLineHasChanges = true;
-                    } else if (part.removed) {
-                        span.className = 'diff-char-removed';
-                        span.dataset.diffIndex = String(diffIndex++);
-                        currentLineHasChanges = true;
-                    }
-                    currentLineSpans.push(span);
+                const span = document.createElement('span');
+                span.textContent = fragment;
+                currentSpans.push(span);
+
+                if (part.added) {
+                    span.className = 'diff-char-added';
+                    span.dataset.diffIndex = String(diffIndex++);
+                    this.diffElements.push(span);
+                    lineHasChange = true;
+                    lineContainsAddedOrContext = true;
+                } else if (part.removed) {
+                    span.className = 'diff-char-removed';
+                    span.dataset.diffIndex = String(diffIndex++);
+                    this.diffElements.push(span);
+                    lineHasChange = true;
+                } else { // context
+                    lineContainsAddedOrContext = true;
                 }
             }
         }
+
+        // Add the last line if it doesn't end with a newline
+        if (currentSpans.length > 0) {
+            renderLines.push({
+                number: lineContainsAddedOrContext ? 0 : null,
+                spans: currentSpans,
+                hasChange: lineHasChange
+            });
+        }
+
+        // Pass 2: Filter and render the logical lines with correct numbers
+        let linesToRender = this.showOnlyChanges ? renderLines.filter(l => l.hasChange) : renderLines;
         
-        lines.push({ 
-            number: currentLineNumber, 
-            hasChange: currentLineHasChanges, 
-            spans: currentLineSpans 
-        });
-
-        const linesToRender = this.showOnlyChanges ? lines.filter(l => l.hasChange) : lines;
-
+        let rightLineNumber = 1;
         for (const line of linesToRender) {
+            let finalLineNumber: number | null = null;
+            // Assign a real line number only if the placeholder is not null
+            if (line.number !== null) {
+                finalLineNumber = rightLineNumber++;
+            }
+
             if (this.showLineNumbers) {
-                lineNumbersDiv.createEl('div', { 
-                    text: String(line.number), 
-                    cls: 'line-number' 
+                lineNumbersDiv.createEl('div', {
+                    text: finalLineNumber !== null ? String(finalLineNumber) : '',
+                    cls: 'line-number'
                 });
             }
 
             const lineDiv = contentDiv.createEl('div', { cls: 'diff-content-line' });
-
             if (this.wrapLines) {
                 lineDiv.style.whiteSpace = 'pre-wrap';
                 lineDiv.style.wordBreak = 'break-all';
@@ -3022,12 +3049,7 @@ class DiffModal extends Modal {
             if (line.spans.length === 0) {
                 lineDiv.innerHTML = '&nbsp;';
             } else {
-                line.spans.forEach(span => {
-                    lineDiv.appendChild(span);
-                    if (span.dataset.diffIndex !== undefined) {
-                        this.diffElements.push(span);
-                    }
-                });
+                line.spans.forEach(span => lineDiv.appendChild(span));
             }
         }
     }
@@ -3048,25 +3070,21 @@ class DiffModal extends Modal {
             const diffResult = Diff.diffLines(left, right);
             this.renderSplitLineDiff(leftContent, rightContent, diffResult);
         } else {
-            const diffResult = granularity === 'word' ? Diff.diffWords(left, right) : Diff.diffChars(left, right);
-            this.renderSplitInlineDiff(leftContent, rightContent, diffResult);
+            // Use the new refactored method for char/word diffs
+            this.renderSplitInlineDiff(leftContent, rightContent, left, right, granularity);
         }
 
         let isScrolling = false;
         
-        leftContent.addEventListener('scroll', () => {
+        const syncScroll = (source: HTMLElement, target: HTMLElement) => {
             if (isScrolling) return;
             isScrolling = true;
-            rightContent.scrollTop = leftContent.scrollTop;
+            target.scrollTop = source.scrollTop;
             setTimeout(() => { isScrolling = false; }, 50);
-        });
+        };
 
-        rightContent.addEventListener('scroll', () => {
-            if (isScrolling) return;
-            isScrolling = true;
-            leftContent.scrollTop = rightContent.scrollTop;
-            setTimeout(() => { isScrolling = false; }, 50);
-        });
+        leftContent.addEventListener('scroll', () => syncScroll(leftContent, rightContent));
+        rightContent.addEventListener('scroll', () => syncScroll(rightContent, leftContent));
     }
 
     renderSplitLineDiff(leftContent: HTMLElement, rightContent: HTMLElement, diffResult: any[]) {
@@ -3097,29 +3115,6 @@ class DiffModal extends Modal {
                     rightLine += lines.length;
                     continue;
                 }
-                
-                for (const line of lines.slice(0, this.contextLines)) {
-                    const leftLineEl = leftContent.createEl('div', { cls: 'diff-line diff-context' });
-                    if (this.showLineNumbers) {
-                        leftLineEl.createEl('span', { cls: 'line-number', text: String(leftLine) });
-                    }
-                    leftLineEl.createEl('span', { cls: 'diff-marker', text: ' ' });
-                    leftLineEl.createEl('span', { cls: 'line-content', text: line });
-
-                    const rightLineEl = rightContent.createEl('div', { cls: 'diff-line diff-context' });
-                    if (this.showLineNumbers) {
-                        rightLineEl.createEl('span', { cls: 'line-number', text: String(rightLine) });
-                    }
-                    rightLineEl.createEl('span', { cls: 'diff-marker', text: ' ' });
-                    rightLineEl.createEl('span', { cls: 'line-content', text: line });
-
-                    leftLine++;
-                    rightLine++;
-                }
-                
-                leftLine += Math.max(0, lines.length - this.contextLines);
-                rightLine += Math.max(0, lines.length - this.contextLines);
-                continue;
             }
 
             const lines = part.value.split('\n');
@@ -3172,115 +3167,126 @@ class DiffModal extends Modal {
         }
     }
 
-    renderSplitInlineDiff(leftContent: HTMLElement, rightContent: HTMLElement, diffResult: any[]) {
-        const leftWrapper = leftContent.createEl('div', { cls: 'diff-inline-with-lines' });
-        const rightWrapper = rightContent.createEl('div', { cls: 'diff-inline-with-lines' });
-        
-        const leftLineNumbers = leftWrapper.createEl('div', { cls: 'diff-line-numbers' });
-        const leftContentDiv = leftWrapper.createEl('div', { cls: 'diff-line-content' });
-        
-        const rightLineNumbers = rightWrapper.createEl('div', { cls: 'diff-line-numbers' });
-        const rightContentDiv = rightWrapper.createEl('div', { cls: 'diff-line-content' });
-        
-        let lines: { left: number, right: number, hasChange: boolean, leftSpans: HTMLSpanElement[], rightSpans: HTMLSpanElement[] }[] = [];
-        let leftLine = 1, rightLine = 1;
-        let leftSpans: HTMLSpanElement[] = [], rightSpans: HTMLSpanElement[] = [];
-        let lineHasChanges = false;
-        let diffIndex = 0;
+    /**
+     * [REFACTORED] Renders character or word-level diffs in a split view.
+     * This version uses a two-pass approach: first a line-level diff for alignment,
+     * then a character/word-level diff for highlighting changes within modified lines.
+     */
+    renderSplitInlineDiff(leftPanel: HTMLElement, rightPanel: HTMLElement, leftText: string, rightText: string, granularity: 'char' | 'word') {
+        let leftLineNum = 1;
+        let rightLineNum = 1;
+        let diffIdx = 0;
 
-        for (const part of diffResult) {
-            const partLines = part.value.split('\n');
-            for (let i = 0; i < partLines.length; i++) {
-                const lineText = partLines[i];
+        const renderSimpleLine = (panel: HTMLElement, text: string, type: 'added' | 'removed' | 'context' | 'placeholder', lineNum: number | null, marker: string) => {
+            const lineEl = panel.createEl('div', { cls: `diff-line diff-${type}` });
+            if (type === 'added' || type === 'removed') {
+                lineEl.dataset.diffIndex = String(diffIdx++);
+                this.diffElements.push(lineEl);
+            }
+            if (this.showLineNumbers) {
+                lineEl.createEl('span', { cls: 'line-number', text: lineNum !== null ? String(lineNum) : '' });
+            }
+            lineEl.createEl('span', { cls: 'diff-marker', text: marker });
+            const contentEl = lineEl.createEl('span', { cls: 'line-content' });
+            contentEl.textContent = text;
+            if (text === '') contentEl.innerHTML = '&nbsp;'; // Ensure empty lines have height
+        };
+
+        const lineDiffs = Diff.diffLines(leftText, rightText);
+
+        for (let i = 0; i < lineDiffs.length; i++) {
+            const part = lineDiffs[i];
+            const nextPart = lineDiffs[i + 1];
+
+            if (this.showOnlyChanges && !part.added && !part.removed) {
+                const lineCount = (part.value.match(/\n/g) || []).length;
+                leftLineNum += lineCount;
+                rightLineNum += lineCount;
+                continue;
+            }
+
+            // This block handles "modified" lines by performing a secondary, more granular diff.
+            if (part.removed && nextPart && nextPart.added) {
+                const inlineDiffs = granularity === 'word' ? Diff.diffWords(part.value, nextPart.value) : Diff.diffChars(part.value, nextPart.value);
                 
-                if (i > 0) {
-                    lines.push({
-                        left: leftLine,
-                        right: rightLine,
-                        hasChange: lineHasChanges,
-                        leftSpans: leftSpans,
-                        rightSpans: rightSpans
-                    });
-                    leftLine++;
-                    rightLine++;
+                let leftSpans: HTMLSpanElement[] = [];
+                let rightSpans: HTMLSpanElement[] = [];
+
+                const flushLine = () => {
+                    const leftLineEl = leftPanel.createEl('div', { cls: 'diff-line diff-modified' });
+                    const rightLineEl = rightPanel.createEl('div', { cls: 'diff-line diff-modified' });
+
+                    if (this.showLineNumbers) {
+                        leftLineEl.createEl('span', { cls: 'line-number', text: String(leftLineNum) });
+                        rightLineEl.createEl('span', { cls: 'line-number', text: String(rightLineNum) });
+                    }
+                    leftLineEl.createEl('span', { cls: 'diff-marker', text: '~' });
+                    rightLineEl.createEl('span', { cls: 'diff-marker', text: '~' });
+
+                    const leftContentEl = leftLineEl.createEl('span', { cls: 'line-content' });
+                    const rightContentEl = rightLineEl.createEl('span', { cls: 'line-content' });
+
+                    if (leftSpans.length === 0) leftContentEl.innerHTML = '&nbsp;';
+                    else leftSpans.forEach(s => leftContentEl.appendChild(s));
+
+                    if (rightSpans.length === 0) rightContentEl.innerHTML = '&nbsp;';
+                    else rightSpans.forEach(s => rightContentEl.appendChild(s));
+
+                    leftLineNum++;
+                    rightLineNum++;
                     leftSpans = [];
                     rightSpans = [];
-                    lineHasChanges = false;
-                }
+                };
 
-                if (lineText) {
-                    if (part.added) {
-                        const span = document.createElement('span');
-                        span.textContent = lineText;
-                        span.className = 'diff-char-added';
-                        span.dataset.diffIndex = String(diffIndex++);
-                        rightSpans.push(span);
-                        lineHasChanges = true;
-                    } else if (part.removed) {
-                        const span = document.createElement('span');
-                        span.textContent = lineText;
-                        span.className = 'diff-char-removed';
-                        span.dataset.diffIndex = String(diffIndex++);
-                        leftSpans.push(span);
-                        lineHasChanges = true;
-                    } else {
-                        const leftSpan = document.createElement('span');
-                        leftSpan.textContent = lineText;
-                        leftSpans.push(leftSpan);
-                        
-                        const rightSpan = document.createElement('span');
-                        rightSpan.textContent = lineText;
-                        rightSpans.push(rightSpan);
+                for (const inlinePart of inlineDiffs) {
+                    const fragments = inlinePart.value.split('\n');
+                    for (let j = 0; j < fragments.length; j++) {
+                        const text = fragments[j];
+                        if (text) {
+                            const span = document.createElement('span');
+                            span.textContent = text;
+                            if (inlinePart.added) {
+                                span.className = 'diff-char-added';
+                                span.dataset.diffIndex = String(diffIdx++);
+                                this.diffElements.push(span);
+                                rightSpans.push(span);
+                            } else if (inlinePart.removed) {
+                                span.className = 'diff-char-removed';
+                                span.dataset.diffIndex = String(diffIdx++);
+                                this.diffElements.push(span);
+                                leftSpans.push(span);
+                            } else {
+                                leftSpans.push(span.cloneNode(true) as HTMLSpanElement);
+                                rightSpans.push(span.cloneNode(true) as HTMLSpanElement);
+                            }
+                        }
+                        if (j < fragments.length - 1) {
+                            flushLine();
+                        }
                     }
                 }
-            }
-        }
-        
-        lines.push({
-            left: leftLine,
-            right: rightLine,
-            hasChange: lineHasChanges,
-            leftSpans: leftSpans,
-            rightSpans: rightSpans
-        });
+                if (leftSpans.length > 0 || rightSpans.length > 0) {
+                    flushLine();
+                }
 
-        const linesToRender = this.showOnlyChanges ? lines.filter(l => l.hasChange) : lines;
-
-        for (const line of linesToRender) {
-            if (this.showLineNumbers) {
-                leftLineNumbers.createEl('div', { text: String(line.left), cls: 'line-number' });
-                rightLineNumbers.createEl('div', { text: String(line.right), cls: 'line-number' });
-            }
-
-            const leftLineDiv = leftContentDiv.createEl('div', { cls: 'diff-content-line' });
-            const rightLineDiv = rightContentDiv.createEl('div', { cls: 'diff-content-line' });
-
-            if (this.wrapLines) {
-                leftLineDiv.style.whiteSpace = 'pre-wrap';
-                leftLineDiv.style.wordBreak = 'break-all';
-                rightLineDiv.style.whiteSpace = 'pre-wrap';
-                rightLineDiv.style.wordBreak = 'break-all';
-            }
-
-            if (line.leftSpans.length === 0) {
-                leftLineDiv.innerHTML = '&nbsp;';
-            } else {
-                line.leftSpans.forEach(span => {
-                    leftLineDiv.appendChild(span);
-                    if (span.dataset.diffIndex !== undefined) {
-                        this.diffElements.push(span);
-                    }
+                i++; // Skip next part as it has been processed
+            } else if (part.removed) {
+                const lines = part.value.replace(/\n$/, '').split('\n');
+                lines.forEach(line => {
+                    renderSimpleLine(leftPanel, line, 'removed', leftLineNum++, '-');
+                    renderSimpleLine(rightPanel, '', 'placeholder', null, ' ');
                 });
-            }
-
-            if (line.rightSpans.length === 0) {
-                rightLineDiv.innerHTML = '&nbsp;';
-            } else {
-                line.rightSpans.forEach(span => {
-                    rightLineDiv.appendChild(span);
-                    if (span.dataset.diffIndex !== undefined) {
-                        this.diffElements.push(span);
-                    }
+            } else if (part.added) {
+                const lines = part.value.replace(/\n$/, '').split('\n');
+                lines.forEach(line => {
+                    renderSimpleLine(leftPanel, '', 'placeholder', null, ' ');
+                    renderSimpleLine(rightPanel, line, 'added', rightLineNum++, '+');
+                });
+            } else { // context
+                const lines = part.value.replace(/\n$/, '').split('\n');
+                lines.forEach(line => {
+                    renderSimpleLine(leftPanel, line, 'context', leftLineNum++, ' ');
+                    renderSimpleLine(rightPanel, line, 'context', rightLineNum++, ' ');
                 });
             }
         }
@@ -3333,6 +3339,7 @@ class DiffModal extends Modal {
 // ======================= ENHANCED DIFF MODAL END =======================
 // =======================================================================
 
+// ... (VersionSelectModal and VersionControlSettingTab remain unchanged) ...
 class VersionSelectModal extends Modal {
     plugin: VersionControlPlugin;
     file: TFile;
