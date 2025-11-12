@@ -3,7 +3,7 @@ import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, Modal, ItemView,
 import * as Diff from 'diff';
 import * as pako from 'pako';
 
-// [修改] VersionData 接口
+// VersionData 接口
 interface VersionData {
     id: string;
     timestamp: number;
@@ -16,8 +16,8 @@ interface VersionData {
     tags?: string[];
     note?: string;
     starred?: boolean;
-    addedLines?: number;   // [新增] 缓存新增行数
-    removedLines?: number; // [新增] 缓存删除行数
+    addedLines?: number;
+    removedLines?: number;
 }
 
 interface VersionFile {
@@ -1140,7 +1140,6 @@ export default class VersionControlPlugin extends Plugin {
         if (days > 0) return `${days} 天前`;
         if (hours > 0) return `${hours} 小时前`;
         if (minutes > 0) return `${minutes} 分钟前`;
-        // [修正] 将 < 5 改为 < 1, 立即从“1秒前”开始显示
         if (seconds < 1) return '刚刚';
         return `${seconds} 秒前`;
     }
@@ -1333,7 +1332,6 @@ class VersionHistoryView extends ItemView {
             const timestampStr = el.dataset.timestamp;
             if (timestampStr) {
                 const timestamp = parseInt(timestampStr, 10);
-                // [修正] 将60秒的限制放宽到70秒, 确保“1分钟前”的转换能被实时更新
                 if (now - timestamp < 70 * 1000) {
                     el.textContent = this.plugin.getRelativeTime(timestamp);
                 }
@@ -1465,6 +1463,15 @@ class VersionHistoryView extends ItemView {
         starFilterBtn.addEventListener('click', () => {
             this.showStarredOnly = !this.showStarredOnly;
             this.currentPage = 0;
+            this.refresh();
+        });
+
+        const refreshBtn = actions.createEl('button', {
+            text: '刷新',
+            attr: { title: '手动刷新版本列表' }
+        });
+        refreshBtn.addEventListener('click', () => {
+            new Notice('正在刷新...');
             this.refresh();
         });
 
