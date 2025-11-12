@@ -98,8 +98,6 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
 export default class VersionControlPlugin extends Plugin {
     settings: VersionControlSettings;
     autoSaveTimer: NodeJS.Timer | null = null;
-    // [REMOVED] 移除了 lastSavedContent 属性，以解决状态不一致的 bug
-    // lastSavedContent: Map<string, string> = new Map();
     lastModifiedTime: Map<string, number> = new Map();
     pendingSaves: Map<string, NodeJS.Timeout> = new Map();
     statusBarItem: HTMLElement;
@@ -375,38 +373,31 @@ export default class VersionControlPlugin extends Plugin {
         this.pendingSaves.set(file.path, timeout);
     }
 
-    // [MODIFIED] 重写 autoSaveFile 函数以修复 bug
     async autoSaveFile(file: TFile) {
         try {
             const content = await this.app.vault.read(file);
             
-            // 获取最新的版本内容作为比较基准，而不是使用内存中的 lastSavedContent
             const versions = await this.getAllVersions(file.path);
             let lastContent = '';
             if (versions.length > 0) {
-                // 检查最新版本的哈希值是否与当前内容相同，这是最高效的比较
                 const latestVersion = versions[0];
                 const currentHash = this.hashContent(content);
                 if (latestVersion.hash === currentHash) {
-                    return; // 内容与最新版本完全相同，无需保存
+                    return;
                 }
-                // 如果哈希不同，再获取内容进行精细比较
                 lastContent = await this.getVersionContent(file.path, latestVersion.id);
             }
 
-            // 如果内容没有变化（以防哈希碰撞或获取内容失败），则跳过
             if (content === lastContent) {
                 return;
             }
 
-            // 比较变化量是否达到阈值
             const changeCount = this.countChanges(lastContent, content);
             if (changeCount < this.settings.autoSaveMinChanges) {
                 return;
             }
 
             await this.createVersion(file, '[Auto Save]', false);
-            // 成功创建版本后，不再需要更新 lastSavedContent，因为下次会重新从文件读取
             
         } catch (error) {
             console.error('自动保存失败:', error);
@@ -693,10 +684,17 @@ export default class VersionControlPlugin extends Plugin {
         const adapter = this.app.vault.adapter;
 
         try {
-            const dataToSave = {
-                ...versionFile,
-                versionIndex: undefined
+            // 显式地构建一个干净的对象用于存储，避免任何潜在的序列化问题
+            const dataToSave: any = {
+                filePath: versionFile.filePath,
+                versions: versionFile.versions,
+                lastModified: versionFile.lastModified,
             };
+
+            // 关键修复：明确检查并添加 baseVersion 属性
+            if (versionFile.baseVersion) {
+                dataToSave.baseVersion = versionFile.baseVersion;
+            }
             
             const content = JSON.stringify(dataToSave, null, 2);
             
@@ -2323,7 +2321,6 @@ class ConfirmModal extends Modal {
     }
 }
 
-// [新增] 修复编译错误：定义 ProcessedDiff 类型
 type ProcessedDiff = {
     type: 'context' | 'added' | 'removed' | 'moved-from' | 'moved-to';
     moveId?: number;
