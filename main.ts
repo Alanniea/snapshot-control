@@ -97,13 +97,13 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
 
 export default class VersionControlPlugin extends Plugin {
     settings: VersionControlSettings;
-    autoSaveTimer: NodeJS.Timer | null = null;
+    autoSaveTimer: number | null = null;
     lastModifiedTime: Map<string, number> = new Map();
     pendingSaves: Map<string, NodeJS.Timeout> = new Map();
     statusBarItem: HTMLElement;
     versionCache: Map<string, VersionFile> = new Map();
     previousActiveFile: TFile | null = null;
-    globalTimeUpdater: NodeJS.Timer | null = null;
+    globalTimeUpdater: number | null = null;
 
     async onload() {
         await this.loadSettings();
@@ -208,7 +208,7 @@ export default class VersionControlPlugin extends Plugin {
 
         await this.ensureVersionFolder();
 
-        this.globalTimeUpdater = setInterval(() => {
+        this.globalTimeUpdater = window.setInterval(() => {
             this.updateAllRelativeTimes();
         }, 1000);
 
@@ -219,10 +219,10 @@ export default class VersionControlPlugin extends Plugin {
 
     onunload() {
         if (this.autoSaveTimer) {
-            clearInterval(this.autoSaveTimer);
+            window.clearInterval(this.autoSaveTimer);
         }
         if (this.globalTimeUpdater) {
-            clearInterval(this.globalTimeUpdater);
+            window.clearInterval(this.globalTimeUpdater);
         }
         this.pendingSaves.forEach(timeout => clearTimeout(timeout));
         this.pendingSaves.clear();
@@ -345,11 +345,11 @@ export default class VersionControlPlugin extends Plugin {
 
     startAutoSave() {
         if (this.autoSaveTimer) {
-            clearInterval(this.autoSaveTimer);
+            window.clearInterval(this.autoSaveTimer);
         }
         
         if (this.settings.autoSaveOnInterval) {
-            this.autoSaveTimer = setInterval(() => {
+            this.autoSaveTimer = window.setInterval(() => {
                 this.autoSaveCurrentFile();
             }, this.settings.autoSaveInterval * 60 * 1000);
         }
@@ -419,11 +419,25 @@ export default class VersionControlPlugin extends Plugin {
         const currentFile = this.app.workspace.getActiveFile();
         
         if (this.previousActiveFile && this.previousActiveFile !== currentFile) {
-            const pendingSave = this.pendingSaves.get(this.previousActiveFile.path);
-            if (pendingSave) {
-                clearTimeout(pendingSave);
+            // 检查文件是否仍然存在
+            const fileStillExists = this.app.vault.getAbstractFileByPath(this.previousActiveFile.path);
+            
+            if (fileStillExists) {
+                const pendingSave = this.pendingSaves.get(this.previousActiveFile.path);
+                if (pendingSave) {
+                    clearTimeout(pendingSave);
+                    this.pendingSaves.delete(this.previousActiveFile.path);
+                    
+                    try {
+                        await this.autoSaveFile(this.previousActiveFile);
+                    } catch (error) {
+                        console.error('切换文件时自动保存失败:', error);
+                    }
+                }
+            } else {
+                // 文件已被删除，清理待保存记录
                 this.pendingSaves.delete(this.previousActiveFile.path);
-                await this.autoSaveFile(this.previousActiveFile);
+                this.lastModifiedTime.delete(this.previousActiveFile.path);
             }
         }
         
@@ -433,14 +447,22 @@ export default class VersionControlPlugin extends Plugin {
     async saveCurrentFileOnFocusLost() {
         const file = this.app.workspace.getActiveFile();
         if (!file || this.isExcluded(file.path)) return;
-
+    
+        // 检查文件是否仍然存在
+        const fileStillExists = this.app.vault.getAbstractFileByPath(file.path);
+        if (!fileStillExists) return;
+    
         const pendingSave = this.pendingSaves.get(file.path);
         if (pendingSave) {
             clearTimeout(pendingSave);
             this.pendingSaves.delete(file.path);
         }
         
-        await this.autoSaveFile(file);
+        try {
+            await this.autoSaveFile(file);
+        } catch (error) {
+            console.error('失去焦点时自动保存失败:', error);
+        }
     }
 
     async autoSaveCurrentFile() {
@@ -506,33 +528,41 @@ export default class VersionControlPlugin extends Plugin {
             }
 
             if (this.settings.enableIncrementalStorage && versionFile.versions.length > 0) {
-                // 关键修复：使用 === undefined 来正确处理 baseVersion 为空字符串 "" 的情况
-                const shouldRebuildBase = (versionFile.versions.length % this.settings.rebuildBaseInterval === 0) || versionFile.baseVersion === undefined;
+                // 修复：使用 === undefined 来正确判断未初始化状态
+                const hasNoBase = (versionFile.baseVersion === undefined || versionFile.baseVersion === null);
+                const shouldRebuildBase = hasNoBase || 
+                    (versionFile.versions.length % this.settings.rebuildBaseInterval === 0);
                 
                 if (shouldRebuildBase) {
+                    // 创建完整版本作为新的基准
                     newVersion = {
                         id, timestamp, message, content, size: content.length, hash,
                         tags: tags.length > 0 ? tags : undefined,
                         starred: false, addedLines, removedLines
                     };
-                    versionFile.baseVersion = content;
+                    versionFile.baseVersion = content;  // 更新基准版本
                 } else {
+                    // 创建增量版本
                     const baseContent = versionFile.baseVersion || '';
                     const diff = this.createDiff(baseContent, content);
                     
                     newVersion = {
-                        id, timestamp, message, diff, baseVersionId: versionFile.versions[0].id, size: diff.length, hash,
+                        id, timestamp, message, diff, 
+                        baseVersionId: versionFile.versions[0].id, 
+                        size: diff.length, hash,
                         tags: tags.length > 0 ? tags : undefined,
                         starred: false, addedLines, removedLines
                     };
                 }
             } else {
+                // 首次创建或未启用增量存储
                 newVersion = {
                     id, timestamp, message, content, size: content.length, hash,
                     tags: tags.length > 0 ? tags : undefined,
                     starred: false, addedLines, removedLines
                 };
                 
+                // 为增量存储设置初始基准
                 if (this.settings.enableIncrementalStorage) {
                     versionFile.baseVersion = content;
                 }
@@ -750,27 +780,80 @@ export default class VersionControlPlugin extends Plugin {
                           versionFile.versions.find(v => v.id === versionId);
             
             if (!version) {
-                throw new Error('版本不存在');
+                throw new Error(`版本 ${versionId} 不存在`);
             }
-
-            if (version.content !== undefined) {
+    
+            // 如果有完整内容，直接返回
+            if (version.content !== undefined && version.content !== null) {
                 return version.content;
             }
-
-            if (version.diff && versionFile.baseVersion !== undefined) {
-                return this.applyDiff(versionFile.baseVersion, version.diff);
+    
+            // 尝试从基准版本应用差异
+            if (version.diff) {
+                // 优先使用 baseVersion
+                if (versionFile.baseVersion !== undefined && versionFile.baseVersion !== null) {
+                    try {
+                        return this.applyDiff(versionFile.baseVersion, version.diff);
+                    } catch (error) {
+                        console.warn('从基准版本应用差异失败，尝试使用 baseVersionId:', error);
+                    }
+                }
+                
+                // 回退到使用 baseVersionId
+                if (version.baseVersionId) {
+                    try {
+                        const baseVersionContent = await this.getVersionContent(filePath, version.baseVersionId);
+                        return this.applyDiff(baseVersionContent, version.diff);
+                    } catch (error) {
+                        console.error('从 baseVersionId 应用差异失败:', error);
+                    }
+                }
             }
-            
-            if (version.diff && version.baseVersionId) {
-                const baseVersionContent = await this.getVersionContent(filePath, version.baseVersionId);
-                return this.applyDiff(baseVersionContent, version.diff);
-            }
-
-
-            throw new Error('无法获取版本内容');
+    
+            throw new Error(`无法获取版本 ${versionId} 的内容：缺少 content 和有效的 diff`);
         } catch (error) {
             console.error('读取版本内容失败:', error);
-            throw new Error('无法读取版本内容');
+            throw new Error(`无法读取版本内容: ${error.message}`);
+        }
+    }
+
+    async verifyVersionFileIntegrity(filePath: string): Promise<boolean> {
+        try {
+            const versionFile = await this.loadVersionFile(filePath);
+            
+            // 检查基本结构
+            if (!versionFile.versions || !Array.isArray(versionFile.versions)) {
+                console.error('版本文件结构无效');
+                return false;
+            }
+            
+            // 检查增量存储的一致性
+            if (this.settings.enableIncrementalStorage) {
+                let hasFullVersion = false;
+                
+                for (const version of versionFile.versions) {
+                    if (version.content !== undefined) {
+                        hasFullVersion = true;
+                    }
+                    
+                    // 增量版本必须有 diff 和 baseVersionId 或者 baseVersion 存在
+                    if (version.diff && !version.content) {
+                        if (!version.baseVersionId && !versionFile.baseVersion) {
+                            console.error(`版本 ${version.id} 缺少基准引用`);
+                            return false;
+                        }
+                    }
+                }
+                
+                if (!hasFullVersion && versionFile.versions.length > 0) {
+                    console.warn('警告：没有找到完整版本，可能导致恢复失败');
+                }
+            }
+            
+            return true;
+        } catch (error) {
+            console.error('验证版本文件完整性失败:', error);
+            return false;
         }
     }
 
@@ -1368,17 +1451,19 @@ class VersionHistoryView extends ItemView {
 
     async calculateAndCacheDiffStats(versionFile: VersionFile, versionIndex: number) {
         const version = versionFile.versions[versionIndex];
+        
+        // 如果已经计算过，直接返回
         if (typeof version.addedLines === 'number' && typeof version.removedLines === 'number') {
             return;
         }
-
+    
         try {
             const currentContent = await this.plugin.getVersionContent(versionFile.filePath, version.id);
             const previousVersion = versionFile.versions[versionIndex + 1];
             
             let added = 0;
             let removed = 0;
-
+    
             if (previousVersion) {
                 const previousContent = await this.plugin.getVersionContent(versionFile.filePath, previousVersion.id);
                 const diffResult = Diff.diffLines(previousContent, currentContent);
@@ -1387,20 +1472,31 @@ class VersionHistoryView extends ItemView {
                     if (part.removed) removed += part.count || 0;
                 });
             } else {
+                // 第一个版本，所有行都是新增
                 added = currentContent.split('\n').length;
             }
-
+    
+            // 更新版本对象
             version.addedLines = added;
             version.removedLines = removed;
-
-            this.plugin.saveVersionFile(versionFile.filePath, versionFile).catch(err => {
-                console.error("Failed to save version file after caching diff stats:", err);
-            });
-
-            this.refresh();
-
+    
+            // 异步保存，带错误处理
+            this.plugin.saveVersionFile(versionFile.filePath, versionFile)
+                .then(() => {
+                    // 保存成功后刷新视图
+                    this.refresh();
+                })
+                .catch(err => {
+                    console.error("缓存差异统计后保存失败:", err);
+                    // 即使保存失败，也更新内存中的缓存
+                    this.plugin.versionCache.set(versionFile.filePath, versionFile);
+                });
+    
         } catch (error) {
-            console.error(`Failed to calculate diff stats for version ${version.id}:`, error);
+            console.error(`计算版本 ${version.id} 的差异统计失败:`, error);
+            // 设置默认值避免重复计算
+            version.addedLines = 0;
+            version.removedLines = 0;
         }
     }
 
@@ -2860,7 +2956,7 @@ class DiffModal extends Modal {
 
     showVersionSelectionMenu(event: MouseEvent, side: 'left' | 'right') {
         const menu = new Menu();
-
+    
         menu.addItem((item) =>
             item
                 .setTitle('📄 当前文件')
@@ -2869,20 +2965,29 @@ class DiffModal extends Modal {
                     this.handleVersionChange(side, 'current');
                 })
         );
-
-        menu.addSeparator();
-
-        this.allVersions.forEach((version) => {
+    
+        if (this.allVersions.length === 0) {
+            menu.addSeparator();
             menu.addItem((item) =>
                 item
-                    .setTitle(`${this.plugin.formatTime(version.timestamp)} - ${version.message}`)
-                    .setIcon('history')
-                    .onClick(() => {
-                        this.handleVersionChange(side, version.id);
-                    })
+                    .setTitle('暂无历史版本')
+                    .setDisabled(true)
             );
-        });
-
+        } else {
+            menu.addSeparator();
+    
+            this.allVersions.forEach((version) => {
+                menu.addItem((item) =>
+                    item
+                        .setTitle(`${this.plugin.formatTime(version.timestamp)} - ${version.message}`)
+                        .setIcon('history')
+                        .onClick(() => {
+                            this.handleVersionChange(side, version.id);
+                        })
+                );
+            });
+        }
+    
         menu.showAtMouseEvent(event);
     }
 
@@ -3013,6 +3118,15 @@ class DiffModal extends Modal {
         if (this.ignoreWhitespace) {
             leftProcessed = this.leftContent.replace(/\s+/g, ' ').trim();
             rightProcessed = this.rightContent.replace(/\s+/g, ' ').trim();
+        }
+        
+        // 处理空内容的边界情况
+        if (!leftProcessed && !rightProcessed) {
+            container.createEl('div', { 
+                text: '两个版本都是空文件',
+                cls: 'diff-empty-notice'
+            });
+            return;
         }
         
         container.toggleClass('show-whitespace-active', this.showWhitespace);
@@ -4009,7 +4123,7 @@ class VersionControlSettingTab extends PluginSettingTab {
                     if (value && this.plugin.settings.autoSaveOnInterval) {
                         this.plugin.startAutoSave();
                     } else if (this.plugin.autoSaveTimer) {
-                        clearInterval(this.plugin.autoSaveTimer);
+                        window.clearInterval(this.plugin.autoSaveTimer);
                     }
                 }));
 
@@ -4064,7 +4178,7 @@ class VersionControlSettingTab extends PluginSettingTab {
                     if (value && this.plugin.settings.autoSave) {
                         this.plugin.startAutoSave();
                     } else if (this.plugin.autoSaveTimer) {
-                        clearInterval(this.plugin.autoSaveTimer);
+                        window.clearInterval(this.plugin.autoSaveTimer);
                         this.plugin.autoSaveTimer = null;
                     }
                 }));
