@@ -265,7 +265,6 @@ export default class VersionControlPlugin extends Plugin {
         }
 
         if (lastSaveTime) {
-            // [修改] 直接调用 getRelativeTime 来获取正确的层级化时间
             const relativeTime = this.getRelativeTime(lastSaveTime);
             this.statusBarItem.setText(`上次保存: ${relativeTime}`);
             this.statusBarItem.title = `上次保存于 ${new Date(lastSaveTime).toLocaleString('zh-CN')}. 点击可快速对比。`;
@@ -1127,7 +1126,6 @@ export default class VersionControlPlugin extends Plugin {
         });
     }
 
-    // [修改] 优化 getRelativeTime 以实现您的需求
     getRelativeTime(timestamp: number): string {
         const diff = Date.now() - timestamp;
         const seconds = Math.floor(diff / 1000);
@@ -1142,7 +1140,8 @@ export default class VersionControlPlugin extends Plugin {
         if (days > 0) return `${days} 天前`;
         if (hours > 0) return `${hours} 小时前`;
         if (minutes > 0) return `${minutes} 分钟前`;
-        if (seconds < 5) return '刚刚'; // 5秒内显示“刚刚”
+        // [修正] 将 < 5 改为 < 1, 立即从“1秒前”开始显示
+        if (seconds < 1) return '刚刚';
         return `${seconds} 秒前`;
     }
 
@@ -1156,7 +1155,6 @@ export default class VersionControlPlugin extends Plugin {
     }
 }
 
-// ... The rest of the classes (QuickPreviewModal, VersionHistoryView, etc.) remain unchanged ...
 class QuickPreviewModal extends Modal {
     plugin: VersionControlPlugin;
     file: TFile;
@@ -1272,7 +1270,6 @@ class QuickPreviewModal extends Modal {
     }
 }
 
-// [修改] VersionHistoryView 类 (已包含日期分组功能)
 class VersionHistoryView extends ItemView {
     plugin: VersionControlPlugin;
     selectedVersions: Set<string> = new Set();
@@ -1282,6 +1279,7 @@ class VersionHistoryView extends ItemView {
     totalVersions: number = 0;
     filterTag: string | null = null;
     showStarredOnly: boolean = false;
+    private timeUpdateTimer: NodeJS.Timer | null = null;
 
     constructor(leaf: WorkspaceLeaf, plugin: VersionControlPlugin) {
         super(leaf);
@@ -1308,10 +1306,41 @@ class VersionHistoryView extends ItemView {
             })
         );
 
+        this.timeUpdateTimer = setInterval(() => {
+            this.updateRelativeTimes();
+        }, 1000);
+
         await this.refresh();
     }
 
-    // [新增] 日期分组辅助函数
+    async onClose() {
+        if (this.timeUpdateTimer) {
+            clearInterval(this.timeUpdateTimer);
+            this.timeUpdateTimer = null;
+        }
+    }
+
+    updateRelativeTimes() {
+        if (!this.plugin.settings.useRelativeTime) return;
+
+        const container = this.containerEl.children[1] as HTMLElement;
+        if (!container) return;
+
+        const timeElements = container.findAll('.version-time');
+        const now = Date.now();
+
+        timeElements.forEach(el => {
+            const timestampStr = el.dataset.timestamp;
+            if (timestampStr) {
+                const timestamp = parseInt(timestampStr, 10);
+                // [修正] 将60秒的限制放宽到70秒, 确保“1分钟前”的转换能被实时更新
+                if (now - timestamp < 70 * 1000) {
+                    el.textContent = this.plugin.getRelativeTime(timestamp);
+                }
+            }
+        });
+    }
+
     getRelativeDateGroup(timestamp: number): string {
         const now = new Date();
         const date = new Date(timestamp);
@@ -1339,7 +1368,7 @@ class VersionHistoryView extends ItemView {
     async calculateAndCacheDiffStats(versionFile: VersionFile, versionIndex: number) {
         const version = versionFile.versions[versionIndex];
         if (typeof version.addedLines === 'number' && typeof version.removedLines === 'number') {
-            return; // 已经有缓存了
+            return;
         }
 
         try {
@@ -1357,20 +1386,16 @@ class VersionHistoryView extends ItemView {
                     if (part.removed) removed += part.count || 0;
                 });
             } else {
-                // 这是第一个版本
                 added = currentContent.split('\n').length;
             }
 
-            // 更新数据模型
             version.addedLines = added;
             version.removedLines = removed;
 
-            // 异步保存更新后的文件，不阻塞UI
             this.plugin.saveVersionFile(versionFile.filePath, versionFile).catch(err => {
                 console.error("Failed to save version file after caching diff stats:", err);
             });
 
-            // 触发一次轻量级刷新来更新UI
             this.refresh();
 
         } catch (error) {
@@ -1636,10 +1661,11 @@ class VersionHistoryView extends ItemView {
                     await this.plugin.toggleVersionStar(file.path, version.id);
                 });
                 
-                timeRow.createEl('span', { 
+                const timeEl = timeRow.createEl('span', { 
                     text: this.plugin.formatTime(version.timestamp),
                     cls: 'version-time'
                 });
+                timeEl.dataset.timestamp = String(version.timestamp);
                 
                 const messageEl = info.createEl('div', { cls: 'version-message-row' });
                 
@@ -1813,7 +1839,6 @@ class VersionHistoryView extends ItemView {
         stats.createEl('span', { text: ` · 显示 ${start + 1}-${end}` });
     }
 
-    // [修改] showVersionContextMenu 方法
     showVersionContextMenu(event: MouseEvent, file: TFile, version: VersionData) {
         const menu = new Menu();
         
@@ -1825,7 +1850,6 @@ class VersionHistoryView extends ItemView {
                 })
         );
         
-        // [新增] 对比任意两个版本的选项
         menu.addItem((item) =>
             item.setTitle('与另一个版本对比')
                 .setIcon('files')
@@ -2012,7 +2036,6 @@ class VersionHistoryView extends ItemView {
         new DiffModal(this.app, this.plugin, file, versionId).open();
     }
 
-    // [新增] selectVersionForCompare 方法
     selectVersionForCompare(file: TFile, firstVersionId: string) {
         new VersionSelectModal(this.app, this.plugin, file, firstVersionId, (secondVersionId) => {
             new DiffModal(this.app, this.plugin, file, firstVersionId, secondVersionId).open();
@@ -2292,16 +2315,11 @@ type ProcessedDiff = {
     moveId?: number;
 } & Diff.Change;
 
-
-// ==================================================================
-// ===== START OF MODIFIED DiffModal CLASS WITH VERSION SWITCHER ====
-// ==================================================================
-
 class DiffModal extends Modal {
     plugin: VersionControlPlugin;
     file: TFile;
     versionId: string;
-    secondVersionId: string; // [修改] 现在始终为 string, 'current' 代表当前文件
+    secondVersionId: string;
     currentDiffIndex: number = 0;
     totalDiffs: number = 0;
     diffElements: HTMLElement[] = [];
@@ -2323,15 +2341,14 @@ class DiffModal extends Modal {
     private textDiffContainer: HTMLElement;
     private renderedDiffContainer: HTMLElement;
     private isRenderedViewBuilt: boolean = false;
-    private allVersions: VersionData[] = []; // [新增] 缓存文件所有版本
-    private infoBannerContainer: HTMLElement; // [新增] 统计横幅的容器
+    private allVersions: VersionData[] = [];
+    private infoBannerContainer: HTMLElement;
 
     constructor(app: App, plugin: VersionControlPlugin, file: TFile, versionId: string, secondVersionId?: string) {
         super(app);
         this.plugin = plugin;
         this.file = file;
         this.versionId = versionId;
-        // [修改] 将 undefined 统一为 'current' 字符串，便于管理
         this.secondVersionId = secondVersionId || 'current';
         this.currentGranularity = this.plugin.settings.diffGranularity;
     }
@@ -2403,7 +2420,6 @@ class DiffModal extends Modal {
 
         this.renderVersionSelectors(headerContainer);
         
-        // [新增] 为统计横幅创建一个持久的容器
         this.infoBannerContainer = headerContainer.createEl('div', { cls: 'diff-info-banner-compact' });
 
         const toolbar = headerContainer.createEl('div', { cls: 'diff-toolbar' });
@@ -3028,19 +3044,16 @@ class DiffModal extends Modal {
             lastDiffBtn.disabled = true;
         }
         
-        // [修改] 将统计更新也放在这里，确保每次渲染都更新
         this.updateCompactDiffInfo();
         
         this.plugin.refreshVersionHistoryView();
     }
     
-    // [修改] 实时更新统计信息的核心改动
     updateCompactDiffInfo() {
         const container = this.infoBannerContainer;
         if (!container) return;
         container.empty();
 
-        // [新增] 根据 ignoreWhitespace 标志处理文本
         let leftProcessed = this.leftContent;
         let rightProcessed = this.rightContent;
         if (this.ignoreWhitespace) {
@@ -3070,7 +3083,6 @@ class DiffModal extends Modal {
         container.createEl('span', { text: `~${changedLines}`, cls: 'diff-info-changed' });
         container.createEl('span', { text: `变化率: ${changePercent}%`, cls: 'diff-info-percent' });
 
-        // [新增] 添加视觉反馈，提示用户统计已更新
         container.addClass('diff-info-updated');
         setTimeout(() => {
             container.removeClass('diff-info-updated');
@@ -3740,12 +3752,6 @@ class DiffModal extends Modal {
     }
 }
 
-// ================================================================
-// ===== END OF MODIFIED DiffModal CLASS ==========================
-// ================================================================
-
-
-// [新增] VersionSelectModal 类
 class VersionSelectModal extends Modal {
     plugin: VersionControlPlugin;
     file: TFile;
