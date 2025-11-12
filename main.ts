@@ -1,4 +1,3 @@
-
 import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, Modal, ItemView, WorkspaceLeaf, Menu, TextComponent, MarkdownRenderer } from 'obsidian';
 import * as Diff from 'diff';
 import * as pako from 'pako';
@@ -104,7 +103,7 @@ export default class VersionControlPlugin extends Plugin {
     statusBarItem: HTMLElement;
     versionCache: Map<string, VersionFile> = new Map();
     previousActiveFile: TFile | null = null;
-    statusBarTimer: NodeJS.Timer | null = null;
+    globalTimeUpdater: NodeJS.Timer | null = null;
 
     async onload() {
         await this.loadSettings();
@@ -188,10 +187,6 @@ export default class VersionControlPlugin extends Plugin {
 
         this.registerEvent(
             this.app.workspace.on('active-leaf-change', () => {
-                if (this.statusBarTimer) {
-                    clearInterval(this.statusBarTimer);
-                    this.statusBarTimer = null;
-                }
                 if (this.settings.autoSave && this.settings.autoSaveOnFileSwitch) {
                     this.handleFileSwitch();
                 }
@@ -213,6 +208,10 @@ export default class VersionControlPlugin extends Plugin {
 
         await this.ensureVersionFolder();
 
+        this.globalTimeUpdater = setInterval(() => {
+            this.updateAllRelativeTimes();
+        }, 1000);
+
         if (this.settings.showNotifications) {
             new Notice('✅ 版本控制插件已启动');
         }
@@ -222,8 +221,8 @@ export default class VersionControlPlugin extends Plugin {
         if (this.autoSaveTimer) {
             clearInterval(this.autoSaveTimer);
         }
-        if (this.statusBarTimer) {
-            clearInterval(this.statusBarTimer);
+        if (this.globalTimeUpdater) {
+            clearInterval(this.globalTimeUpdater);
         }
         this.pendingSaves.forEach(timeout => clearTimeout(timeout));
         this.pendingSaves.clear();
@@ -237,6 +236,22 @@ export default class VersionControlPlugin extends Plugin {
     async saveSettings() {
         await this.saveData(this.settings);
         this.updateStatusBar();
+    }
+
+    updateAllRelativeTimes() {
+        const file = this.app.workspace.getActiveFile();
+        if (!file) return;
+
+        if (this.settings.useRelativeTime || this.settings.showLastSaveTimeInStatusBar) {
+            this.updateStatusBar();
+
+            const leaves = this.app.workspace.getLeavesOfType('version-history');
+            leaves.forEach(leaf => {
+                if (leaf.view instanceof VersionHistoryView) {
+                    leaf.view.updateRelativeTimes();
+                }
+            });
+        }
     }
 
     async updateStatusBar() {
@@ -526,27 +541,7 @@ export default class VersionControlPlugin extends Plugin {
 
             this.lastModifiedTime.set(file.path, timestamp);
             this.updateStatusBar();
-
-            if (this.statusBarTimer) {
-                clearInterval(this.statusBarTimer);
-            }
-            this.statusBarTimer = setInterval(() => {
-                const lastSave = this.lastModifiedTime.get(file.path);
-                const activeFile = this.app.workspace.getActiveFile();
-
-                if (!lastSave || (Date.now() - lastSave) >= 60 * 1000 || activeFile?.path !== file.path) {
-                    if (this.statusBarTimer) {
-                        clearInterval(this.statusBarTimer);
-                        this.statusBarTimer = null;
-                    }
-                    if (activeFile?.path === file.path) {
-                        this.updateStatusBar();
-                    }
-                } else {
-                    this.updateStatusBar();
-                }
-            }, 1000);
-
+            
             if (showNotification && this.settings.showNotifications) {
                 new Notice(`✅ 版本已创建: ${message}`);
             }
@@ -1278,8 +1273,7 @@ class VersionHistoryView extends ItemView {
     totalVersions: number = 0;
     filterTag: string | null = null;
     showStarredOnly: boolean = false;
-    private timeUpdateTimer: NodeJS.Timer | null = null;
-
+    
     constructor(leaf: WorkspaceLeaf, plugin: VersionControlPlugin) {
         super(leaf);
         this.plugin = plugin;
@@ -1304,19 +1298,12 @@ class VersionHistoryView extends ItemView {
                 this.refresh();
             })
         );
-
-        this.timeUpdateTimer = setInterval(() => {
-            this.updateRelativeTimes();
-        }, 1000);
-
+        
         await this.refresh();
     }
 
     async onClose() {
-        if (this.timeUpdateTimer) {
-            clearInterval(this.timeUpdateTimer);
-            this.timeUpdateTimer = null;
-        }
+        // No timer to clear here anymore
     }
 
     updateRelativeTimes() {
@@ -2317,6 +2304,7 @@ class ConfirmModal extends Modal {
     }
 }
 
+// [新增] 修复编译错误：定义 ProcessedDiff 类型
 type ProcessedDiff = {
     type: 'context' | 'added' | 'removed' | 'moved-from' | 'moved-to';
     moveId?: number;
@@ -3589,7 +3577,7 @@ class DiffModal extends Modal {
 
             if (part.type === 'moved-from') {
                 const lines = part.value.replace(/\n$/, '').split('\n');
-                lines.forEach(line => {
+                lines.forEach((line: string) => {
                     renderSimpleLine(leftPanel, line, 'moved-from', leftLineNum++, '→', part.moveId);
                     renderSimpleLine(rightPanel, '', 'placeholder', null, ' ');
                 });
@@ -3597,7 +3585,7 @@ class DiffModal extends Modal {
             }
             if (part.type === 'moved-to') {
                 const lines = part.value.replace(/\n$/, '').split('\n');
-                lines.forEach(line => {
+                lines.forEach((line: string) => {
                     renderSimpleLine(leftPanel, '', 'placeholder', null, ' ');
                     renderSimpleLine(rightPanel, line, 'moved-to', rightLineNum++, '←', part.moveId);
                 });
@@ -3696,19 +3684,19 @@ class DiffModal extends Modal {
                 i++;
             } else if (part.removed) {
                 const lines = part.value.replace(/\n$/, '').split('\n');
-                lines.forEach(line => {
+                lines.forEach((line: string) => {
                     renderSimpleLine(leftPanel, line, 'removed', leftLineNum++, '-');
                     renderSimpleLine(rightPanel, '', 'placeholder', null, ' ');
                 });
             } else if (part.added) {
                 const lines = part.value.replace(/\n$/, '').split('\n');
-                lines.forEach(line => {
+                lines.forEach((line: string) => {
                     renderSimpleLine(leftPanel, '', 'placeholder', null, ' ');
                     renderSimpleLine(rightPanel, line, 'added', rightLineNum++, '+');
                 });
             } else {
                 const lines = part.value.replace(/\n$/, '').split('\n');
-                lines.forEach(line => {
+                lines.forEach((line: string) => {
                     renderSimpleLine(leftPanel, line, 'context', leftLineNum++, ' ');
                     renderSimpleLine(rightPanel, line, 'context', rightLineNum++, ' ');
                 });
