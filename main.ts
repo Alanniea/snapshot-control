@@ -506,7 +506,8 @@ export default class VersionControlPlugin extends Plugin {
             }
 
             if (this.settings.enableIncrementalStorage && versionFile.versions.length > 0) {
-                const shouldRebuildBase = (versionFile.versions.length % this.settings.rebuildBaseInterval === 0) || !versionFile.baseVersion;
+                // 关键修复：使用 === undefined 来正确处理 baseVersion 为空字符串 "" 的情况
+                const shouldRebuildBase = (versionFile.versions.length % this.settings.rebuildBaseInterval === 0) || versionFile.baseVersion === undefined;
                 
                 if (shouldRebuildBase) {
                     newVersion = {
@@ -684,15 +685,13 @@ export default class VersionControlPlugin extends Plugin {
         const adapter = this.app.vault.adapter;
 
         try {
-            // 显式地构建一个干净的对象用于存储，避免任何潜在的序列化问题
             const dataToSave: any = {
                 filePath: versionFile.filePath,
                 versions: versionFile.versions,
                 lastModified: versionFile.lastModified,
             };
 
-            // 关键修复：明确检查并添加 baseVersion 属性
-            if (versionFile.baseVersion) {
+            if (versionFile.baseVersion !== undefined) {
                 dataToSave.baseVersion = versionFile.baseVersion;
             }
             
@@ -754,11 +753,11 @@ export default class VersionControlPlugin extends Plugin {
                 throw new Error('版本不存在');
             }
 
-            if (version.content) {
+            if (version.content !== undefined) {
                 return version.content;
             }
 
-            if (version.diff && versionFile.baseVersion) {
+            if (version.diff && versionFile.baseVersion !== undefined) {
                 return this.applyDiff(versionFile.baseVersion, version.diff);
             }
             
