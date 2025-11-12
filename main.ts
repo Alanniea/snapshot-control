@@ -58,6 +58,7 @@ interface VersionControlSettings {
     defaultTags: string[];
     showVersionStats: boolean;
     enableStatusBarDiff: boolean;
+    showLastSaveTimeInStatusBar: boolean;
 }
 
 const DEFAULT_SETTINGS: VersionControlSettings = {
@@ -89,7 +90,8 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
     enableVersionTags: true,
     defaultTags: ['重要', '里程碑', '发布', '备份', '草稿'],
     showVersionStats: true,
-    enableStatusBarDiff: true
+    enableStatusBarDiff: true,
+    showLastSaveTimeInStatusBar: true,
 };
 
 
@@ -102,6 +104,7 @@ export default class VersionControlPlugin extends Plugin {
     statusBarItem: HTMLElement;
     versionCache: Map<string, VersionFile> = new Map();
     previousActiveFile: TFile | null = null;
+    statusBarTimer: NodeJS.Timer | null = null;
 
     async onload() {
         await this.loadSettings();
@@ -185,10 +188,13 @@ export default class VersionControlPlugin extends Plugin {
 
         this.registerEvent(
             this.app.workspace.on('active-leaf-change', () => {
+                if (this.statusBarTimer) {
+                    clearInterval(this.statusBarTimer);
+                    this.statusBarTimer = null;
+                }
                 if (this.settings.autoSave && this.settings.autoSaveOnFileSwitch) {
                     this.handleFileSwitch();
                 }
-                // [修改] 切换文件时，总是更新状态栏
                 this.updateStatusBar();
             })
         );
@@ -216,6 +222,9 @@ export default class VersionControlPlugin extends Plugin {
         if (this.autoSaveTimer) {
             clearInterval(this.autoSaveTimer);
         }
+        if (this.statusBarTimer) {
+            clearInterval(this.statusBarTimer);
+        }
         this.pendingSaves.forEach(timeout => clearTimeout(timeout));
         this.pendingSaves.clear();
         this.versionCache.clear();
@@ -230,46 +239,39 @@ export default class VersionControlPlugin extends Plugin {
         this.updateStatusBar();
     }
 
-    // [修改] 合并了 updateStatusBar 和 updateStatusBarWithLastSave 的逻辑
-    updateStatusBar() {
+    async updateStatusBar() {
         if (!this.settings.autoSave) {
             this.statusBarItem.setText('⏸ 版本控制: 已暂停');
-            this.statusBarItem.title = '点击快速对比当前文件';
+            this.statusBarItem.title = '自动保存已暂停';
             return;
         }
 
         const file = this.app.workspace.getActiveFile();
-        const lastSaveTime = file ? this.lastModifiedTime.get(file.path) : undefined;
+        
+        if (!this.settings.showLastSaveTimeInStatusBar || !file) {
+            this.statusBarItem.setText('⏱ 版本控制: 已启用');
+            this.statusBarItem.title = '点击可快速对比当前文件与最新版本';
+            return;
+        }
+
+        let lastSaveTime = this.lastModifiedTime.get(file.path);
+
+        if (!lastSaveTime) {
+            const versions = await this.getAllVersions(file.path);
+            if (versions.length > 0) {
+                lastSaveTime = versions[0].timestamp;
+                this.lastModifiedTime.set(file.path, lastSaveTime);
+            }
+        }
 
         if (lastSaveTime) {
-            const elapsed = Date.now() - lastSaveTime;
-            const seconds = Math.floor(elapsed / 1000);
-            
-            let relativeTime;
-            if (seconds < 2) {
-                relativeTime = '刚刚';
-            } else if (seconds < 60) {
-                relativeTime = `${seconds}秒前`;
-            } else {
-                const minutes = Math.floor(seconds / 60);
-                relativeTime = `${minutes}分钟前`;
-            }
-            
+            // [修改] 直接调用 getRelativeTime 来获取正确的层级化时间
+            const relativeTime = this.getRelativeTime(lastSaveTime);
             this.statusBarItem.setText(`上次保存: ${relativeTime}`);
             this.statusBarItem.title = `上次保存于 ${new Date(lastSaveTime).toLocaleString('zh-CN')}. 点击可快速对比。`;
         } else {
-            const modes: string[] = [];
-            if (this.settings.autoSaveOnModify) modes.push('修改');
-            if (this.settings.autoSaveOnInterval) modes.push(`${this.settings.autoSaveInterval}分钟`);
-            if (this.settings.autoSaveOnFileSwitch) modes.push('切换');
-            if (this.settings.autoSaveOnFocusLost) modes.push('失焦');
-
-            if (modes.length > 0) {
-                this.statusBarItem.setText(`⏱ 版本控制: ${modes.join(' | ')}`);
-            } else {
-                this.statusBarItem.setText('⏱ 版本控制: 已启用');
-            }
-            this.statusBarItem.title = '点击快速对比当前文件与最新版本';
+            this.statusBarItem.setText('⏱ 版本控制: 已启用');
+            this.statusBarItem.title = '当前文件无历史版本。点击可快速对比。';
         }
     }
 
@@ -371,12 +373,8 @@ export default class VersionControlPlugin extends Plugin {
                 return;
             }
 
-
             await this.createVersion(file, '[Auto Save]', false);
             this.lastSavedContent.set(file.path, content);
-            this.lastModifiedTime.set(file.path, Date.now());
-            // [修改] 调用新的状态栏更新函数
-            this.updateStatusBar();
         } catch (error) {
             console.error('自动保存失败:', error);
         }
@@ -420,8 +418,6 @@ export default class VersionControlPlugin extends Plugin {
         
         await this.autoSaveFile(file);
     }
-
-    // [删除] updateStatusBarWithLastSave 函数已被合并
 
     async autoSaveCurrentFile() {
         const file = this.app.workspace.getActiveFile();
@@ -528,6 +524,29 @@ export default class VersionControlPlugin extends Plugin {
             await this.saveVersionFile(file.path, versionFile);
             this.versionCache.set(file.path, versionFile);
             this.refreshVersionHistoryView();
+
+            this.lastModifiedTime.set(file.path, timestamp);
+            this.updateStatusBar();
+
+            if (this.statusBarTimer) {
+                clearInterval(this.statusBarTimer);
+            }
+            this.statusBarTimer = setInterval(() => {
+                const lastSave = this.lastModifiedTime.get(file.path);
+                const activeFile = this.app.workspace.getActiveFile();
+
+                if (!lastSave || (Date.now() - lastSave) >= 60 * 1000 || activeFile?.path !== file.path) {
+                    if (this.statusBarTimer) {
+                        clearInterval(this.statusBarTimer);
+                        this.statusBarTimer = null;
+                    }
+                    if (activeFile?.path === file.path) {
+                        this.updateStatusBar();
+                    }
+                } else {
+                    this.updateStatusBar();
+                }
+            }, 1000);
 
             if (showNotification && this.settings.showNotifications) {
                 new Notice(`✅ 版本已创建: ${message}`);
@@ -1108,6 +1127,7 @@ export default class VersionControlPlugin extends Plugin {
         });
     }
 
+    // [修改] 优化 getRelativeTime 以实现您的需求
     getRelativeTime(timestamp: number): string {
         const diff = Date.now() - timestamp;
         const seconds = Math.floor(diff / 1000);
@@ -1122,6 +1142,7 @@ export default class VersionControlPlugin extends Plugin {
         if (days > 0) return `${days} 天前`;
         if (hours > 0) return `${hours} 小时前`;
         if (minutes > 0) return `${minutes} 分钟前`;
+        if (seconds < 5) return '刚刚'; // 5秒内显示“刚刚”
         return `${seconds} 秒前`;
     }
 
@@ -3857,6 +3878,16 @@ class VersionControlSettingTab extends PluginSettingTab {
         }
 
         containerEl.createEl('h3', { text: '⚙️ 基础设置' });
+
+        new Setting(containerEl)
+            .setName('在状态栏显示上次保存时间')
+            .setDesc('开启后，状态栏将显示相对的上次保存时间；关闭则显示通用状态。')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.showLastSaveTimeInStatusBar)
+                .onChange(async (value) => {
+                    this.plugin.settings.showLastSaveTimeInStatusBar = value;
+                    await this.plugin.saveSettings();
+                }));
 
         new Setting(containerEl)
             .setName('启用状态栏快速对比')
