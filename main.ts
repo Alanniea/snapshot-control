@@ -2406,7 +2406,7 @@ class ConfirmModal extends Modal {
 }
 
 // =======================================================================
-// ======================= [START] MODIFIED DIFFMODAL ======================
+// ======================= [START] FIXED DIFFMODAL =========================
 // =======================================================================
 
 type ProcessedDiff = {
@@ -2427,11 +2427,6 @@ type SectionDiffResult =
     | { type: 'added'; section: MarkdownSection }
     | { type: 'removed'; section: MarkdownSection };
 
-interface LineHistoryEntry {
-    version: VersionData;
-    lineContent: string;
-}
-
 class DiffModal extends Modal {
     plugin: VersionControlPlugin;
     file: TFile;
@@ -2440,17 +2435,14 @@ class DiffModal extends Modal {
     currentDiffIndex: number = 0;
     totalDiffs: number = 0;
     diffElements: HTMLElement[] = [];
-    showContext: boolean = false;
-    contextLines: number = 3;
     collapsedSections: Set<number> = new Set();
     ignoreWhitespace: boolean = false;
     showLineNumbers: boolean = true;
     wrapLines: boolean = false;
-    highlightSyntax: boolean = false;
     leftContent: string = '';
     rightContent: string = '';
     currentGranularity: 'char' | 'word' | 'line';
-    showOnlyChanges: boolean = true;
+    showOnlyChanges: boolean = false;
     enableMoveDetection: boolean = true;
     showWhitespace: boolean = false;
 
@@ -2709,11 +2701,18 @@ class DiffModal extends Modal {
         let rightLineNum = 1;
         let diffIdx = 0;
     
-        const renderLine = (content: string, type: ProcessedDiff['type'], lineNum: number | null, side: 'left' | 'right' | 'both') => {
+        const renderLine = (content: string, type: ProcessedDiff['type'], lineNum: number | null, side: 'left' | 'right' | 'both', moveId?: number) => {
+            if (this.showOnlyChanges && type === 'context') {
+                return;
+            }
+
             const lineEl = container.createEl('div', { cls: `diff-line diff-${type}` });
             if (type !== 'context') {
                 lineEl.dataset.diffIndex = String(diffIdx++);
                 this.diffElements.push(lineEl);
+            }
+            if (moveId !== undefined) {
+                lineEl.dataset.moveId = String(moveId);
             }
             
             const lineNumContainer = lineEl.createEl('div', { cls: 'line-number-container' });
@@ -2734,7 +2733,12 @@ class DiffModal extends Modal {
                 }
             }
     
-            const marker = type === 'added' ? '+' : type === 'removed' ? '-' : ' ';
+            let marker = ' ';
+            if (type === 'added') marker = '+';
+            else if (type === 'removed') marker = '-';
+            else if (type === 'moved-from') marker = '⮫';
+            else if (type === 'moved-to') marker = '⮪';
+
             lineEl.createEl('span', { cls: 'diff-marker', text: marker });
             
             const contentEl = lineEl.createEl('span', { cls: 'line-content', text: this.showWhitespace ? this.visualizeWhitespace(content) : content });
@@ -2752,6 +2756,12 @@ class DiffModal extends Modal {
                 } else if (part.removed) {
                     renderLine(line, 'removed', leftLineNum, 'left');
                     leftLineNum++;
+                } else if (part.type === 'moved-from') {
+                    renderLine(line, 'moved-from', leftLineNum, 'left', part.moveId);
+                    leftLineNum++;
+                } else if (part.type === 'moved-to') {
+                    renderLine(line, 'moved-to', rightLineNum, 'right', part.moveId);
+                    rightLineNum++;
                 } else {
                     renderLine(line, 'context', rightLineNum, 'both');
                     leftLineNum++;
@@ -3317,16 +3327,71 @@ class DiffModal extends Modal {
         }
     }
 
-    renderInlineDiff(container: HTMLElement, diffResult: any[]) {
-        // This method remains unchanged
+    renderInlineDiff(container: HTMLElement, diffResult: Diff.Change[]) {
+        const pre = container.createEl('pre');
+        diffResult.forEach(part => {
+            const className = part.added ? 'diff-char-added' : part.removed ? 'diff-char-removed' : '';
+            if (className) {
+                pre.createEl('span', { text: part.value, cls: className });
+            } else {
+                pre.appendText(part.value);
+            }
+        });
     }
 
     renderSplitDiff(container: HTMLElement, left: string, right: string, granularity: 'char' | 'word' | 'line', leftLabel: string, rightLabel: string) {
-        // This method remains unchanged
-    }
+        const leftPanel = container.createEl('div', { cls: 'diff-panel' });
+        const rightPanel = container.createEl('div', { cls: 'diff-panel' });
 
-    renderSplitAdvanced(leftPanel: HTMLElement, rightPanel: HTMLElement, leftText: string, rightText: string, granularity: 'char' | 'word' | 'line') {
-        // This method needs to be updated to support interactive buttons and line history
+        leftPanel.createEl('h3', { text: leftLabel });
+        rightPanel.createEl('h3', { text: rightLabel });
+
+        const leftContent = leftPanel.createEl('div', { cls: 'diff-content' });
+        const rightContent = rightPanel.createEl('div', { cls: 'diff-content' });
+
+        const diffResult = Diff.diffLines(left, right);
+        let leftLineNum = 1;
+        let rightLineNum = 1;
+        let diffIdx = 0;
+
+        const renderLine = (panel: HTMLElement, content: string, type: string, lineNum: number | null) => {
+            if (this.showOnlyChanges && type === 'context') return null;
+
+            const lineEl = panel.createEl('div', { cls: `diff-line diff-${type}` });
+            if (type !== 'context' && type !== 'placeholder') {
+                lineEl.dataset.diffIndex = String(diffIdx++);
+                this.diffElements.push(lineEl);
+            }
+            if (this.showLineNumbers) {
+                lineEl.createEl('span', { cls: 'line-number', text: lineNum ? String(lineNum) : '' });
+            }
+            const contentEl = lineEl.createEl('span', { cls: 'line-content' });
+            contentEl.setText(content);
+            return lineEl;
+        };
+
+        diffResult.forEach(part => {
+            const lines = part.value.replace(/\n$/, '').split('\n');
+            for (const line of lines) {
+                if (part.added) {
+                    renderLine(leftContent, '', 'placeholder', null);
+                    renderLine(rightContent, line, 'added', rightLineNum++);
+                } else if (part.removed) {
+                    renderLine(leftContent, line, 'removed', leftLineNum++);
+                    renderLine(rightContent, '', 'placeholder', null);
+                } else {
+                    const leftLine = renderLine(leftContent, line, 'context', leftLineNum++);
+                    const rightLine = renderLine(rightContent, line, 'context', rightLineNum++);
+                    
+                    if (granularity !== 'line' && leftLine && rightLine) {
+                        const lineDiff = granularity === 'word' ? Diff.diffWordsWithSpace(line, line) : Diff.diffChars(line, line);
+                        // In split view with context, we can do inline highlighting if needed,
+                        // but for simplicity, we'll only do it for modified lines.
+                        // This part can be expanded.
+                    }
+                }
+            }
+        });
     }
 
     scrollToDiff() {
@@ -3502,7 +3567,7 @@ class LineHistoryModal extends Modal {
 }
 
 // =======================================================================
-// ======================== [END] MODIFIED DIFFMODAL =======================
+// ======================== [END] FIXED DIFFMODAL ==========================
 // =======================================================================
 
 class VersionSelectModal extends Modal {
