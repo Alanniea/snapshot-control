@@ -1,3 +1,40 @@
+/* ======================================================================= */
+/* ================= [新增] 双击跳转高亮 & 统一视图行号对齐 ================= */
+/* ======================================================================= */
+
+/* 用于双击跳转到源码位置后的高亮动画 */
+.diff-line-highlight {
+  animation: highlight-fade 2s ease-out;
+}
+
+@keyframes highlight-fade {
+  0% {
+    background-color: var(--text-highlight-bg);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+/* 改进统一视图下的行号显示，使其正确对齐 */
+.diff-modal .diff-container:not(.diff-split) .line-number-container {
+    display: flex;
+    justify-content: flex-end;
+    min-width: 80px; /* 给予足够空间 */
+}
+.diff-modal .diff-container:not(.diff-split) .line-number {
+    display: inline-block;
+    width: 35px;
+    padding-right: 5px;
+    text-align: right;
+    color: var(--text-faint);
+}
+
+/* ======================================================================= */
+/* ======================= END OF 新增样式 =============================== */
+/* ======================================================================= */
+
+
 /* [新增] 版本历史日期分组标题样式 */
 .version-group-header {
     font-size: 1.1em;
@@ -617,9 +654,7 @@
     display: flex;
 }
 
-/* ======================================================================= */
-/* ============= [新增] Diff Modal 版本快速切换器样式 ================= */
-/* ======================================================================= */
+/* Diff Modal 版本快速切换器样式 */
 .diff-version-selector-container {
     display: flex;
     justify-content: space-between;
@@ -671,10 +706,6 @@
     opacity: 1;
     color: var(--interactive-accent);
 }
-/* ======================================================================= */
-/* ======================= END OF 新增样式 =============================== */
-/* ======================================================================= */
-
 
 /* 视图切换器 */
 .diff-view-switcher {
@@ -736,11 +767,7 @@
     padding: 15px 20px;
 }
 
-/* ======================================================================= */
-/* ================== [新增] Markdown 结构化对比视图样式 ================== */
-/* ======================================================================= */
-
-/* 结构化对比容器 */
+/* Markdown 结构化对比视图样式 */
 .structured-diff-container {
     padding: 10px;
     font-family: var(--font-monospace);
@@ -750,7 +777,6 @@
     flex: 1;
 }
 
-/* 每个章节的容器 */
 .structured-section {
     border: 1px solid var(--background-modifier-border);
     border-radius: 5px;
@@ -771,7 +797,6 @@
     border-bottom: 1px solid var(--background-modifier-border);
 }
 
-/* 状态徽章 */
 .diff-badge {
     padding: 2px 6px;
     border-radius: 4px;
@@ -785,13 +810,11 @@
 .diff-badge-removed { background-color: var(--color-red); }
 .diff-badge-unchanged { background-color: var(--color-base-40); }
 
-/* 章节标题 */
 .section-heading {
     font-weight: bold;
     color: var(--text-normal);
 }
 
-/* 章节内容区域 */
 .section-content {
     padding: 10px;
     background-color: var(--background-primary);
@@ -803,17 +826,11 @@
     margin: 0;
 }
 
-/* 修改章节内的差异行样式 */
 .section-content .diff-line {
     padding: 2px 5px;
 }
 .section-content .diff-added { background-color: var(--background-modifier-success-hover); }
 .section-content .diff-removed { background-color: var(--background-modifier-error-hover); }
-
-/* ======================================================================= */
-/* ======================= END OF 新增样式 =============================== */
-/* ======================================================================= */
-
 
 /* 差异信息横幅 - 精简版 */
 .diff-info-banner-compact {
@@ -828,7 +845,6 @@
     flex-wrap: wrap;
 }
 
-/* [新增] 统计实时更新的动画 */
 @keyframes diff-info-flash {
     0% { background-color: var(--background-secondary); }
     50% { background-color: var(--background-modifier-hover); }
@@ -874,7 +890,6 @@
     margin-left: auto;
 }
 
-/* 工具栏按钮 - 添加长按提示 */
 .diff-toolbar button,
 .diff-toolbar select,
 .diff-toolbar input[type="number"] {
@@ -944,7 +959,6 @@
     border-color: var(--interactive-accent);
 }
 
-/* 差异容器 - 默认换行 */
 .diff-container {
     flex: 1;
     overflow: auto;
@@ -968,7 +982,6 @@
     overflow-x: auto;
 }
 
-/* 响应式增强 - 移动端优化 */
 @media (max-width: 1024px) {
     .diff-toolbar {
         gap: 6px;
@@ -1021,14 +1034,12 @@
         margin-left: 0;
     }
     
-    /* 移动端隐藏tooltip */
     .diff-toolbar button:hover::after,
     .diff-toolbar select:hover::after {
         display: none;
     }
 }
 
-/* 搜索功能 */
 .diff-search-container {
     display: flex;
     align-items: center;
@@ -1100,7 +1111,6 @@
     outline: 2px solid orange;
 }
 
-/* 工具栏增强 */
 .diff-toolbar {
     display: flex;
     align-items: center;
@@ -1187,7 +1197,6 @@
     text-align: center;
 }
 
-/* 差异容器增强 */
 .diff-container {
     flex: 1;
     overflow: auto;
@@ -1206,7 +1215,6 @@
     word-break: break-word;
 }
 
-/* 统一视图增强 */
 .diff-line {
     display: flex;
     padding: 2px 8px;
@@ -1311,7 +1319,6 @@
     min-height: 20px;
 }
 
-/* 折叠按钮增强 */
 .diff-collapse-btn {
     text-align: center;
     padding: 10px;
@@ -1337,7 +1344,6 @@
     transform: scaleY(0.95);
 }
 
-/* 内联差异增强 */
 .diff-inline-with-lines {
     display: flex;
     border: 1px solid var(--background-modifier-border);
@@ -1402,7 +1408,6 @@
     box-shadow: 0 0 0 1px rgba(248, 81, 73, 0.3);
 }
 
-/* 分栏视图增强 */
 .diff-split {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -1444,7 +1449,6 @@
     background: var(--background-primary);
 }
 
-/* 滚动条增强 */
 .diff-container::-webkit-scrollbar,
 .diff-content::-webkit-scrollbar,
 .diff-line-content::-webkit-scrollbar,
@@ -1482,7 +1486,6 @@
     background: var(--background-secondary);
 }
 
-/* 深色模式优化 */
 .theme-dark .diff-added {
     background: rgba(46, 160, 67, 0.2);
     border-left-color: #3fb950;
@@ -1507,7 +1510,6 @@
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 
-/* 响应式增强 */
 @media (max-width: 1024px) {
     .diff-toolbar {
         gap: 6px;
@@ -1554,7 +1556,6 @@
     }
 }
 
-/* 标签编辑模态框 */
 .tag-edit-container {
     margin-top: 15px;
 }
@@ -1632,7 +1633,6 @@
     border-radius: 4px;
 }
 
-/* 版本选择模态框 */
 .version-select-modal .version-select-list {
     max-height: 400px;
     overflow-y: auto;
@@ -1697,7 +1697,6 @@
     border-radius: 4px;
 }
 
-/* 确认对话框 */
 .confirm-message {
     color: var(--text-normal);
     line-height: 1.6;
@@ -1747,7 +1746,6 @@
     opacity: 0.9;
 }
 
-/* 响应式设计 */
 @media (max-width: 768px) {
     .version-item {
         flex-direction: column;
@@ -1782,7 +1780,6 @@
     }
 }
 
-/* 滚动条样式 */
 .version-history-view::-webkit-scrollbar,
 .diff-container::-webkit-scrollbar,
 .diff-content::-webkit-scrollbar,
@@ -1822,7 +1819,6 @@
     background: var(--text-muted);
 }
 
-/* 深色模式优化 */
 .theme-dark .version-item {
     background: rgba(255, 255, 255, 0.05);
 }
@@ -1839,7 +1835,6 @@
     background: rgba(248, 81, 73, 0.2);
 }
 
-/* 设置页面样式 */
 .version-info-section {
     padding: 15px;
     background: var(--background-secondary);
@@ -1868,11 +1863,6 @@
     color: var(--text-muted);
 }
 
-/* ======================================================================= */
-/* ================== 字符级二次高亮 (Sub-Highlighting) 优化 ================= */
-/* ======================================================================= */
-
-/* 单词级变化的基础样式 */
 .diff-word-added {
     background-color: rgba(46, 160, 67, 0.3);
     border-radius: 3px;
@@ -1883,7 +1873,6 @@
     text-decoration: line-through;
 }
 
-/* 字符级变化使用更深的背景色来覆盖单词级样式 */
 .diff-char-added {
     background-color: rgba(46, 160, 67, 0.6) !important;
     font-weight: bold;
@@ -1896,9 +1885,8 @@
     text-decoration: line-through;
 }
 
-/* 在“修改”的行中，应用这些样式 */
 .diff-modified .line-content span {
-    display: inline; /* 确保span不会破坏布局 */
+    display: inline;
 }
 
 .diff-modified .diff-char-added {
@@ -1909,19 +1897,15 @@
     padding: 1px 2px;
 }
 
-/* ======================================================================= */
-/* ======================= [新增] 移动文本检测样式 ======================= */
-/* ======================================================================= */
-
 .diff-line.diff-moved-from,
 .diff-line.diff-moved-to {
-    background: rgba(240, 185, 10, 0.1); /* 淡黄色背景 */
-    border-left: 3px solid #f0b90a; /* 黄色边框 */
+    background: rgba(240, 185, 10, 0.1);
+    border-left: 3px solid #f0b90a;
 }
 
 .diff-line.diff-moved-from .diff-marker,
 .diff-line.diff-moved-to .diff-marker {
-    color: #f0b90a; /* 黄色箭头 */
+    color: #f0b90a;
     font-weight: bold;
 }
 
@@ -1930,14 +1914,12 @@
     background: rgba(240, 185, 10, 0.2) !important;
 }
 
-/* 悬停时的高亮效果 */
 .diff-line.diff-move-highlight {
     outline: 2px solid #f0b90a;
     box-shadow: 0 0 10px rgba(240, 185, 10, 0.5);
-    z-index: 20; /* 确保高亮在最上层 */
+    z-index: 20;
 }
 
-/* 深色模式下的移动文本样式 */
 .theme-dark .diff-line.diff-moved-from,
 .theme-dark .diff-line.diff-moved-to {
     background: rgba(240, 185, 10, 0.15);
@@ -1949,16 +1931,10 @@
     color: #e3b341;
 }
 
-/* ======================================================================= */
-/* =================== [新增] 空白字符高亮样式 =================== */
-/* ======================================================================= */
-
-/* 当显示空白字符时，让这些符号的颜色变淡，以免喧宾夺主 */
 .diff-container.show-whitespace-active .line-content {
     color: var(--text-faint);
 }
 
-/* 同时，让真正的差异高亮（字符/单词）颜色保持正常，以突出重点 */
 .diff-container.show-whitespace-active .diff-char-added,
 .diff-container.show-whitespace-active .diff-char-removed,
 .diff-container.show-whitespace-active .diff-word-added,
@@ -1966,9 +1942,6 @@
     color: var(--text-normal);
 }
 
-/* ======================================================================= */
-/* ======================= [新增] 新版工具栏样式 ========================= */
-/* ======================================================================= */
 .diff-toolbar-redesigned {
     display: flex;
     align-items: center;
@@ -2023,14 +1996,11 @@
     border-right: 1px solid var(--background-modifier-border);
 }
 
-/* ======================================================================= */
-/* =================== [新增] 交互式修改和行历史按钮样式 ================= */
-/* ======================================================================= */
 .line-number-container {
     display: flex;
     align-items: center;
     justify-content: flex-end;
-    width: 80px; /* 增加宽度以容纳新按钮 */
+    width: 80px;
     text-align: right;
     margin-right: 15px;
     color: var(--text-faint);
@@ -2042,9 +2012,14 @@
     flex-grow: 1;
 }
 
+/* ======================================================================= */
+/* =================== [修改] 移动端/桌面端按钮显示逻辑 =================== */
+/* ======================================================================= */
+
+/* 默认隐藏行内按钮 */
 .diff-line-action-btn,
 .diff-line-history-btn {
-    display: none; /* 默认隐藏 */
+    display: none;
     cursor: pointer;
     font-size: 14px;
     font-weight: bold;
@@ -2054,10 +2029,22 @@
     line-height: 1;
 }
 
+/* 桌面端：悬停时显示 */
 .diff-line:hover .diff-line-action-btn,
 .diff-line:hover .diff-line-history-btn {
-    display: inline-block; /* 悬停时显示 */
+    display: inline-block;
 }
+
+/* 移动端/桌面端：当行被点击激活时，显示按钮 */
+.diff-line.line-active .diff-line-action-btn,
+.diff-line.line-active .diff-line-history-btn {
+    display: inline-block;
+}
+
+/* ======================================================================= */
+/* ======================= END OF 修改 =================================== */
+/* ======================================================================= */
+
 
 .diff-line-action-btn:hover {
     color: white;
@@ -2074,9 +2061,6 @@
     background-color: var(--background-modifier-hover);
 }
 
-/* ======================================================================= */
-/* ======================= [新增] 行历史模态框样式 ======================= */
-/* ======================================================================= */
 .line-history-modal pre {
     padding: 10px;
     background-color: var(--background-secondary);
