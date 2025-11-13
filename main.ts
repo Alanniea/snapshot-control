@@ -2438,11 +2438,11 @@ class DiffModal extends Modal {
     collapsedSections: Set<number> = new Set();
     ignoreWhitespace: boolean = false;
     showLineNumbers: boolean = true;
-    wrapLines: boolean = true; // [FIX] Default to true
+    wrapLines: boolean = true;
     leftContent: string = '';
     rightContent: string = '';
     currentGranularity: 'char' | 'word' | 'line';
-    showOnlyChanges: boolean = true; // [FIX] Default to true
+    showOnlyChanges: boolean = true;
     enableMoveDetection: boolean = true;
     showWhitespace: boolean = false;
 
@@ -3016,22 +3016,66 @@ class DiffModal extends Modal {
         
         const leftPanel = this.renderedDiffContainer.createEl('div', { cls: 'rendered-diff-panel' });
         const rightPanel = this.renderedDiffContainer.createEl('div', { cls: 'rendered-diff-panel' });
-
+    
         const leftVersion = this.allVersions.find(v => v.id === this.versionId);
         const rightVersion = this.allVersions.find(v => v.id === this.secondVersionId);
-
+    
         const leftLabel = this.versionId === 'current' ? '当前文件' : (leftVersion ? `版本 A: ${this.plugin.formatTime(leftVersion.timestamp)}` : '版本 A');
         const rightLabel = this.secondVersionId === 'current' ? '当前文件' : (rightVersion ? `版本 B: ${this.plugin.formatTime(rightVersion.timestamp)}` : '版本 B');
-
+    
         leftPanel.createEl('h3', { text: leftLabel });
         rightPanel.createEl('h3', { text: rightLabel });
-
+    
         const leftContentEl = leftPanel.createEl('div', { cls: 'rendered-diff-content' });
         const rightContentEl = rightPanel.createEl('div', { cls: 'rendered-diff-content' });
-
-        await MarkdownRenderer.renderMarkdown(this.leftContent, leftContentEl, this.file.path, this.plugin);
-        await MarkdownRenderer.renderMarkdown(this.rightContent, rightContentEl, this.file.path, this.plugin);
-
+    
+        // 1. Get diff at the selected granularity
+        const diffResult = this.currentGranularity === 'line' 
+            ? Diff.diffLines(this.leftContent, this.rightContent)
+            : (this.currentGranularity === 'word' 
+                ? Diff.diffWordsWithSpace(this.leftContent, this.rightContent) 
+                : Diff.diffChars(this.leftContent, this.rightContent));
+    
+        // 2. Reconstruct strings with unique markers
+        let leftMarked = '';
+        let rightMarked = '';
+        const START_DEL = '[[VC-DEL]]'; const END_DEL = '[[/VC-DEL]]';
+        const START_ADD = '[[VC-ADD]]'; const END_ADD = '[[/VC-ADD]]';
+    
+        const escapeHtml = (text: string) => {
+            return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        };
+    
+        for (const part of diffResult) {
+            const value = part.value;
+            if (part.added) {
+                rightMarked += START_ADD + value + END_ADD;
+            } else if (part.removed) {
+                leftMarked += START_DEL + value + END_DEL;
+            } else {
+                leftMarked += value;
+                rightMarked += value;
+            }
+        }
+    
+        // 3. Render the marked-up markdown
+        const tempLeftDiv = createDiv();
+        const tempRightDiv = createDiv();
+        await MarkdownRenderer.renderMarkdown(leftMarked, tempLeftDiv, this.file.path, this.plugin);
+        await MarkdownRenderer.renderMarkdown(rightMarked, tempRightDiv, this.file.path, this.plugin);
+    
+        // 4. Post-process the HTML to replace markers with spans
+        let leftHtml = tempLeftDiv.innerHTML;
+        let rightHtml = tempRightDiv.innerHTML;
+    
+        leftHtml = leftHtml.replace(/\[\[VC-DEL\]\]/g, '<span class="diff-rendered-removed">').replace(/\[\[\/VC-DEL\]\]/g, '</span>');
+        rightHtml = rightHtml.replace(/\[\[VC-ADD\]\]/g, '<span class="diff-rendered-added">').replace(/\[\[\/VC-ADD\]\]/g, '</span>');
+    
+        // 5. Set the final HTML
+        leftContentEl.innerHTML = leftHtml;
+        rightContentEl.innerHTML = rightHtml;
+    
+        // 6. Sync scroll
         let isScrolling = false;
         const syncScroll = (source: HTMLElement, target: HTMLElement) => {
             if (isScrolling) return;
@@ -3039,7 +3083,7 @@ class DiffModal extends Modal {
             target.scrollTop = source.scrollTop;
             setTimeout(() => { isScrolling = false; }, 50);
         };
-
+    
         leftContentEl.addEventListener('scroll', () => syncScroll(leftContentEl, rightContentEl));
         rightContentEl.addEventListener('scroll', () => syncScroll(rightContentEl, leftContentEl));
     }
