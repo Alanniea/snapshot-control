@@ -1958,7 +1958,6 @@ class VersionHistoryView extends ItemView {
         stats.createEl('span', { text: ` · 显示 ${start + 1}-${end}` });
     }
     
-    // ... (rest of VersionHistoryView methods are unchanged) ...
     showVersionContextMenu(event: MouseEvent, file: TFile, version: VersionData) {
         const menu = new Menu();
         
@@ -2158,7 +2157,6 @@ class VersionHistoryView extends ItemView {
     }
 }
 
-// ... (TagEditModal, NoteEditModal, VersionMessageModal, ConfirmModal - all unchanged) ...
 class TagEditModal extends Modal {
     plugin: VersionControlPlugin;
     filePath: string;
@@ -2431,6 +2429,22 @@ type ProcessedDiff = {
     moveId?: number;
 } & Diff.Change;
 
+// [新增] 定义 Markdown 章节结构
+interface MarkdownSection {
+    heading: string;
+    level: number;
+    content: string;
+    originalIndex: number;
+}
+
+// [新增] 定义章节对比结果的类型
+type SectionDiffResult = 
+    | { type: 'unchanged'; left: MarkdownSection; right: MarkdownSection }
+    | { type: 'modified'; left: MarkdownSection; right: MarkdownSection; diff: ProcessedDiff[] }
+    | { type: 'added'; section: MarkdownSection }
+    | { type: 'removed'; section: MarkdownSection };
+
+
 class DiffModal extends Modal {
     plugin: VersionControlPlugin;
     file: TFile;
@@ -2453,10 +2467,13 @@ class DiffModal extends Modal {
     enableMoveDetection: boolean = true;
     showWhitespace: boolean = false;
 
-    private currentView: 'text' | 'rendered' = 'text';
+    // [修改] 增加 'structured' 视图
+    private currentView: 'text' | 'rendered' | 'structured' = 'text';
     private textDiffContainer: HTMLElement;
     private renderedDiffContainer: HTMLElement;
+    private structuredDiffContainer: HTMLElement; // [新增] 结构化对比的容器
     private isRenderedViewBuilt: boolean = false;
+    private isStructuredViewBuilt: boolean = false; // [新增] 结构化视图是否已构建
     private allVersions: VersionData[] = [];
     private infoBannerContainer: HTMLElement;
 
@@ -2525,6 +2542,9 @@ class DiffModal extends Modal {
         const mainContainer = contentEl.createEl('div', { cls: 'diff-main-container' });
         this.textDiffContainer = mainContainer.createEl('div', { cls: 'diff-container' });
         this.renderedDiffContainer = mainContainer.createEl('div', { cls: 'rendered-diff-container', attr: { style: 'display: none;' } });
+        // [新增] 创建结构化对比的容器
+        this.structuredDiffContainer = mainContainer.createEl('div', { cls: 'structured-diff-container', attr: { style: 'display: none;' } });
+
 
         try {
             this.allVersions = await this.plugin.getAllVersions(this.file.path);
@@ -2543,6 +2563,9 @@ class DiffModal extends Modal {
         const viewSwitcher = toolbar.createEl('div', { cls: 'diff-view-switcher' });
         const textDiffBtn = viewSwitcher.createEl('button', { text: '文本差异', cls: 'active' });
         const renderedDiffBtn = viewSwitcher.createEl('button', { text: '渲染预览' });
+        // [新增] 结构化对比按钮
+        const structuredDiffBtn = viewSwitcher.createEl('button', { text: '结构化对比' });
+
 
         const navGroup = toolbar.createEl('div', { cls: 'diff-nav-group' });
         const prevBtn = navGroup.createEl('button', { 
@@ -2802,30 +2825,35 @@ class DiffModal extends Modal {
             this.exportDiffReport();
         });
         
-        const switchView = (view: 'text' | 'rendered') => {
+        // [修改] 扩展视图切换逻辑
+        const switchView = (view: 'text' | 'rendered' | 'structured') => {
             this.currentView = view;
-            if (view === 'text') {
-                textDiffBtn.addClass('active');
-                renderedDiffBtn.removeClass('active');
-                this.textDiffContainer.style.display = '';
-                this.renderedDiffContainer.style.display = 'none';
-                [navGroup, viewGroup, actionGroup].forEach(g => g.style.display = 'flex');
-            } else {
-                textDiffBtn.removeClass('active');
-                renderedDiffBtn.addClass('active');
-                this.textDiffContainer.style.display = 'none';
-                this.renderedDiffContainer.style.display = '';
-                [navGroup, viewGroup, actionGroup].forEach(g => g.style.display = 'none');
-                
-                if (!this.isRenderedViewBuilt) {
-                    this.renderRenderedView();
-                    this.isRenderedViewBuilt = true;
-                }
+            
+            textDiffBtn.toggleClass('active', view === 'text');
+            renderedDiffBtn.toggleClass('active', view === 'rendered');
+            structuredDiffBtn.toggleClass('active', view === 'structured');
+
+            this.textDiffContainer.style.display = view === 'text' ? '' : 'none';
+            this.renderedDiffContainer.style.display = view === 'rendered' ? '' : 'none';
+            this.structuredDiffContainer.style.display = view === 'structured' ? '' : 'none';
+
+            const showTextToolbar = view === 'text';
+            [navGroup, viewGroup, actionGroup].forEach(g => g.style.display = showTextToolbar ? 'flex' : 'none');
+
+            if (view === 'rendered' && !this.isRenderedViewBuilt) {
+                this.renderRenderedView();
+                this.isRenderedViewBuilt = true;
+            }
+            
+            if (view === 'structured' && !this.isStructuredViewBuilt) {
+                this.renderStructuredDiff();
+                this.isStructuredViewBuilt = true;
             }
         };
 
         textDiffBtn.addEventListener('click', () => switchView('text'));
         renderedDiffBtn.addEventListener('click', () => switchView('rendered'));
+        structuredDiffBtn.addEventListener('click', () => switchView('structured')); // [新增] 事件监听
 
         modeSelect.addEventListener('change', () => {
             this.collapsedSections.clear();
@@ -2928,8 +2956,6 @@ class DiffModal extends Modal {
         await this.updateDiffView();
     }
     
-    // ... (rest of DiffModal methods up to renderLineDiff) ...
-    
     renderLineDiff(container: HTMLElement, diffResult: ProcessedDiff[]) {
         let leftLineNum = 1;
         let rightLineNum = 1;
@@ -3013,20 +3039,17 @@ class DiffModal extends Modal {
                 continue;
             }
 
-            // [FIX] Correctly handle replacements with different line counts.
             if (part.removed && nextPart && nextPart.added) {
                 const removedLines = part.value.replace(/\n$/, '').split('\n');
                 const addedLines = nextPart.value.replace(/\n$/, '').split('\n');
                 const minLines = Math.min(removedLines.length, addedLines.length);
 
-                // Process paired lines with inline diff
                 for (let j = 0; j < minLines; j++) {
                     const wordDiff = Diff.diffWordsWithSpace(removedLines[j], addedLines[j]);
                     renderHighlightedLine(wordDiff, 'removed', leftLineNum++);
                     renderHighlightedLine(wordDiff, 'added', rightLineNum++);
                 }
 
-                // Process remaining lines (if any)
                 if (removedLines.length > addedLines.length) {
                     for (let j = minLines; j < removedLines.length; j++) {
                         renderSimpleLine(removedLines[j], 'removed', leftLineNum++);
@@ -3037,7 +3060,7 @@ class DiffModal extends Modal {
                     }
                 }
                 
-                i++; // Skip the next part as it has been processed
+                i++;
             } 
             else {
                 const lines = part.value.replace(/\n$/, '').split('\n');
@@ -3058,7 +3081,6 @@ class DiffModal extends Modal {
         }
     }
     
-    // ... (rest of DiffModal and other classes) ...
     renderVersionSelectors(container: HTMLElement) {
         const selectorContainer = container.createEl('div', { cls: 'diff-version-selector-container' });
 
@@ -3172,14 +3194,20 @@ class DiffModal extends Modal {
             }
 
             this.updateSelectorButtonLabels();
-            this.renderTextDiff();
             
-            if (this.isRenderedViewBuilt) {
-                this.isRenderedViewBuilt = false;
-                if (this.currentView === 'rendered') {
-                    this.renderRenderedView();
-                    this.isRenderedViewBuilt = true;
-                }
+            // [修改] 重置所有视图的构建状态，以便在内容更新后重新渲染
+            this.isRenderedViewBuilt = false;
+            this.isStructuredViewBuilt = false;
+
+            // 根据当前视图渲染
+            if (this.currentView === 'text') {
+                this.renderTextDiff();
+            } else if (this.currentView === 'rendered') {
+                this.renderRenderedView();
+                this.isRenderedViewBuilt = true;
+            } else if (this.currentView === 'structured') {
+                this.renderStructuredDiff();
+                this.isStructuredViewBuilt = true;
             }
 
         } catch (error) {
@@ -3261,7 +3289,6 @@ class DiffModal extends Modal {
             rightProcessed = this.rightContent.replace(/\s+/g, ' ').trim();
         }
         
-        // 处理空内容的边界情况
         if (!leftProcessed && !rightProcessed) {
             container.createEl('div', { 
                 text: '两个版本都是空文件',
@@ -3889,6 +3916,165 @@ class DiffModal extends Modal {
             new Notice('❌ 复制失败');
         });
     }
+
+    // [新增] 结构化对比的核心逻辑
+    renderStructuredDiff() {
+        const container = this.structuredDiffContainer;
+        container.empty();
+
+        const leftSections = this.parseMarkdownSections(this.leftContent);
+        const rightSections = this.parseMarkdownSections(this.rightContent);
+
+        const diffResults = this.compareSections(leftSections, rightSections);
+
+        if (diffResults.length === 0) {
+            container.createEl('div', { text: '✅ 内容相同', cls: 'diff-empty-notice' });
+            return;
+        }
+
+        for (const result of diffResults) {
+            const details = container.createEl('details', { cls: `structured-section structured-${result.type}` });
+            const summary = details.createEl('summary');
+            
+            let badgeText = '';
+            let headingText = '';
+            let openByDefault = false;
+
+            switch (result.type) {
+                case 'added':
+                    badgeText = '新增';
+                    headingText = result.section.heading;
+                    openByDefault = true;
+                    break;
+                case 'removed':
+                    badgeText = '删除';
+                    headingText = result.section.heading;
+                    openByDefault = true;
+                    break;
+                case 'modified':
+                    badgeText = '修改';
+                    headingText = result.right.heading;
+                    openByDefault = true;
+                    break;
+                case 'unchanged':
+                    badgeText = '未变';
+                    headingText = result.right.heading;
+                    break;
+            }
+
+            summary.createEl('span', { text: badgeText, cls: `diff-badge diff-badge-${result.type}` });
+            summary.createEl('span', { text: headingText, cls: 'section-heading' });
+            details.open = openByDefault;
+
+            const contentContainer = details.createEl('div', { cls: 'section-content' });
+            if (result.type === 'modified') {
+                // 复用现有的行差异渲染逻辑
+                this.renderLineDiff(contentContainer, result.diff);
+            } else if (result.type === 'added') {
+                contentContainer.createEl('pre', { text: result.section.content });
+            } else if (result.type === 'removed') {
+                contentContainer.createEl('pre', { text: result.section.content });
+            }
+        }
+    }
+
+    // [新增] 解析 Markdown 文本为章节
+    private parseMarkdownSections(content: string): MarkdownSection[] {
+        const sections: MarkdownSection[] = [];
+        const headingRegex = /^(#+)\s+(.*)/;
+        const lines = content.split('\n');
+        
+        let currentSection: MarkdownSection | null = null;
+        let sectionContent: string[] = [];
+        let index = 0;
+
+        for (const line of lines) {
+            const match = line.match(headingRegex);
+            if (match) {
+                if (currentSection) {
+                    currentSection.content = sectionContent.join('\n').trim();
+                    sections.push(currentSection);
+                } else if (sectionContent.length > 0 && sectionContent.join('').trim() !== '') {
+                    // 处理文档开头没有标题的内容
+                    sections.push({
+                        heading: '（文档开头）',
+                        level: 0,
+                        content: sectionContent.join('\n').trim(),
+                        originalIndex: index++
+                    });
+                }
+                
+                sectionContent = [];
+                currentSection = {
+                    heading: match[2],
+                    level: match[1].length,
+                    content: '',
+                    originalIndex: index++
+                };
+            } else {
+                sectionContent.push(line);
+            }
+        }
+
+        if (currentSection) {
+            currentSection.content = sectionContent.join('\n').trim();
+            sections.push(currentSection);
+        } else if (sectionContent.length > 0 && sectionContent.join('').trim() !== '') {
+            sections.push({
+                heading: sections.length > 0 ? '（文档末尾）' : '（全文）',
+                level: 0,
+                content: sectionContent.join('\n').trim(),
+                originalIndex: index++
+            });
+        }
+
+        return sections;
+    }
+
+    // [新增] 对比章节列表
+    private compareSections(left: MarkdownSection[], right: MarkdownSection[]): SectionDiffResult[] {
+        const results: SectionDiffResult[] = [];
+        const leftMap = new Map(left.map(s => [s.heading, s]));
+        const rightMap = new Map(right.map(s => [s.heading, s]));
+
+        const processedLeftHeadings = new Set<string>();
+
+        for (const rightSection of right) {
+            const leftSection = leftMap.get(rightSection.heading);
+            if (leftSection) {
+                // 标题匹配，检查内容
+                if (leftSection.content.trim() === rightSection.content.trim()) {
+                    results.push({ type: 'unchanged', left: leftSection, right: rightSection });
+                } else {
+                    const diff = Diff.diffLines(leftSection.content, rightSection.content);
+                    const processedDiff = this.processDiffForMoves(diff);
+                    results.push({ type: 'modified', left: leftSection, right: rightSection, diff: processedDiff });
+                }
+                processedLeftHeadings.add(rightSection.heading);
+            } else {
+                // 新增章节
+                results.push({ type: 'added', section: rightSection });
+            }
+        }
+
+        // 检查删除的章节
+        for (const leftSection of left) {
+            if (!processedLeftHeadings.has(leftSection.heading)) {
+                results.push({ type: 'removed', section: leftSection });
+            }
+        }
+        
+        // 排序以保持文档流的顺序
+        return results.sort((a, b) => {
+            const getIndex = (res: SectionDiffResult) => {
+                if (res.type === 'added') return res.section.originalIndex;
+                if (res.type === 'modified' || res.type === 'unchanged') return res.right.originalIndex;
+                return Infinity; // 删除的项可以排在后面或根据其原始位置插入
+            };
+            return getIndex(a) - getIndex(b);
+        });
+    }
+
 
     onClose() {
         const { contentEl } = this;
