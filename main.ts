@@ -3485,7 +3485,7 @@ class DiffModal extends Modal {
                         renderLine(rightPanel, line, 'context', rightLineNum++);
                     }
                 } else {
-                    const lineCount = (part.value.match(/\n/g) || []).length;
+                    const lineCount = (part.value.match(/\n/g) || []).length + (part.value.length > 0 ? 1 : 0);
                     leftLineNum += lineCount;
                     rightLineNum += lineCount;
                 }
@@ -3536,7 +3536,17 @@ class DiffModal extends Modal {
             details.open = openByDefault;
             const contentContainer = details.createEl('div', { cls: 'section-content' });
             if (result.type === 'modified') {
-                this.renderLineDiff(contentContainer, result.diff);
+                const granularDiff = this.currentGranularity === 'line' 
+                    ? result.diff 
+                    : (this.currentGranularity === 'word' 
+                        ? Diff.diffWordsWithSpace(result.left.content, result.right.content) 
+                        : Diff.diffChars(result.left.content, result.right.content));
+                
+                if (this.currentGranularity === 'line') {
+                    this.renderLineDiff(contentContainer, granularDiff as ProcessedDiff[]);
+                } else {
+                    this.renderInlineDiff(contentContainer, granularDiff);
+                }
             } else if (result.type === 'added') {
                 contentContainer.createEl('pre', { text: result.section.content });
             } else if (result.type === 'removed') {
