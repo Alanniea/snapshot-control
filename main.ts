@@ -1,4 +1,3 @@
-
 import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, Modal, ItemView, WorkspaceLeaf, Menu, TextComponent, MarkdownRenderer } from 'obsidian';
 import * as Diff from 'diff';
 import * as pako from 'pako';
@@ -2413,8 +2412,9 @@ class ConfirmModal extends Modal {
 // ======================= [START] FINAL DIFFMODAL =========================
 // =======================================================================
 
+// 【修复】将 'modified' 添加到类型定义中
 type ProcessedDiff = {
-    type: 'context' | 'added' | 'removed' | 'moved-from' | 'moved-to';
+    type: 'context' | 'added' | 'removed' | 'moved-from' | 'moved-to' | 'modified';
     moveId?: number;
 } & Diff.Change;
 
@@ -3136,12 +3136,12 @@ class DiffModal extends Modal {
         const modeSelect = this.containerEl.querySelector('.diff-select[aria-label="视图模式"]') as HTMLSelectElement;
         if (modeSelect.value === 'unified') {
             container.removeClass('diff-split');
-            this.renderUnifiedDiff(container, leftProcessed, rightProcessed, this.currentGranularity);
+            this.renderUnifiedDiff(container, leftProcessed, rightProcessed);
         } else {
             container.addClass('diff-split');
             const leftLabelEl = this.containerEl.querySelector('#diff-left-version-btn') as HTMLElement;
             const rightLabelEl = this.containerEl.querySelector('#diff-right-version-btn') as HTMLElement;
-            this.renderSplitDiff(container, leftProcessed, rightProcessed, this.currentGranularity, leftLabelEl.textContent || '版本 A', rightLabelEl.textContent || '版本 B');
+            this.renderSplitDiff(container, leftProcessed, rightProcessed, leftLabelEl.textContent || '版本 A', rightLabelEl.textContent || '版本 B');
         }
 
         if (this.wrapLines) container.addClass('diff-wrap-lines');
@@ -3384,13 +3384,14 @@ class DiffModal extends Modal {
         }
     }
 
-    renderUnifiedDiff(container: HTMLElement, left: string, right: string, granularity: 'char' | 'word' | 'line') {
-        if (granularity !== 'line') {
-            const diffResult = granularity === 'word' ? Diff.diffWordsWithSpace(left, right) : Diff.diffChars(left, right);
-            this.renderInlineDiff(container, diffResult);
-            return;
-        }
-
+    // =======================================================================
+    // ======================= [BUG FIX] UNIFIED RENDERER ====================
+    // =======================================================================
+    /**
+     * 【修复】重构了统一视图的渲染逻辑，采用统一的两阶段对比引擎，
+     * 解决了字符/单词级对比下，修改被错误地显示为行替换的问题。
+     */
+    renderUnifiedDiff(container: HTMLElement, left: string, right: string) {
         const diffResult = Diff.diffLines(left, right);
         const processedDiff: ProcessedDiff[] = this.enableMoveDetection 
             ? this.processDiffForMoves(diffResult) 
@@ -3399,6 +3400,10 @@ class DiffModal extends Modal {
         let leftLineNum = 1;
         let rightLineNum = 1;
         let diffIdx = 0;
+
+        const secondaryDiffFn = this.currentGranularity === 'char' 
+            ? Diff.diffChars 
+            : Diff.diffWordsWithSpace;
 
         const createHighlightedFragment = (diffParts: Diff.Change[]): DocumentFragment => {
             const fragment = document.createDocumentFragment();
@@ -3425,52 +3430,24 @@ class DiffModal extends Modal {
             if (lineNumLeft) lineEl.dataset.lineNumberLeft = String(lineNumLeft);
             if (lineNumRight) lineEl.dataset.lineNumberRight = String(lineNumRight);
             
-            lineEl.addEventListener('click', (e) => {
-                const target = e.target as HTMLElement;
-                if (!target.closest('.diff-line-action-btn, .diff-line-history-btn')) {
-                    if (lineEl.hasClass('line-active')) {
-                        lineEl.removeClass('line-active');
-                    } else {
-                        this.textDiffContainer.findAll('.line-active').forEach(el => el.removeClass('line-active'));
-                        lineEl.addClass('line-active');
-                    }
-                }
-            });
-
             const lineNumContainer = lineEl.createEl('div', { cls: 'line-number-container' });
             if (this.showLineNumbers) {
                 lineNumContainer.createEl('span', { cls: 'line-number line-number-left', text: lineNumLeft ? String(lineNumLeft) : '' });
                 lineNumContainer.createEl('span', { cls: 'line-number line-number-right', text: lineNumRight ? String(lineNumRight) : '' });
             }
             
-            const historyBtn = lineNumContainer.createEl('span', { text: '📜', cls: 'diff-line-history-btn', attr: { 'aria-label': '查看行历史' } });
-            historyBtn.addEventListener('click', () => this.showLineHistory(typeof content === 'string' ? content : content.textContent || ''));
-    
-            if ((this.versionId === 'current' && type === 'removed') || (this.secondVersionId === 'current' && type === 'added')) {
-                if (type === 'added' && this.secondVersionId === 'current') {
-                    const revertBtn = lineNumContainer.createEl('span', { text: '-', cls: 'diff-line-action-btn', attr: { 'aria-label': '撤销此更改' } });
-                    revertBtn.addEventListener('click', () => this.revertChanges(typeof content === 'string' ? content : content.textContent || '', rightLineNum - 1));
-                }
-            }
-            if ((this.versionId === 'current' && type === 'added') || (this.secondVersionId === 'current' && type === 'removed')) {
-                 if (type === 'removed' && this.secondVersionId === 'current') {
-                    const applyBtn = lineNumContainer.createEl('span', { text: '+', cls: 'diff-line-action-btn', attr: { 'aria-label': '应用此更改' } });
-                    applyBtn.addEventListener('click', () => this.applyChanges(typeof content === 'string' ? content : content.textContent || '', rightLineNum));
-                }
-            }
-    
             let marker = ' ';
             if (type === 'added') marker = '+';
             else if (type === 'removed') marker = '-';
             else if (type === 'moved-from') marker = '⮫';
             else if (type === 'moved-to') marker = '⮪';
+            else if (type === 'modified') marker = '~';
 
             lineEl.createEl('span', { cls: 'diff-marker', text: marker });
             
             const contentEl = lineEl.createEl('span', { cls: 'line-content' });
             if (typeof content === 'string') {
                 contentEl.setText(this.showWhitespace ? this.visualizeWhitespace(content) : content);
-                if (content.trim() === '') contentEl.innerHTML = '&nbsp;';
             } else {
                 contentEl.appendChild(content);
             }
@@ -3480,7 +3457,12 @@ class DiffModal extends Modal {
             const part = processedDiff[i];
             const nextPart = processedDiff[i + 1];
 
-            if (part.removed && nextPart && nextPart.added) {
+            if (this.currentGranularity !== 'line' && part.removed && nextPart && nextPart.added && part.count === 1 && nextPart.count === 1) {
+                const lineDiff = secondaryDiffFn(part.value.replace(/\n$/, ''), nextPart.value.replace(/\n$/, ''));
+                const combinedFrag = createHighlightedFragment(lineDiff);
+                renderLine(combinedFrag, 'modified', leftLineNum++, rightLineNum++);
+                i++; // Skip next part
+            } else if (part.removed && nextPart && nextPart.added) {
                 const leftLines = part.value.replace(/\n$/, '').split('\n');
                 const rightLines = nextPart.value.replace(/\n$/, '').split('\n');
                 const maxLines = Math.max(leftLines.length, rightLines.length);
@@ -3490,7 +3472,7 @@ class DiffModal extends Modal {
                     const rightLine = rightLines[j];
 
                     if (leftLine !== undefined && rightLine !== undefined) {
-                        const lineDiff = Diff.diffWordsWithSpace(leftLine, rightLine);
+                        const lineDiff = secondaryDiffFn(leftLine, rightLine);
                         const leftFrag = createHighlightedFragment(lineDiff.filter(p => !p.added));
                         const rightFrag = createHighlightedFragment(lineDiff.filter(p => !p.removed));
                         renderLine(leftFrag, 'removed', leftLineNum++, null);
@@ -3524,84 +3506,9 @@ class DiffModal extends Modal {
             }
         }
     }
-    
-    // =======================================================================
-    // ======================= [BUG FIX] RENDER INLINE DIFF ==================
-    // =======================================================================
-    /**
-     * 【修复】为字符级和单词级差异创建了专门的渲染器，确保修改在同一行内显示。
-     */
-    renderInlineDiff(container: HTMLElement, diffResult: Diff.Change[]) {
-        let leftLineNum = 1;
-        let rightLineNum = 1;
-        let lineHasChange = false;
-        let currentLineFragment = document.createDocumentFragment();
-    
-        const finalizeLine = () => {
-            if (this.showOnlyChanges && !lineHasChange) {
-                // 如果仅显示变更且当前行无变化，则跳过
-            } else {
-                const lineEl = container.createEl('div', { cls: 'diff-line diff-context' });
-                if (lineHasChange) {
-                    lineEl.addClass('diff-modified'); // 添加一个特定类用于样式
-                    this.diffElements.push(lineEl);
-                    lineEl.dataset.diffIndex = String(this.diffElements.length - 1);
-                }
-                lineEl.dataset.lineNumberLeft = String(leftLineNum);
-                lineEl.dataset.lineNumberRight = String(rightLineNum);
-    
-                if (this.showLineNumbers) {
-                    const lineNumContainer = lineEl.createEl('div', { cls: 'line-number-container' });
-                    lineNumContainer.createEl('span', { cls: 'line-number line-number-left', text: String(leftLineNum) });
-                    lineNumContainer.createEl('span', { cls: 'line-number line-number-right', text: String(rightLineNum) });
-                }
-                
-                // 对于内联差异，我们使用一个中性的标记
-                lineEl.createEl('span', { cls: 'diff-marker', text: lineHasChange ? '~' : ' ' });
+    // ======================= [END BUG FIX] UNIFIED RENDERER ==================
 
-                const contentEl = lineEl.createEl('span', { cls: 'line-content' });
-                contentEl.appendChild(currentLineFragment);
-            }
-    
-            // 重置以便处理下一行
-            currentLineFragment = document.createDocumentFragment();
-            leftLineNum++;
-            rightLineNum++;
-            lineHasChange = false;
-        };
-    
-        for (const part of diffResult) {
-            const text = this.showWhitespace ? this.visualizeWhitespace(part.value) : part.value;
-            const className = part.added ? 'diff-char-added' : part.removed ? 'diff-char-removed' : '';
-            if (className) {
-                lineHasChange = true;
-            }
-    
-            const lines = text.split('\n');
-            lines.forEach((lineChunk, index) => {
-                if (lineChunk) {
-                    if (className) {
-                        currentLineFragment.append(createEl('span', { text: lineChunk, cls: className }));
-                    } else {
-                        currentLineFragment.append(document.createTextNode(lineChunk));
-                    }
-                }
-    
-                // 如果遇到换行符（即不是最后一块），则完成当前行
-                if (index < lines.length - 1) {
-                    finalizeLine();
-                }
-            });
-        }
-    
-        // 确保最后一行也被渲染
-        if (currentLineFragment.hasChildNodes()) {
-            finalizeLine();
-        }
-    }
-    // ======================= [END BUG FIX] RENDER INLINE DIFF ================
-
-    renderSplitDiff(container: HTMLElement, left: string, right: string, granularity: 'char' | 'word' | 'line', leftLabel: string, rightLabel: string) {
+    renderSplitDiff(container: HTMLElement, left: string, right: string, leftLabel: string, rightLabel: string) {
         const leftPanel = container.createEl('div', { cls: 'diff-panel' });
         const rightPanel = container.createEl('div', { cls: 'diff-panel' });
 
@@ -3611,10 +3518,10 @@ class DiffModal extends Modal {
         const leftContentEl = leftPanel.createEl('div', { cls: 'diff-content' });
         const rightContentEl = rightPanel.createEl('div', { cls: 'diff-content' });
 
-        this.renderSplitViewAdvanced(leftContentEl, rightContentEl, left, right, granularity);
+        this.renderSplitViewAdvanced(leftContentEl, rightContentEl, left, right);
     }
 
-    renderSplitViewAdvanced(leftPanel: HTMLElement, rightPanel: HTMLElement, leftText: string, rightText: string, granularity: 'char' | 'word' | 'line') {
+    renderSplitViewAdvanced(leftPanel: HTMLElement, rightPanel: HTMLElement, leftText: string, rightText: string) {
         const rawDiff = Diff.diffLines(leftText, rightText);
         const diff: ProcessedDiff[] = this.enableMoveDetection
             ? this.processDiffForMoves(rawDiff)
@@ -3623,6 +3530,10 @@ class DiffModal extends Modal {
         let leftLineNum = 1;
         let rightLineNum = 1;
         let diffIdx = 0;
+
+        const secondaryDiffFn = this.currentGranularity === 'char' 
+            ? Diff.diffChars 
+            : Diff.diffWordsWithSpace;
     
         const createHighlightedFragment = (diffParts: Diff.Change[]): DocumentFragment => {
             const fragment = document.createDocumentFragment();
@@ -3647,18 +3558,6 @@ class DiffModal extends Modal {
             }
             if (lineNum) lineEl.dataset.lineNumber = String(lineNum);
             if (moveId !== undefined) lineEl.dataset.moveId = String(moveId);
-
-            lineEl.addEventListener('click', (e) => {
-                const target = e.target as HTMLElement;
-                if (!target.closest('.diff-line-action-btn, .diff-line-history-btn')) {
-                    if (lineEl.hasClass('line-active')) {
-                        lineEl.removeClass('line-active');
-                    } else {
-                        this.textDiffContainer.findAll('.line-active').forEach(el => el.removeClass('line-active'));
-                        lineEl.addClass('line-active');
-                    }
-                }
-            });
 
             if (this.showLineNumbers) {
                 lineEl.createEl('span', { cls: 'line-number', text: lineNum ? String(lineNum) : '' });
@@ -3685,7 +3584,7 @@ class DiffModal extends Modal {
                     const rightLine = rightLines[j];
     
                     if (leftLine !== undefined && rightLine !== undefined) {
-                        const lineDiff = Diff.diffWordsWithSpace(leftLine, rightLine);
+                        const lineDiff = secondaryDiffFn(leftLine, rightLine);
                         const leftFrag = createHighlightedFragment(lineDiff.filter(p => !p.added));
                         const rightFrag = createHighlightedFragment(lineDiff.filter(p => !p.removed));
                         renderLine(leftPanel, leftFrag, 'modified', leftLineNum++);
@@ -3768,17 +3667,7 @@ class DiffModal extends Modal {
             details.open = openByDefault;
             const contentContainer = details.createEl('div', { cls: 'section-content' });
             if (result.type === 'modified') {
-                const granularDiff = this.currentGranularity === 'line' 
-                    ? result.diff 
-                    : (this.currentGranularity === 'word' 
-                        ? Diff.diffWordsWithSpace(result.left.content, result.right.content) 
-                        : Diff.diffChars(result.left.content, result.right.content));
-                
-                if (this.currentGranularity === 'line') {
-                    this.renderUnifiedDiff(contentContainer, result.left.content, result.right.content, 'line');
-                } else {
-                    this.renderInlineDiff(contentContainer, granularDiff);
-                }
+                this.renderUnifiedDiff(contentContainer, result.left.content, result.right.content);
             } else if (result.type === 'added') {
                 contentContainer.createEl('pre', { text: result.section.content });
             } else if (result.type === 'removed') {
