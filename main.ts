@@ -40,7 +40,8 @@ interface VersionControlSettings {
     enableMaxDays: boolean;
 
     useRelativeTime: boolean;
-    diffGranularity: 'char' | 'word' | 'line';
+    // [修改] 增加 'sentence' 粒度
+    diffGranularity: 'char' | 'word' | 'line' | 'sentence';
     diffViewMode: 'unified' | 'split';
     enableDeduplication: boolean;
     showNotifications: boolean;
@@ -64,7 +65,6 @@ interface VersionControlSettings {
     enableStatusBarDiff: boolean;
     showLastSaveTimeInStatusBar: boolean;
 
-    // [新增] 智能差异对比设置
     inlineDiffAlgorithm: 'word' | 'char';
     smartWordDiff: boolean;
 }
@@ -79,7 +79,7 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
     maxDays: 30,
     enableMaxDays: false,
     useRelativeTime: false,
-    diffGranularity: 'char',
+    diffGranularity: 'line', // 默认值设为 'line'
     diffViewMode: 'unified',
     enableDeduplication: true,
     showNotifications: true,
@@ -101,7 +101,6 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
     enableStatusBarDiff: true,
     showLastSaveTimeInStatusBar: true,
     
-    // [新增] 智能差异对比设置默认值
     inlineDiffAlgorithm: 'word',
     smartWordDiff: true,
 };
@@ -2453,7 +2452,8 @@ class DiffModal extends Modal {
     wrapLines: boolean = true;
     leftContent: string = '';
     rightContent: string = '';
-    currentGranularity: 'char' | 'word' | 'line';
+    // [修改] 增加 'sentence' 粒度
+    currentGranularity: 'char' | 'word' | 'line' | 'sentence';
     showOnlyChanges: boolean = false;
     enableMoveDetection: boolean = true;
     showWhitespace: boolean = false;
@@ -2522,16 +2522,13 @@ class DiffModal extends Modal {
         return text.replace(/\t/g, '→   ').replace(/ /g, '·');
     }
 
-    // [新增] 智能单词对比函数
     private smartDiffWords(oldStr: string, newStr: string): Diff.Change[] {
-        // 这个正则表达式会捕获连续的单词字符或连续的非单词字符（如标点和空格）
         const splitRegex = /(\w+|[^\w]+)/g;
         const oldTokens = oldStr.match(splitRegex) || [];
         const newTokens = newStr.match(splitRegex) || [];
 
         const diffResult = Diff.diffArrays(oldTokens, newTokens);
 
-        // 将数组差异结果转换回标准的字符串差异结果
         const result: Diff.Change[] = [];
         diffResult.forEach(part => {
             const value = part.value.join('');
@@ -2551,6 +2548,15 @@ class DiffModal extends Modal {
             });
         });
         return result;
+    }
+
+    // [新增] 句子分割函数
+    private splitIntoSentences(text: string): string[] {
+        if (!text) return [];
+        // 正则表达式：匹配直到句末标点（包括其后的空格/换行），或两个换行符（段落），或是字符串的最后一部分
+        const sentenceRegex = /.+?[.!?。！？…\n](?:\s|\n|$)|.+?\n\n|.+?$/g;
+        const sentences = text.match(sentenceRegex);
+        return sentences ? sentences.map(s => s.trim()).filter(s => s.length > 0) : [];
     }
 
     async onOpen() {
@@ -2617,8 +2623,9 @@ class DiffModal extends Modal {
             menu.addItem(item => item.setTitle('字符').setChecked(this.currentGranularity === 'char').onClick(() => this.updateGranularity('char')));
             menu.addItem(item => item.setTitle('单词').setChecked(this.currentGranularity === 'word').onClick(() => this.updateGranularity('word')));
             menu.addItem(item => item.setTitle('行').setChecked(this.currentGranularity === 'line').onClick(() => this.updateGranularity('line')));
+            // [新增] 句子粒度选项
+            menu.addItem(item => item.setTitle('句子').setChecked(this.currentGranularity === 'sentence').onClick(() => this.updateGranularity('sentence')));
 
-            // [新增] 智能对比设置
             menu.addItem(item => item.setTitle('智能对比').setDisabled(true).setSection('diff-settings-group-label'));
             menu.addItem(item => item.setTitle('智能单词模式').setChecked(this.plugin.settings.smartWordDiff).onClick(async () => {
                 this.plugin.settings.smartWordDiff = !this.plugin.settings.smartWordDiff;
@@ -2825,7 +2832,7 @@ class DiffModal extends Modal {
         }, 100);
     }
 
-    updateGranularity(granularity: 'char' | 'word' | 'line') {
+    updateGranularity(granularity: 'char' | 'word' | 'line' | 'sentence') {
         this.currentGranularity = granularity;
         this.collapsedSections.clear();
         this.renderTextDiff();
@@ -3192,14 +3199,28 @@ class DiffModal extends Modal {
         container.toggleClass('show-whitespace-active', this.showWhitespace);
         
         const modeSelect = this.containerEl.querySelector('.diff-select[aria-label="视图模式"]') as HTMLSelectElement;
-        if (modeSelect.value === 'unified') {
-            container.removeClass('diff-split');
-            this.renderUnifiedDiff(container, leftProcessed, rightProcessed);
+        
+        // [新增] 路由到句子对比渲染器
+        if (this.currentGranularity === 'sentence') {
+            if (modeSelect.value === 'unified') {
+                container.removeClass('diff-split');
+                this.renderSentenceUnifiedDiff(container, leftProcessed, rightProcessed);
+            } else {
+                container.addClass('diff-split');
+                const leftLabelEl = this.containerEl.querySelector('#diff-left-version-btn') as HTMLElement;
+                const rightLabelEl = this.containerEl.querySelector('#diff-right-version-btn') as HTMLElement;
+                this.renderSentenceSplitDiff(container, leftProcessed, rightProcessed, leftLabelEl.textContent || '版本 A', rightLabelEl.textContent || '版本 B');
+            }
         } else {
-            container.addClass('diff-split');
-            const leftLabelEl = this.containerEl.querySelector('#diff-left-version-btn') as HTMLElement;
-            const rightLabelEl = this.containerEl.querySelector('#diff-right-version-btn') as HTMLElement;
-            this.renderSplitDiff(container, leftProcessed, rightProcessed, leftLabelEl.textContent || '版本 A', rightLabelEl.textContent || '版本 B');
+            if (modeSelect.value === 'unified') {
+                container.removeClass('diff-split');
+                this.renderUnifiedDiff(container, leftProcessed, rightProcessed);
+            } else {
+                container.addClass('diff-split');
+                const leftLabelEl = this.containerEl.querySelector('#diff-left-version-btn') as HTMLElement;
+                const rightLabelEl = this.containerEl.querySelector('#diff-right-version-btn') as HTMLElement;
+                this.renderSplitDiff(container, leftProcessed, rightProcessed, leftLabelEl.textContent || '版本 A', rightLabelEl.textContent || '版本 B');
+            }
         }
 
         if (this.wrapLines) container.addClass('diff-wrap-lines');
@@ -3452,7 +3473,6 @@ class DiffModal extends Modal {
         let rightLineNum = 1;
         let diffIdx = 0;
 
-        // [修改] 根据设置选择二级对比函数
         const getSecondaryDiffFn = () => {
             if (this.currentGranularity === 'line') {
                 return this.plugin.settings.inlineDiffAlgorithm === 'char' ? Diff.diffChars : (this.plugin.settings.smartWordDiff ? this.smartDiffWords : Diff.diffWordsWithSpace);
@@ -3557,7 +3577,6 @@ class DiffModal extends Modal {
             } else {
                 const lines = part.value.replace(/\n$/, '').split('\n');
                 for (const line of lines) {
-                    // 【修复】修正逻辑判断的优先级
                     if (part.type === 'moved-from') {
                         renderLine(line, 'moved-from', leftLineNum++, null, part.moveId);
                     } else if (part.type === 'moved-to') {
@@ -3601,7 +3620,6 @@ class DiffModal extends Modal {
         let rightLineNum = 1;
         let diffIdx = 0;
 
-        // [修改] 根据设置选择二级对比函数
         const getSecondaryDiffFn = () => {
             if (this.currentGranularity === 'line') {
                 return this.plugin.settings.inlineDiffAlgorithm === 'char' ? Diff.diffChars : (this.plugin.settings.smartWordDiff ? this.smartDiffWords : Diff.diffWordsWithSpace);
@@ -3723,6 +3741,142 @@ class DiffModal extends Modal {
                     }
                     leftLineNum++;
                     rightLineNum++;
+                }
+            }
+        }
+    }
+
+    // [新增] 句子对比的统一视图渲染器
+    renderSentenceUnifiedDiff(container: HTMLElement, left: string, right: string) {
+        const leftSentences = this.splitIntoSentences(left);
+        const rightSentences = this.splitIntoSentences(right);
+        const diffResult = Diff.diffArrays(leftSentences, rightSentences);
+        
+        let diffIdx = 0;
+        const secondaryDiffFn = this.plugin.settings.smartWordDiff ? this.smartDiffWords : Diff.diffWordsWithSpace;
+
+        const createHighlightedFragment = (diffParts: Diff.Change[]): DocumentFragment => {
+            const fragment = document.createDocumentFragment();
+            diffParts.forEach(part => {
+                const className = part.added ? 'diff-word-added' : part.removed ? 'diff-word-removed' : '';
+                fragment.append(createEl('span', { text: part.value, cls: className }));
+            });
+            return fragment;
+        };
+
+        const renderSentence = (content: string | DocumentFragment, type: 'added' | 'removed' | 'modified' | 'context') => {
+            const sentenceEl = container.createEl('div', { cls: `diff-line diff-${type}` });
+            if (type !== 'context') {
+                sentenceEl.dataset.diffIndex = String(diffIdx++);
+                this.diffElements.push(sentenceEl);
+            }
+            
+            let marker = ' ';
+            if (type === 'added') marker = '+';
+            else if (type === 'removed') marker = '-';
+            else if (type === 'modified') marker = '~';
+            sentenceEl.createEl('span', { cls: 'diff-marker', text: marker });
+
+            const contentEl = sentenceEl.createEl('span', { cls: 'line-content' });
+            if (typeof content === 'string') {
+                contentEl.setText(content);
+            } else {
+                contentEl.appendChild(content);
+            }
+        };
+
+        for (let i = 0; i < diffResult.length; i++) {
+            const part = diffResult[i];
+            const nextPart = diffResult[i + 1];
+
+            if (part.removed && nextPart && nextPart.added) {
+                const removedText = part.value.join(' ');
+                const addedText = nextPart.value.join(' ');
+                const wordDiff = secondaryDiffFn(removedText, addedText);
+                renderSentence(createHighlightedFragment(wordDiff), 'modified');
+                i++; // Skip next part
+            } else if (part.added) {
+                part.value.forEach(sentence => renderSentence(sentence, 'added'));
+            } else if (part.removed) {
+                part.value.forEach(sentence => renderSentence(sentence, 'removed'));
+            } else {
+                if (!this.showOnlyChanges) {
+                    part.value.forEach(sentence => renderSentence(sentence, 'context'));
+                }
+            }
+        }
+    }
+
+    // [新增] 句子对比的左右分栏视图渲染器
+    renderSentenceSplitDiff(container: HTMLElement, left: string, right: string, leftLabel: string, rightLabel: string) {
+        const leftPanel = container.createEl('div', { cls: 'diff-panel' });
+        const rightPanel = container.createEl('div', { cls: 'diff-panel' });
+
+        leftPanel.createEl('h3', { text: leftLabel });
+        rightPanel.createEl('h3', { text: rightLabel });
+
+        const leftContentEl = leftPanel.createEl('div', { cls: 'diff-content' });
+        const rightContentEl = rightPanel.createEl('div', { cls: 'diff-content' });
+
+        const leftSentences = this.splitIntoSentences(left);
+        const rightSentences = this.splitIntoSentences(right);
+        const diffResult = Diff.diffArrays(leftSentences, rightSentences);
+        
+        let diffIdx = 0;
+        const secondaryDiffFn = this.plugin.settings.smartWordDiff ? this.smartDiffWords : Diff.diffWordsWithSpace;
+
+        const createHighlightedFragment = (diffParts: Diff.Change[], type: 'added' | 'removed'): DocumentFragment => {
+            const fragment = document.createDocumentFragment();
+            diffParts.forEach(part => {
+                if (type === 'added' && part.removed) return;
+                if (type === 'removed' && part.added) return;
+                const className = part.added ? 'diff-word-added' : part.removed ? 'diff-word-removed' : '';
+                fragment.append(createEl('span', { text: part.value, cls: className }));
+            });
+            return fragment;
+        };
+
+        const renderSentence = (panel: HTMLElement, content: string | DocumentFragment, type: string) => {
+            const sentenceEl = panel.createEl('div', { cls: `diff-line diff-${type}` });
+             if (type !== 'context' && type !== 'placeholder') {
+                sentenceEl.dataset.diffIndex = String(diffIdx++);
+                this.diffElements.push(sentenceEl);
+            }
+            const contentEl = sentenceEl.createEl('span', { cls: 'line-content' });
+            if (typeof content === 'string') {
+                contentEl.setText(content);
+            } else {
+                contentEl.appendChild(content);
+            }
+        };
+
+        for (let i = 0; i < diffResult.length; i++) {
+            const part = diffResult[i];
+            const nextPart = diffResult[i + 1];
+
+            if (part.removed && nextPart && nextPart.added) {
+                const removedText = part.value.join(' ');
+                const addedText = nextPart.value.join(' ');
+                const wordDiff = secondaryDiffFn(removedText, addedText);
+                renderSentence(leftContentEl, createHighlightedFragment(wordDiff, 'removed'), 'modified');
+                renderSentence(rightContentEl, createHighlightedFragment(wordDiff, 'added'), 'modified');
+                i++;
+            } else if (part.added) {
+                part.value.forEach(sentence => {
+                    renderSentence(leftContentEl, '', 'placeholder');
+                    renderSentence(rightContentEl, sentence, 'added');
+                });
+            } else if (part.removed) {
+                part.value.forEach(sentence => {
+                    renderSentence(leftContentEl, sentence, 'removed');
+                    renderSentence(rightContentEl, '', 'placeholder');
+                });
+            } else {
+                if (!this.showOnlyChanges) {
+                    part.value.forEach(sentence => {
+                        renderSentence(leftContentEl, sentence, 'context');
+                        renderSentence(rightContentEl, sentence, 'context');
+                    });
                 }
             }
         }
@@ -4421,8 +4575,10 @@ class VersionControlSettingTab extends PluginSettingTab {
                 .addOption('char', '字符级')
                 .addOption('word', '单词级')
                 .addOption('line', '行级')
+                // [新增] 句子粒度选项
+                .addOption('sentence', '句子级 (适合长文)')
                 .setValue(this.plugin.settings.diffGranularity)
-                .onChange(async (value: 'char' | 'word' | 'line') => {
+                .onChange(async (value: 'char' | 'word' | 'line' | 'sentence') => {
                     this.plugin.settings.diffGranularity = value;
                     await this.plugin.saveSettings();
                 }));
@@ -4439,7 +4595,6 @@ class VersionControlSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
         
-        // [新增] 智能对比设置
         new Setting(containerEl)
             .setName('启用智能单词对比')
             .setDesc('开启后，“单词级”对比会更智能地处理标点符号，减少误报。')
