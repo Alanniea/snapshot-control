@@ -2446,7 +2446,7 @@ class DiffModal extends Modal {
     leftContent: string = '';
     rightContent: string = '';
     currentGranularity: 'char' | 'word' | 'line';
-    showOnlyChanges: boolean = true;
+    showOnlyChanges: boolean = false; // Default to false for better initial view
     enableMoveDetection: boolean = true;
     showWhitespace: boolean = false;
 
@@ -2807,26 +2807,41 @@ class DiffModal extends Modal {
         }
     }
     
-    renderLineDiff(container: HTMLElement, diffResult: ProcessedDiff[]) {
+    // =======================================================================
+    // ======================= [BUG FIX] RENDER LINE DIFF ====================
+    // =======================================================================
+    /**
+     * 【修复】重构了统一视图的渲染逻辑，以支持行内差异高亮和正确的行号计数。
+     */
+    renderUnifiedDiffWithIntraline(container: HTMLElement, diffResult: ProcessedDiff[]) {
         let leftLineNum = 1;
         let rightLineNum = 1;
         let diffIdx = 0;
     
-        const renderLine = (content: string | DocumentFragment, type: ProcessedDiff['type'], lineNumLeft: number | null, lineNumRight: number | null, moveId?: number) => {
-            if (this.showOnlyChanges && type === 'context') {
-                if (lineNumLeft !== null) leftLineNum++;
-                if (lineNumRight !== null) rightLineNum++;
-                return;
-            }
+        const createHighlightedFragment = (diffParts: Diff.Change[], isAdded: boolean): DocumentFragment => {
+            const fragment = document.createDocumentFragment();
+            diffParts.forEach(part => {
+                if (isAdded ? part.removed : part.added) return;
+    
+                const className = part.added ? 'diff-word-added' : part.removed ? 'diff-word-removed' : '';
+                const processedText = this.showWhitespace ? this.visualizeWhitespace(part.value) : part.value;
+                
+                if (className) {
+                    fragment.append(createEl('span', { text: processedText, cls: className }));
+                } else {
+                    fragment.append(document.createTextNode(processedText));
+                }
+            });
+            return fragment;
+        };
 
+        const renderLine = (content: string | DocumentFragment, type: ProcessedDiff['type'], lineNumLeft: number | null, lineNumRight: number | null, moveId?: number) => {
             const lineEl = container.createEl('div', { cls: `diff-line diff-${type}` });
             if (type !== 'context') {
                 lineEl.dataset.diffIndex = String(diffIdx++);
                 this.diffElements.push(lineEl);
             }
-            if (moveId !== undefined) {
-                lineEl.dataset.moveId = String(moveId);
-            }
+            if (moveId !== undefined) lineEl.dataset.moveId = String(moveId);
             if (lineNumLeft) lineEl.dataset.lineNumberLeft = String(lineNumLeft);
             if (lineNumRight) lineEl.dataset.lineNumberRight = String(lineNumRight);
             
@@ -2883,29 +2898,44 @@ class DiffModal extends Modal {
     
         for (let i = 0; i < diffResult.length; i++) {
             const part = diffResult[i];
-            const lines = part.value.replace(/\n$/, '').split('\n');
+            const nextPart = diffResult[i + 1];
     
+            // 智能检测“修改”：一个删除块后紧跟一个添加块
+            if (part.removed && nextPart && nextPart.added) {
+                const lineDiff = Diff.diffWordsWithSpace(part.value, nextPart.value);
+                const leftFrag = createHighlightedFragment(lineDiff, false);
+                const rightFrag = createHighlightedFragment(lineDiff, true);
+                
+                renderLine(leftFrag, 'removed', leftLineNum, null);
+                renderLine(rightFrag, 'added', null, rightLineNum);
+                
+                leftLineNum += (part.value.match(/\n/g) || []).length + 1;
+                rightLineNum += (nextPart.value.match(/\n/g) || []).length + 1;
+                i++; // 跳过下一个 part
+                continue;
+            }
+    
+            const lines = part.value.replace(/\n$/, '').split('\n');
             for (const line of lines) {
                 if (part.added) {
-                    renderLine(line, 'added', null, rightLineNum);
-                    rightLineNum++;
+                    renderLine(line, 'added', null, rightLineNum++);
                 } else if (part.removed) {
-                    renderLine(line, 'removed', leftLineNum, null);
-                    leftLineNum++;
+                    renderLine(line, 'removed', leftLineNum++, null);
                 } else if (part.type === 'moved-from') {
-                    renderLine(line, 'moved-from', leftLineNum, null, part.moveId);
-                    leftLineNum++;
+                    renderLine(line, 'moved-from', leftLineNum++, null, part.moveId);
                 } else if (part.type === 'moved-to') {
-                    renderLine(line, 'moved-to', null, rightLineNum, part.moveId);
-                    rightLineNum++;
-                } else {
-                    renderLine(line, 'context', leftLineNum, rightLineNum);
+                    renderLine(line, 'moved-to', null, rightLineNum++, part.moveId);
+                } else { // context
+                    if (!this.showOnlyChanges) {
+                        renderLine(line, 'context', leftLineNum, rightLineNum);
+                    }
                     leftLineNum++;
                     rightLineNum++;
                 }
             }
         }
     }
+    // ======================= [END BUG FIX] RENDER LINE DIFF ====================
 
     async applyChanges(content: string, lineNumber: number) {
         if (this.secondVersionId !== 'current') return;
@@ -3490,7 +3520,8 @@ class DiffModal extends Modal {
             const processedDiff: ProcessedDiff[] = this.enableMoveDetection 
                 ? this.processDiffForMoves(diffResult) 
                 : diffResult.map(part => ({ ...part, type: (part.added ? 'added' : part.removed ? 'removed' : 'context') as any }));
-            this.renderLineDiff(container, processedDiff);
+            // 【修复】调用新的、支持行内高亮的渲染函数
+            this.renderUnifiedDiffWithIntraline(container, processedDiff);
         } else {
             const diffResult = granularity === 'word' ? Diff.diffWordsWithSpace(left, right) : Diff.diffChars(left, right);
             this.renderInlineDiff(container, diffResult);
@@ -3571,12 +3602,13 @@ class DiffModal extends Modal {
         this.renderSplitViewAdvanced(leftContentEl, rightContentEl, left, right, granularity);
     }
 
-    // ================= [START] ENHANCEMENT: INTRA-LINE DIFF =================
+    // =======================================================================
+    // ======================= [BUG FIX] RENDER SPLIT VIEW ===================
+    // =======================================================================
     /**
-     * 【修改】增强的分栏视图渲染逻辑，增加了行内差异高亮功能。
+     * 【修复】增强的分栏视图渲染逻辑，增加了行内差异高亮功能并修复了行号计数问题。
      */
     renderSplitViewAdvanced(leftPanel: HTMLElement, rightPanel: HTMLElement, leftText: string, rightText: string, granularity: 'char' | 'word' | 'line') {
-        // 【修复】确保 diff 变量始终是 ProcessedDiff[] 类型
         const rawDiff = Diff.diffLines(leftText, rightText);
         const diff: ProcessedDiff[] = this.enableMoveDetection
             ? this.processDiffForMoves(rawDiff)
@@ -3675,22 +3707,21 @@ class DiffModal extends Modal {
                     renderLine(leftPanel, line, part.type || 'removed', leftLineNum++, part.moveId);
                     renderLine(rightPanel, '', 'placeholder', null);
                 }
-            } else {
-                if (!this.showOnlyChanges) {
-                    const lines = part.value.replace(/\n$/, '').split('\n');
-                    for (const line of lines) {
-                        renderLine(leftPanel, line, 'context', leftLineNum++);
-                        renderLine(rightPanel, line, 'context', rightLineNum++);
+            } else { // context
+                const lines = part.value.replace(/\n$/, '').split('\n');
+                for (const line of lines) {
+                    // 【修复】修正“仅显示变更”模式下的行号计数
+                    if (!this.showOnlyChanges) {
+                        renderLine(leftPanel, line, 'context', leftLineNum);
+                        renderLine(rightPanel, line, 'context', rightLineNum);
                     }
-                } else {
-                    const lineCount = (part.value.match(/\n/g) || []).length + (part.value.length > 0 && !part.value.endsWith('\n') ? 1 : 0);
-                    leftLineNum += lineCount;
-                    rightLineNum += lineCount;
+                    leftLineNum++;
+                    rightLineNum++;
                 }
             }
         }
     }
-    // ================= [END] ENHANCEMENT: INTRA-LINE DIFF =================
+    // ======================= [END BUG FIX] RENDER SPLIT VIEW ===================
 
     scrollToDiff() {
         if (this.diffElements.length === 0 || this.currentDiffIndex >= this.diffElements.length) return;
@@ -3742,7 +3773,7 @@ class DiffModal extends Modal {
                         : Diff.diffChars(result.left.content, result.right.content));
                 
                 if (this.currentGranularity === 'line') {
-                    this.renderLineDiff(contentContainer, granularDiff as ProcessedDiff[]);
+                    this.renderUnifiedDiffWithIntraline(contentContainer, granularDiff as ProcessedDiff[]);
                 } else {
                     this.renderInlineDiff(contentContainer, granularDiff);
                 }
