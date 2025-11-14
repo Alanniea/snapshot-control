@@ -40,8 +40,7 @@ interface VersionControlSettings {
     enableMaxDays: boolean;
 
     useRelativeTime: boolean;
-    // [修改] 增加 'sentence' 粒度
-    diffGranularity: 'char' | 'word' | 'line' | 'sentence';
+    diffGranularity: 'char' | 'word' | 'line' | 'sentence' | 'semantic';
     diffViewMode: 'unified' | 'split';
     enableDeduplication: boolean;
     showNotifications: boolean;
@@ -79,7 +78,7 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
     maxDays: 30,
     enableMaxDays: false,
     useRelativeTime: false,
-    diffGranularity: 'line', // 默认值设为 'line'
+    diffGranularity: 'line',
     diffViewMode: 'unified',
     enableDeduplication: true,
     showNotifications: true,
@@ -2425,6 +2424,12 @@ type ProcessedDiff = {
     moveId?: number;
 } & Diff.Change;
 
+interface SemanticBlock {
+    type: 'heading' | 'paragraph' | 'code' | 'list' | 'quote' | 'thematicBreak' | 'unknown';
+    content: string;
+    hash: string;
+}
+
 interface MarkdownSection {
     heading: string;
     level: number;
@@ -2452,8 +2457,7 @@ class DiffModal extends Modal {
     wrapLines: boolean = true;
     leftContent: string = '';
     rightContent: string = '';
-    // [修改] 增加 'sentence' 粒度
-    currentGranularity: 'char' | 'word' | 'line' | 'sentence';
+    currentGranularity: 'char' | 'word' | 'line' | 'sentence' | 'semantic';
     showOnlyChanges: boolean = false;
     enableMoveDetection: boolean = true;
     showWhitespace: boolean = false;
@@ -2550,13 +2554,37 @@ class DiffModal extends Modal {
         return result;
     }
 
-    // [新增] 句子分割函数
     private splitIntoSentences(text: string): string[] {
         if (!text) return [];
-        // 正则表达式：匹配直到句末标点（包括其后的空格/换行），或两个换行符（段落），或是字符串的最后一部分
         const sentenceRegex = /.+?[.!?。！？…\n](?:\s|\n|$)|.+?\n\n|.+?$/g;
         const sentences = text.match(sentenceRegex);
         return sentences ? sentences.map(s => s.trim()).filter(s => s.length > 0) : [];
+    }
+
+    private parseToSemanticBlocks(text: string): SemanticBlock[] {
+        if (!text) return [];
+        const blocks: SemanticBlock[] = [];
+        const chunks = text.split(/\n\n+/);
+
+        for (const chunk of chunks) {
+            const content = chunk.trim();
+            if (!content) continue;
+
+            let type: SemanticBlock['type'] = 'paragraph';
+
+            if (content.startsWith('#')) type = 'heading';
+            else if (content.startsWith('```')) type = 'code';
+            else if (content.startsWith('>')) type = 'quote';
+            else if (content.match(/^(\*|-|\+)\s/) || content.match(/^\d+\.\s/)) type = 'list';
+            else if (content.match(/^(---|___|\*\*\*)$/)) type = 'thematicBreak';
+            
+            blocks.push({
+                type,
+                content,
+                hash: this.plugin.hashContent(content)
+            });
+        }
+        return blocks;
     }
 
     async onOpen() {
@@ -2623,8 +2651,8 @@ class DiffModal extends Modal {
             menu.addItem(item => item.setTitle('字符').setChecked(this.currentGranularity === 'char').onClick(() => this.updateGranularity('char')));
             menu.addItem(item => item.setTitle('单词').setChecked(this.currentGranularity === 'word').onClick(() => this.updateGranularity('word')));
             menu.addItem(item => item.setTitle('行').setChecked(this.currentGranularity === 'line').onClick(() => this.updateGranularity('line')));
-            // [新增] 句子粒度选项
             menu.addItem(item => item.setTitle('句子').setChecked(this.currentGranularity === 'sentence').onClick(() => this.updateGranularity('sentence')));
+            menu.addItem(item => item.setTitle('语义').setChecked(this.currentGranularity === 'semantic').onClick(() => this.updateGranularity('semantic')));
 
             menu.addItem(item => item.setTitle('智能对比').setDisabled(true).setSection('diff-settings-group-label'));
             menu.addItem(item => item.setTitle('智能单词模式').setChecked(this.plugin.settings.smartWordDiff).onClick(async () => {
@@ -2832,7 +2860,7 @@ class DiffModal extends Modal {
         }, 100);
     }
 
-    updateGranularity(granularity: 'char' | 'word' | 'line' | 'sentence') {
+    updateGranularity(granularity: 'char' | 'word' | 'line' | 'sentence' | 'semantic') {
         this.currentGranularity = granularity;
         this.collapsedSections.clear();
         this.renderTextDiff();
@@ -3200,7 +3228,6 @@ class DiffModal extends Modal {
         
         const modeSelect = this.containerEl.querySelector('.diff-select[aria-label="视图模式"]') as HTMLSelectElement;
         
-        // [新增] 路由到句子对比渲染器
         if (this.currentGranularity === 'sentence') {
             if (modeSelect.value === 'unified') {
                 container.removeClass('diff-split');
@@ -3211,6 +3238,8 @@ class DiffModal extends Modal {
                 const rightLabelEl = this.containerEl.querySelector('#diff-right-version-btn') as HTMLElement;
                 this.renderSentenceSplitDiff(container, leftProcessed, rightProcessed, leftLabelEl.textContent || '版本 A', rightLabelEl.textContent || '版本 B');
             }
+        } else if (this.currentGranularity === 'semantic') {
+            this.renderSemanticDiff(container, leftProcessed, rightProcessed);
         } else {
             if (modeSelect.value === 'unified') {
                 container.removeClass('diff-split');
@@ -3746,7 +3775,6 @@ class DiffModal extends Modal {
         }
     }
 
-    // [新增] 句子对比的统一视图渲染器
     renderSentenceUnifiedDiff(container: HTMLElement, left: string, right: string) {
         const leftSentences = this.splitIntoSentences(left);
         const rightSentences = this.splitIntoSentences(right);
@@ -3807,7 +3835,6 @@ class DiffModal extends Modal {
         }
     }
 
-    // [新增] 句子对比的左右分栏视图渲染器
     renderSentenceSplitDiff(container: HTMLElement, left: string, right: string, leftLabel: string, rightLabel: string) {
         const leftPanel = container.createEl('div', { cls: 'diff-panel' });
         const rightPanel = container.createEl('div', { cls: 'diff-panel' });
@@ -3879,6 +3906,93 @@ class DiffModal extends Modal {
                     });
                 }
             }
+        }
+    }
+
+    // [重写] 智能语义对比渲染器
+    renderSemanticDiff(container: HTMLElement, left: string, right: string) {
+        const leftBlocks = this.parseToSemanticBlocks(left);
+        const rightBlocks = this.parseToSemanticBlocks(right);
+
+        const findBestMatch = (block: SemanticBlock, candidates: SemanticBlock[], usedIndices: Set<number>): { index: number; score: number } | null => {
+            let bestMatch: { index: number; score: number } | null = null;
+            for (let i = 0; i < candidates.length; i++) {
+                if (usedIndices.has(i)) continue;
+                const score = this.calculateSimilarity(block.content, candidates[i].content);
+                if (score > (bestMatch?.score || 0.5)) { // 相似度阈值
+                    bestMatch = { index: i, score: score };
+                }
+            }
+            return bestMatch;
+        };
+
+        const matches: (number | null)[] = new Array(leftBlocks.length).fill(null);
+        const usedRightIndices = new Set<number>();
+
+        for (let i = 0; i < leftBlocks.length; i++) {
+            const bestMatch = findBestMatch(leftBlocks[i], rightBlocks, usedRightIndices);
+            if (bestMatch) {
+                matches[i] = bestMatch.index;
+                usedRightIndices.add(bestMatch.index);
+            }
+        }
+
+        let diffIdx = 0;
+        const renderBlock = (block: SemanticBlock, type: 'added' | 'removed' | 'context' | 'modified', innerDiffContainer?: HTMLElement) => {
+            const blockEl = container.createEl('div', { cls: `diff-semantic-block diff-${type}` });
+            if (type !== 'context') {
+                blockEl.dataset.diffIndex = String(diffIdx++);
+                this.diffElements.push(blockEl);
+            }
+            
+            const header = blockEl.createEl('div', { cls: 'diff-semantic-header' });
+            let marker = ' ';
+            if (type === 'added') marker = '+';
+            else if (type === 'removed') marker = '-';
+            else if (type === 'modified') marker = '~';
+            header.createEl('span', { cls: 'diff-marker', text: marker });
+            header.createEl('span', { text: block.type.toUpperCase(), cls: 'diff-semantic-type' });
+
+            const contentEl = blockEl.createEl('div', { cls: 'diff-semantic-content' });
+            if (innerDiffContainer) {
+                contentEl.appendChild(innerDiffContainer);
+            } else {
+                contentEl.createEl('pre', { text: block.content });
+            }
+        };
+
+        let rightIdx = 0;
+        for (let i = 0; i < leftBlocks.length; i++) {
+            const matchIndex = matches[i];
+            
+            while (rightIdx < (matchIndex ?? rightBlocks.length)) {
+                if (![...usedRightIndices].includes(rightIdx)) {
+                    renderBlock(rightBlocks[rightIdx], 'added');
+                }
+                rightIdx++;
+            }
+
+            if (matchIndex !== null) {
+                const leftBlock = leftBlocks[i];
+                const rightBlock = rightBlocks[matchIndex];
+                if (leftBlock.hash === rightBlock.hash) {
+                    if (!this.showOnlyChanges) renderBlock(leftBlock, 'context');
+                } else {
+                    const innerDiffContainer = createDiv();
+                    this.renderUnifiedDiff(innerDiffContainer, leftBlock.content, rightBlock.content);
+                    renderBlock(rightBlock, 'modified', innerDiffContainer);
+                }
+                rightIdx = matchIndex + 1;
+            } else {
+                renderBlock(leftBlocks[i], 'removed');
+            }
+        }
+
+        while (rightIdx < rightBlocks.length) {
+            if (!usedRightIndices.has(rightIdx)) {
+                renderBlock(rightBlocks[rightIdx], 'added');
+            }
+            rightIdx++;
         }
     }
 
@@ -4575,10 +4689,10 @@ class VersionControlSettingTab extends PluginSettingTab {
                 .addOption('char', '字符级')
                 .addOption('word', '单词级')
                 .addOption('line', '行级')
-                // [新增] 句子粒度选项
                 .addOption('sentence', '句子级 (适合长文)')
+                .addOption('semantic', '语义级 (实验性)')
                 .setValue(this.plugin.settings.diffGranularity)
-                .onChange(async (value: 'char' | 'word' | 'line' | 'sentence') => {
+                .onChange(async (value: 'char' | 'word' | 'line' | 'sentence' | 'semantic') => {
                     this.plugin.settings.diffGranularity = value;
                     await this.plugin.saveSettings();
                 }));
