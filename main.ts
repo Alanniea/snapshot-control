@@ -2446,7 +2446,6 @@ class DiffModal extends Modal {
     leftContent: string = '';
     rightContent: string = '';
     currentGranularity: 'char' | 'word' | 'line';
-    // 【修复】默认不开启“仅显示变更”
     showOnlyChanges: boolean = false;
     enableMoveDetection: boolean = true;
     showWhitespace: boolean = false;
@@ -3385,12 +3384,6 @@ class DiffModal extends Modal {
         }
     }
 
-    // =======================================================================
-    // ======================= [BUG FIX] RENDER UNIFIED DIFF =================
-    // =======================================================================
-    /**
-     * 【修复】重构了统一视图的渲染逻辑，以支持行内差异高亮和正确的行号计数。
-     */
     renderUnifiedDiff(container: HTMLElement, left: string, right: string, granularity: 'char' | 'word' | 'line') {
         if (granularity !== 'line') {
             const diffResult = granularity === 'word' ? Diff.diffWordsWithSpace(left, right) : Diff.diffChars(left, right);
@@ -3531,8 +3524,13 @@ class DiffModal extends Modal {
             }
         }
     }
-    // ======================= [END BUG FIX] RENDER UNIFIED DIFF =================
-
+    
+    // =======================================================================
+    // ======================= [BUG FIX] RENDER INLINE DIFF ==================
+    // =======================================================================
+    /**
+     * 【修复】为字符级和单词级差异创建了专门的渲染器，确保修改在同一行内显示。
+     */
     renderInlineDiff(container: HTMLElement, diffResult: Diff.Change[]) {
         let leftLineNum = 1;
         let rightLineNum = 1;
@@ -3541,10 +3539,11 @@ class DiffModal extends Modal {
     
         const finalizeLine = () => {
             if (this.showOnlyChanges && !lineHasChange) {
-                // Skip
+                // 如果仅显示变更且当前行无变化，则跳过
             } else {
                 const lineEl = container.createEl('div', { cls: 'diff-line diff-context' });
                 if (lineHasChange) {
+                    lineEl.addClass('diff-modified'); // 添加一个特定类用于样式
                     this.diffElements.push(lineEl);
                     lineEl.dataset.diffIndex = String(this.diffElements.length - 1);
                 }
@@ -3556,10 +3555,15 @@ class DiffModal extends Modal {
                     lineNumContainer.createEl('span', { cls: 'line-number line-number-left', text: String(leftLineNum) });
                     lineNumContainer.createEl('span', { cls: 'line-number line-number-right', text: String(rightLineNum) });
                 }
+                
+                // 对于内联差异，我们使用一个中性的标记
+                lineEl.createEl('span', { cls: 'diff-marker', text: lineHasChange ? '~' : ' ' });
+
                 const contentEl = lineEl.createEl('span', { cls: 'line-content' });
                 contentEl.appendChild(currentLineFragment);
             }
     
+            // 重置以便处理下一行
             currentLineFragment = document.createDocumentFragment();
             leftLineNum++;
             rightLineNum++;
@@ -3583,16 +3587,19 @@ class DiffModal extends Modal {
                     }
                 }
     
+                // 如果遇到换行符（即不是最后一块），则完成当前行
                 if (index < lines.length - 1) {
                     finalizeLine();
                 }
             });
         }
     
+        // 确保最后一行也被渲染
         if (currentLineFragment.hasChildNodes()) {
             finalizeLine();
         }
     }
+    // ======================= [END BUG FIX] RENDER INLINE DIFF ================
 
     renderSplitDiff(container: HTMLElement, left: string, right: string, granularity: 'char' | 'word' | 'line', leftLabel: string, rightLabel: string) {
         const leftPanel = container.createEl('div', { cls: 'diff-panel' });
@@ -3607,12 +3614,6 @@ class DiffModal extends Modal {
         this.renderSplitViewAdvanced(leftContentEl, rightContentEl, left, right, granularity);
     }
 
-    // =======================================================================
-    // ======================= [BUG FIX] RENDER SPLIT VIEW ===================
-    // =======================================================================
-    /**
-     * 【修复】增强的分栏视图渲染逻辑，增加了行内差异高亮功能并修复了行号计数问题。
-     */
     renderSplitViewAdvanced(leftPanel: HTMLElement, rightPanel: HTMLElement, leftText: string, rightText: string, granularity: 'char' | 'word' | 'line') {
         const rawDiff = Diff.diffLines(leftText, rightText);
         const diff: ProcessedDiff[] = this.enableMoveDetection
@@ -3723,7 +3724,6 @@ class DiffModal extends Modal {
             }
         }
     }
-    // ======================= [END BUG FIX] RENDER SPLIT VIEW ===================
 
     scrollToDiff() {
         if (this.diffElements.length === 0 || this.currentDiffIndex >= this.diffElements.length) return;
