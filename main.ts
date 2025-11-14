@@ -63,6 +63,10 @@ interface VersionControlSettings {
     showVersionStats: boolean;
     enableStatusBarDiff: boolean;
     showLastSaveTimeInStatusBar: boolean;
+
+    // [新增] 智能差异对比设置
+    inlineDiffAlgorithm: 'word' | 'char';
+    smartWordDiff: boolean;
 }
 
 const DEFAULT_SETTINGS: VersionControlSettings = {
@@ -96,6 +100,10 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
     showVersionStats: true,
     enableStatusBarDiff: true,
     showLastSaveTimeInStatusBar: true,
+    
+    // [新增] 智能差异对比设置默认值
+    inlineDiffAlgorithm: 'word',
+    smartWordDiff: true,
 };
 
 
@@ -2514,6 +2522,37 @@ class DiffModal extends Modal {
         return text.replace(/\t/g, '→   ').replace(/ /g, '·');
     }
 
+    // [新增] 智能单词对比函数
+    private smartDiffWords(oldStr: string, newStr: string): Diff.Change[] {
+        // 这个正则表达式会捕获连续的单词字符或连续的非单词字符（如标点和空格）
+        const splitRegex = /(\w+|[^\w]+)/g;
+        const oldTokens = oldStr.match(splitRegex) || [];
+        const newTokens = newStr.match(splitRegex) || [];
+
+        const diffResult = Diff.diffArrays(oldTokens, newTokens);
+
+        // 将数组差异结果转换回标准的字符串差异结果
+        const result: Diff.Change[] = [];
+        diffResult.forEach(part => {
+            const value = part.value.join('');
+            if (result.length > 0) {
+                const last = result[result.length - 1];
+                if (last.added === part.added && last.removed === part.removed) {
+                    last.value += value;
+                    last.count = (last.count || 0) + (part.count || 0);
+                    return;
+                }
+            }
+            result.push({
+                value: value,
+                added: part.added,
+                removed: part.removed,
+                count: part.count
+            });
+        });
+        return result;
+    }
+
     async onOpen() {
         const { contentEl } = this;
         contentEl.addClass('diff-modal');
@@ -2578,6 +2617,25 @@ class DiffModal extends Modal {
             menu.addItem(item => item.setTitle('字符').setChecked(this.currentGranularity === 'char').onClick(() => this.updateGranularity('char')));
             menu.addItem(item => item.setTitle('单词').setChecked(this.currentGranularity === 'word').onClick(() => this.updateGranularity('word')));
             menu.addItem(item => item.setTitle('行').setChecked(this.currentGranularity === 'line').onClick(() => this.updateGranularity('line')));
+
+            // [新增] 智能对比设置
+            menu.addItem(item => item.setTitle('智能对比').setDisabled(true).setSection('diff-settings-group-label'));
+            menu.addItem(item => item.setTitle('智能单词模式').setChecked(this.plugin.settings.smartWordDiff).onClick(async () => {
+                this.plugin.settings.smartWordDiff = !this.plugin.settings.smartWordDiff;
+                await this.plugin.saveSettings();
+                this.renderTextDiff();
+            }));
+            menu.addItem(item => item.setTitle('行内差异算法').setDisabled(true));
+            menu.addItem(item => item.setTitle('按单词').setChecked(this.plugin.settings.inlineDiffAlgorithm === 'word').onClick(async () => {
+                this.plugin.settings.inlineDiffAlgorithm = 'word';
+                await this.plugin.saveSettings();
+                this.renderTextDiff();
+            }));
+            menu.addItem(item => item.setTitle('按字符').setChecked(this.plugin.settings.inlineDiffAlgorithm === 'char').onClick(async () => {
+                this.plugin.settings.inlineDiffAlgorithm = 'char';
+                await this.plugin.saveSettings();
+                this.renderTextDiff();
+            }));
 
             menu.addSeparator();
             menu.addItem(item => item.setTitle('视图模式').setDisabled(true));
@@ -3394,9 +3452,14 @@ class DiffModal extends Modal {
         let rightLineNum = 1;
         let diffIdx = 0;
 
-        const secondaryDiffFn = this.currentGranularity === 'char' 
-            ? Diff.diffChars 
-            : Diff.diffWordsWithSpace;
+        // [修改] 根据设置选择二级对比函数
+        const getSecondaryDiffFn = () => {
+            if (this.currentGranularity === 'line') {
+                return this.plugin.settings.inlineDiffAlgorithm === 'char' ? Diff.diffChars : (this.plugin.settings.smartWordDiff ? this.smartDiffWords : Diff.diffWordsWithSpace);
+            }
+            return this.currentGranularity === 'char' ? Diff.diffChars : (this.plugin.settings.smartWordDiff ? this.smartDiffWords : Diff.diffWordsWithSpace);
+        };
+        const secondaryDiffFn = getSecondaryDiffFn();
 
         const createHighlightedFragment = (diffParts: Diff.Change[]): DocumentFragment => {
             const fragment = document.createDocumentFragment();
@@ -3538,9 +3601,14 @@ class DiffModal extends Modal {
         let rightLineNum = 1;
         let diffIdx = 0;
 
-        const secondaryDiffFn = this.currentGranularity === 'char' 
-            ? Diff.diffChars 
-            : Diff.diffWordsWithSpace;
+        // [修改] 根据设置选择二级对比函数
+        const getSecondaryDiffFn = () => {
+            if (this.currentGranularity === 'line') {
+                return this.plugin.settings.inlineDiffAlgorithm === 'char' ? Diff.diffChars : (this.plugin.settings.smartWordDiff ? this.smartDiffWords : Diff.diffWordsWithSpace);
+            }
+            return this.currentGranularity === 'char' ? Diff.diffChars : (this.plugin.settings.smartWordDiff ? this.smartDiffWords : Diff.diffWordsWithSpace);
+        };
+        const secondaryDiffFn = getSecondaryDiffFn();
     
         const createHighlightedFragment = (diffParts: Diff.Change[]): DocumentFragment => {
             const fragment = document.createDocumentFragment();
@@ -4347,12 +4415,12 @@ class VersionControlSettingTab extends PluginSettingTab {
         containerEl.createEl('h3', { text: '🔀 差异对比设置' });
 
         new Setting(containerEl)
-            .setName('差异粒度')
-            .setDesc('选择差异计算的精细程度')
+            .setName('默认差异粒度')
+            .setDesc('选择差异对比的默认精细程度')
             .addDropdown(dropdown => dropdown
-                .addOption('char', '字符级 - 最精确,显示每个字符的变化')
-                .addOption('word', '单词级 - 按单词显示差异')
-                .addOption('line', '行级 - [推荐] 按行显示差异,并高亮行内单词/字符变化')
+                .addOption('char', '字符级')
+                .addOption('word', '单词级')
+                .addOption('line', '行级')
                 .setValue(this.plugin.settings.diffGranularity)
                 .onChange(async (value: 'char' | 'word' | 'line') => {
                     this.plugin.settings.diffGranularity = value;
@@ -4363,11 +4431,34 @@ class VersionControlSettingTab extends PluginSettingTab {
             .setName('默认视图模式')
             .setDesc('选择差异对比的默认显示方式')
             .addDropdown(dropdown => dropdown
-                .addOption('unified', '统一视图 - 上下对比')
-                .addOption('split', '左右分栏 - 并排显示')
+                .addOption('unified', '统一视图')
+                .addOption('split', '左右分栏')
                 .setValue(this.plugin.settings.diffViewMode)
                 .onChange(async (value: 'unified' | 'split') => {
                     this.plugin.settings.diffViewMode = value;
+                    await this.plugin.saveSettings();
+                }));
+        
+        // [新增] 智能对比设置
+        new Setting(containerEl)
+            .setName('启用智能单词对比')
+            .setDesc('开启后，“单词级”对比会更智能地处理标点符号，减少误报。')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.smartWordDiff)
+                .onChange(async (value) => {
+                    this.plugin.settings.smartWordDiff = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(containerEl)
+            .setName('行内差异算法')
+            .setDesc('当使用“行级”对比时，指定行内高亮的算法。')
+            .addDropdown(dropdown => dropdown
+                .addOption('word', '按单词（推荐）')
+                .addOption('char', '按字符（更精确）')
+                .setValue(this.plugin.settings.inlineDiffAlgorithm)
+                .onChange(async (value: 'word' | 'char') => {
+                    this.plugin.settings.inlineDiffAlgorithm = value;
                     await this.plugin.saveSettings();
                 }));
 

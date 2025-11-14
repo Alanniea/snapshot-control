@@ -2069,3 +2069,10 @@
     word-break: break-all;
     margin: 10px 0;
 }
+
+/* [新增] 为Diff Modal设置菜单中的分组添加上边距，使其更清晰 */
+.diff-settings-group-label {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--background-modifier-border);
+}
