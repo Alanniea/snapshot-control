@@ -66,6 +66,9 @@ interface VersionControlSettings {
 
     inlineDiffAlgorithm: 'word' | 'char';
     smartWordDiff: boolean;
+
+    // [新增] Diff默认开启“仅显示变更”
+    diffShowOnlyChanges: boolean;
 }
 
 const DEFAULT_SETTINGS: VersionControlSettings = {
@@ -102,6 +105,9 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
     
     inlineDiffAlgorithm: 'word',
     smartWordDiff: true,
+
+    // [新增] 默认值为 true
+    diffShowOnlyChanges: true,
 };
 
 
@@ -376,14 +382,14 @@ export default class VersionControlPlugin extends Plugin {
         }
 
         const timeout = setTimeout(() => {
-            this.autoSaveFile(file);
+            this.autoSaveFile(file, '[Auto Save - On Modify]');
             this.pendingSaves.delete(file.path);
         }, this.settings.autoSaveDelay * 1000);
 
         this.pendingSaves.set(file.path, timeout);
     }
 
-    async autoSaveFile(file: TFile) {
+    async autoSaveFile(file: TFile, message: string) {
         try {
             const content = await this.app.vault.read(file);
             
@@ -407,7 +413,7 @@ export default class VersionControlPlugin extends Plugin {
                 return;
             }
 
-            await this.createVersion(file, '[Auto Save]', false);
+            await this.createVersion(file, message, false);
             
         } catch (error) {
             console.error('自动保存失败:', error);
@@ -438,7 +444,7 @@ export default class VersionControlPlugin extends Plugin {
                     this.pendingSaves.delete(this.previousActiveFile.path);
                     
                     try {
-                        await this.autoSaveFile(this.previousActiveFile as TFile);
+                        await this.autoSaveFile(this.previousActiveFile as TFile, '[Auto Save - File Switch]');
                     } catch (error) {
                         console.error('切换文件时自动保存失败:', error);
                     }
@@ -466,7 +472,7 @@ export default class VersionControlPlugin extends Plugin {
         }
         
         try {
-            await this.autoSaveFile(file);
+            await this.autoSaveFile(file, '[Auto Save - Focus Lost]');
         } catch (error) {
             console.error('失去焦点时自动保存失败:', error);
         }
@@ -476,7 +482,7 @@ export default class VersionControlPlugin extends Plugin {
         const file = this.app.workspace.getActiveFile();
         if (!file || this.isExcluded(file.path)) return;
 
-        await this.autoSaveFile(file);
+        await this.autoSaveFile(file, '[Auto Save - Interval]');
     }
 
     isExcluded(filePath: string): boolean {
@@ -1783,41 +1789,29 @@ class VersionHistoryView extends ItemView {
                 
                 const messageEl = info.createEl('div', { cls: 'version-message-row' });
                 
-                if (version.message.includes('[Auto Save]')) {
-                    messageEl.createEl('span', { 
-                        text: '自动保存',
-                        cls: 'version-tag version-tag-auto'
-                    });
+                if (version.message.includes('[Auto Save - On Modify]')) {
+                    messageEl.createEl('span', { text: '修改保存', cls: 'version-tag version-tag-auto' });
+                } else if (version.message.includes('[Auto Save - Interval]')) {
+                    messageEl.createEl('span', { text: '定时保存', cls: 'version-tag version-tag-auto' });
+                } else if (version.message.includes('[Auto Save - File Switch]')) {
+                    messageEl.createEl('span', { text: '切换保存', cls: 'version-tag version-tag-auto' });
+                } else if (version.message.includes('[Auto Save - Focus Lost]')) {
+                    messageEl.createEl('span', { text: '失焦保存', cls: 'version-tag version-tag-auto' });
                 } else if (version.message.includes('[Full Snapshot]')) {
-                    messageEl.createEl('span', { 
-                        text: '全库版本',
-                        cls: 'version-tag version-tag-snapshot'
-                    });
+                    messageEl.createEl('span', { text: '全库版本', cls: 'version-tag version-tag-snapshot' });
                 } else if (version.message.includes('[Before Restore]')) {
-                    messageEl.createEl('span', { 
-                        text: '恢复前备份',
-                        cls: 'version-tag version-tag-backup'
-                    });
+                    messageEl.createEl('span', { text: '恢复前备份', cls: 'version-tag version-tag-backup' });
                 }
                 
                 if (version.diff) {
-                    messageEl.createEl('span', { 
-                        text: '增量',
-                        cls: 'version-tag version-tag-incremental'
-                    });
+                    messageEl.createEl('span', { text: '增量', cls: 'version-tag version-tag-incremental' });
                 } else if (version.content) {
-                    messageEl.createEl('span', { 
-                        text: '完整',
-                        cls: 'version-tag version-tag-full'
-                    });
+                    messageEl.createEl('span', { text: '完整', cls: 'version-tag version-tag-full' });
                 }
                 
                 if (version.tags && version.tags.length > 0) {
                     version.tags.forEach(tag => {
-                        const tagEl = messageEl.createEl('span', { 
-                            text: tag,
-                            cls: 'version-tag version-tag-custom'
-                        });
+                        const tagEl = messageEl.createEl('span', { text: tag, cls: 'version-tag version-tag-custom' });
                         tagEl.addEventListener('click', () => {
                             this.filterTag = tag;
                             this.currentPage = 0;
@@ -2458,7 +2452,7 @@ class DiffModal extends Modal {
     leftContent: string = '';
     rightContent: string = '';
     currentGranularity: 'char' | 'word' | 'line' | 'sentence' | 'semantic';
-    showOnlyChanges: boolean = false;
+    showOnlyChanges: boolean;
     enableMoveDetection: boolean = true;
     showWhitespace: boolean = false;
 
@@ -2478,6 +2472,8 @@ class DiffModal extends Modal {
         this.versionId = versionId;
         this.secondVersionId = secondVersionId || 'current';
         this.currentGranularity = this.plugin.settings.diffGranularity;
+        // [修改] 初始化时读取默认设置
+        this.showOnlyChanges = this.plugin.settings.diffShowOnlyChanges;
     }
 
     processDiffForMoves(diffResult: Diff.Change[]): ProcessedDiff[] {
@@ -3909,7 +3905,6 @@ class DiffModal extends Modal {
         }
     }
 
-    // [重写] 智能语义对比渲染器
     renderSemanticDiff(container: HTMLElement, left: string, right: string) {
         const leftBlocks = this.parseToSemanticBlocks(left);
         const rightBlocks = this.parseToSemanticBlocks(right);
@@ -4709,6 +4704,16 @@ class VersionControlSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
         
+        new Setting(containerEl)
+            .setName('默认仅显示变更')
+            .setDesc('开启后，差异对比窗口默认只显示有变化的内容。')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.diffShowOnlyChanges)
+                .onChange(async (value) => {
+                    this.plugin.settings.diffShowOnlyChanges = value;
+                    await this.plugin.saveSettings();
+                }));
+
         new Setting(containerEl)
             .setName('启用智能单词对比')
             .setDesc('开启后，“单词级”对比会更智能地处理标点符号，减少误报。')
