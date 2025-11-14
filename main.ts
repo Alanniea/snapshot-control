@@ -51,11 +51,15 @@ interface VersionControlSettings {
     rebuildBaseInterval: number;
 
     autoSaveOnModify: boolean;
-    autoSaveDelay: number;
     autoSaveMinChanges: number;
     autoSaveOnInterval: boolean;
     autoSaveOnFileSwitch: boolean;
     autoSaveOnFocusLost: boolean;
+
+    // [重构] 独立的延迟设置
+    autoSaveDelayOnModify: number;
+    autoSaveDelayOnFileSwitch: number;
+    autoSaveDelayOnFocusLost: number;
 
     enableQuickPreview: boolean;
     enableVersionTags: boolean;
@@ -66,8 +70,6 @@ interface VersionControlSettings {
 
     inlineDiffAlgorithm: 'word' | 'char';
     smartWordDiff: boolean;
-
-    // [新增] Diff默认开启“仅显示变更”
     diffShowOnlyChanges: boolean;
 }
 
@@ -91,11 +93,16 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
     versionsPerPage: 20,
     rebuildBaseInterval: 10,
     autoSaveOnModify: true,
-    autoSaveDelay: 180,
     autoSaveMinChanges: 10,
     autoSaveOnInterval: false,
     autoSaveOnFileSwitch: true,
     autoSaveOnFocusLost: false,
+
+    // [重构] 独立的默认延迟值
+    autoSaveDelayOnModify: 180, // 3分钟
+    autoSaveDelayOnFileSwitch: 2,  // 2秒
+    autoSaveDelayOnFocusLost: 2,   // 2秒
+
     enableQuickPreview: true,
     enableVersionTags: true,
     defaultTags: ['重要', '里程碑', '发布', '备份', '草稿'],
@@ -105,8 +112,6 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
     
     inlineDiffAlgorithm: 'word',
     smartWordDiff: true,
-
-    // [新增] 默认值为 true
     diffShowOnlyChanges: true,
 };
 
@@ -196,7 +201,7 @@ export default class VersionControlPlugin extends Plugin {
         this.registerEvent(
             this.app.vault.on('modify', (file) => {
                 if (file instanceof TFile && this.settings.autoSave && this.settings.autoSaveOnModify) {
-                    this.scheduleAutoSave(file);
+                    this.handleFileModify(file);
                 }
             })
         );
@@ -213,7 +218,7 @@ export default class VersionControlPlugin extends Plugin {
         if (this.settings.autoSaveOnFocusLost) {
             this.registerDomEvent(window, 'blur', () => {
                 if (this.settings.autoSave) {
-                    this.saveCurrentFileOnFocusLost();
+                    this.handleFocusLost();
                 }
             });
         }
@@ -371,7 +376,8 @@ export default class VersionControlPlugin extends Plugin {
         }
     }
 
-    scheduleAutoSave(file: TFile) {
+    // [重构] 通用保存调度器
+    scheduleSave(file: TFile, delay: number, message: string) {
         if (this.isExcluded(file.path)) {
             return;
         }
@@ -381,10 +387,16 @@ export default class VersionControlPlugin extends Plugin {
             clearTimeout(existingTimeout);
         }
 
-        const timeout = setTimeout(() => {
-            this.autoSaveFile(file, '[Auto Save - On Modify]');
+        if (delay === 0) {
+            this.autoSaveFile(file, message);
             this.pendingSaves.delete(file.path);
-        }, this.settings.autoSaveDelay * 1000);
+            return;
+        }
+
+        const timeout = setTimeout(() => {
+            this.autoSaveFile(file, message);
+            this.pendingSaves.delete(file.path);
+        }, delay * 1000);
 
         this.pendingSaves.set(file.path, timeout);
     }
@@ -431,6 +443,12 @@ export default class VersionControlPlugin extends Plugin {
         return changeCount;
     }
 
+    // [重构] 修改时保存
+    handleFileModify(file: TFile) {
+        this.scheduleSave(file, this.settings.autoSaveDelayOnModify, '[Auto Save - On Modify]');
+    }
+
+    // [重构] 切换文件时保存
     async handleFileSwitch() {
         const currentFile = this.app.workspace.getActiveFile();
         
@@ -438,18 +456,10 @@ export default class VersionControlPlugin extends Plugin {
             const fileStillExists = this.app.vault.getAbstractFileByPath(this.previousActiveFile.path);
             
             if (fileStillExists) {
-                const pendingSave = this.pendingSaves.get(this.previousActiveFile.path);
-                if (pendingSave) {
-                    clearTimeout(pendingSave);
-                    this.pendingSaves.delete(this.previousActiveFile.path);
-                    
-                    try {
-                        await this.autoSaveFile(this.previousActiveFile as TFile, '[Auto Save - File Switch]');
-                    } catch (error) {
-                        console.error('切换文件时自动保存失败:', error);
-                    }
-                }
+                this.scheduleSave(this.previousActiveFile as TFile, this.settings.autoSaveDelayOnFileSwitch, '[Auto Save - File Switch]');
             } else {
+                const pending = this.pendingSaves.get(this.previousActiveFile.path);
+                if (pending) clearTimeout(pending);
                 this.pendingSaves.delete(this.previousActiveFile.path);
                 this.lastModifiedTime.delete(this.previousActiveFile.path);
             }
@@ -458,24 +468,15 @@ export default class VersionControlPlugin extends Plugin {
         this.previousActiveFile = currentFile;
     }
 
-    async saveCurrentFileOnFocusLost() {
+    // [重构] 失去焦点时保存
+    async handleFocusLost() {
         const file = this.app.workspace.getActiveFile();
         if (!file || this.isExcluded(file.path)) return;
     
         const fileStillExists = this.app.vault.getAbstractFileByPath(file.path);
         if (!fileStillExists) return;
     
-        const pendingSave = this.pendingSaves.get(file.path);
-        if (pendingSave) {
-            clearTimeout(pendingSave);
-            this.pendingSaves.delete(file.path);
-        }
-        
-        try {
-            await this.autoSaveFile(file, '[Auto Save - Focus Lost]');
-        } catch (error) {
-            console.error('失去焦点时自动保存失败:', error);
-        }
+        this.scheduleSave(file, this.settings.autoSaveDelayOnFocusLost, '[Auto Save - Focus Lost]');
     }
 
     async autoSaveCurrentFile() {
@@ -2472,7 +2473,6 @@ class DiffModal extends Modal {
         this.versionId = versionId;
         this.secondVersionId = secondVersionId || 'current';
         this.currentGranularity = this.plugin.settings.diffGranularity;
-        // [修改] 初始化时读取默认设置
         this.showOnlyChanges = this.plugin.settings.diffShowOnlyChanges;
     }
 
@@ -4433,14 +4433,14 @@ class VersionControlSettingTab extends PluginSettingTab {
                 }));
 
         new Setting(containerEl)
-            .setName('保存延迟 (秒)')
+            .setName('修改时保存延迟 (秒)')
             .setDesc('修改后等待多久才保存,避免频繁创建版本')
             .addSlider(slider => slider
                 .setLimits(30, 600, 30)
-                .setValue(this.plugin.settings.autoSaveDelay)
+                .setValue(this.plugin.settings.autoSaveDelayOnModify)
                 .setDynamicTooltip()
                 .onChange(async (value) => {
-                    this.plugin.settings.autoSaveDelay = value;
+                    this.plugin.settings.autoSaveDelayOnModify = value;
                     await this.plugin.saveSettings();
                 }));
 
@@ -4499,6 +4499,18 @@ class VersionControlSettingTab extends PluginSettingTab {
                     this.plugin.settings.autoSaveOnFileSwitch = value;
                     await this.plugin.saveSettings();
                 }));
+        
+        new Setting(containerEl)
+            .setName('切换文件时保存延迟 (秒)')
+            .setDesc('切换文件后等待多久才保存。0秒为立即保存。')
+            .addSlider(slider => slider
+                .setLimits(0, 60, 1)
+                .setValue(this.plugin.settings.autoSaveDelayOnFileSwitch)
+                .setDynamicTooltip()
+                .onChange(async (value) => {
+                    this.plugin.settings.autoSaveDelayOnFileSwitch = value;
+                    await this.plugin.saveSettings();
+                }));
 
         new Setting(containerEl)
             .setName('👁️ 失去焦点时保存')
@@ -4508,10 +4520,18 @@ class VersionControlSettingTab extends PluginSettingTab {
                 .onChange(async (value) => {
                     this.plugin.settings.autoSaveOnFocusLost = value;
                     await this.plugin.saveSettings();
-                    
-                    if (value) {
-                        new Notice('失去焦点保存将在重启 Obsidian 后生效');
-                    }
+                }));
+
+        new Setting(containerEl)
+            .setName('失去焦点时保存延迟 (秒)')
+            .setDesc('失去焦点后等待多久才保存。0秒为立即保存。')
+            .addSlider(slider => slider
+                .setLimits(0, 60, 1)
+                .setValue(this.plugin.settings.autoSaveDelayOnFocusLost)
+                .setDynamicTooltip()
+                .onChange(async (value) => {
+                    this.plugin.settings.autoSaveDelayOnFocusLost = value;
+                    await this.plugin.saveSettings();
                 }));
 
         new Setting(containerEl)
