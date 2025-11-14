@@ -273,7 +273,6 @@ export default class VersionControlPlugin extends Plugin {
         }
     }
 
-    // [新增] 辅助函数，用于从版本消息中获取用户友好的保存类型标签
     getSaveTypeLabel(message: string): string {
         if (message.includes('[Auto Save - On Modify]')) return '修改保存';
         if (message.includes('[Auto Save - Interval]')) return '定时保存';
@@ -281,7 +280,7 @@ export default class VersionControlPlugin extends Plugin {
         if (message.includes('[Auto Save - Focus Lost]')) return '失焦保存';
         if (message.includes('[Full Snapshot]')) return '全库快照';
         if (message.includes('[Before Restore]')) return '恢复前备份';
-        if (message.includes('[Auto Save')) return '自动保存'; // 通用自动保存后备选项
+        if (message.includes('[Auto Save')) return '自动保存';
         return '手动保存';
     }
 
@@ -307,7 +306,6 @@ export default class VersionControlPlugin extends Plugin {
             const lastSaveTime = lastVersion.timestamp;
             this.lastModifiedTime.set(file.path, lastSaveTime);
 
-            // [修改] 使用新的辅助函数获取精确的保存类型
             const saveTypeLabel = this.getSaveTypeLabel(lastVersion.message);
 
             const relativeTime = this.getRelativeTime(lastSaveTime);
@@ -1796,15 +1794,19 @@ class VersionHistoryView extends ItemView {
                 
                 const messageEl = info.createEl('div', { cls: 'version-message-row' });
                 
-                // [确认] 这部分逻辑已经存在，用于在侧边栏显示详细的保存信息标签
+                // [修复] 重构标签显示逻辑，确保所有类型都显示
                 const saveTypeLabel = this.plugin.getSaveTypeLabel(version.message);
-                if (saveTypeLabel !== '手动保存' && saveTypeLabel !== '全库快照' && saveTypeLabel !== '恢复前备份') {
-                    messageEl.createEl('span', { text: saveTypeLabel, cls: 'version-tag version-tag-auto' });
+                let tagClass = 'version-tag-auto'; // 默认为自动保存样式
+                
+                if (saveTypeLabel === '手动保存') {
+                    tagClass = 'version-tag-manual'; // 为手动保存指定一个新类（或使用现有类）
                 } else if (saveTypeLabel === '全库快照') {
-                    messageEl.createEl('span', { text: saveTypeLabel, cls: 'version-tag version-tag-snapshot' });
+                    tagClass = 'version-tag-snapshot';
                 } else if (saveTypeLabel === '恢复前备份') {
-                    messageEl.createEl('span', { text: saveTypeLabel, cls: 'version-tag version-tag-backup' });
+                    tagClass = 'version-tag-backup';
                 }
+                
+                messageEl.createEl('span', { text: saveTypeLabel, cls: `version-tag ${tagClass}` });
                 
                 if (version.diff) {
                     messageEl.createEl('span', { text: '增量', cls: 'version-tag version-tag-incremental' });
@@ -4434,7 +4436,6 @@ class VersionControlSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
-        // [修改] 滑块改为文本输入，单位为分钟
         new Setting(containerEl)
             .setName('修改时保存延迟 (分钟)')
             .setDesc('修改后等待多久才保存。支持小数,例如 0.5 代表30秒。')
@@ -4504,7 +4505,6 @@ class VersionControlSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
         
-        // [修改] 滑块改为文本输入，单位为分钟
         new Setting(containerEl)
             .setName('切换文件时保存延迟 (分钟)')
             .setDesc('切换文件后等待多久才保存。支持小数,例如 0.1 代表6秒。')
@@ -4528,7 +4528,6 @@ class VersionControlSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
-        // [修改] 滑块改为文本输入，单位为分钟
         new Setting(containerEl)
             .setName('失去焦点时保存延迟 (分钟)')
             .setDesc('失去焦点后等待多久才保存。支持小数,例如 0.1 代表6秒。')
