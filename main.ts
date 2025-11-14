@@ -2526,11 +2526,8 @@ class DiffModal extends Modal {
         this.renderedDiffContainer = mainContainer.createEl('div', { cls: 'rendered-diff-container', attr: { style: 'display: none;' } });
         this.structuredDiffContainer = mainContainer.createEl('div', { cls: 'structured-diff-container', attr: { style: 'display: none;' } });
 
-        // ================= [START] ANDROID/MOBILE OPTIMIZATIONS =================
-        // 【修改】为移动端和桌面端添加统一的交互事件，支持长按和双击
         this.addMobileInteraction(this.renderedDiffContainer);
         this.addMobileInteraction(this.structuredDiffContainer);
-        // ================= [END] ANDROID/MOBILE OPTIMIZATIONS =================
 
         try {
             this.allVersions = await this.plugin.getAllVersions(this.file.path);
@@ -2665,11 +2662,6 @@ class DiffModal extends Modal {
         await this.updateDiffView();
     }
 
-    // ================= [START] ANDROID/MOBILE OPTIMIZATIONS =================
-    /**
-     * 【新增】为移动端优化交互：添加长按手势来触发跳转，同时保留桌面端的双击功能。
-     * @param container - 要附加事件监听器的HTML元素
-     */
     private addMobileInteraction(container: HTMLElement) {
         let pressTimer: NodeJS.Timeout;
 
@@ -2680,14 +2672,13 @@ class DiffModal extends Modal {
             pressTimer = setTimeout(() => {
                 this.handleViewDoubleClick(e);
                 new Notice('长按跳转成功！');
-            }, 800); // 800毫秒定义为长按
+            }, 800);
         };
 
         const cancelPress = () => {
             clearTimeout(pressTimer);
         };
 
-        // 为桌面和移动端添加事件
         container.addEventListener('mousedown', startPress);
         container.addEventListener('mouseup', cancelPress);
         container.addEventListener('mouseleave', cancelPress);
@@ -2696,19 +2687,13 @@ class DiffModal extends Modal {
         container.addEventListener('touchend', cancelPress);
         container.addEventListener('touchcancel', cancelPress);
 
-        // 保留桌面端的双击功能
         container.addEventListener('dblclick', this.handleViewDoubleClick.bind(this));
     }
 
-    /**
-     * 【修改】处理双击或长按事件，使其能接受TouchEvent
-     * @param e - 鼠标或触摸事件
-     */
     private handleViewDoubleClick(e: MouseEvent | TouchEvent) {
-        e.preventDefault(); // 阻止默认行为，如移动端的文本选择
+        e.preventDefault();
         const target = e.target as HTMLElement;
         if (!target) return;
-    // ================= [END] ANDROID/MOBILE OPTIMIZATIONS =================
 
         const textContent = target.textContent?.trim();
         if (!textContent || textContent.length < 3) {
@@ -2827,7 +2812,7 @@ class DiffModal extends Modal {
         let rightLineNum = 1;
         let diffIdx = 0;
     
-        const renderLine = (content: string, type: ProcessedDiff['type'], lineNumLeft: number | null, lineNumRight: number | null, moveId?: number) => {
+        const renderLine = (content: string | DocumentFragment, type: ProcessedDiff['type'], lineNumLeft: number | null, lineNumRight: number | null, moveId?: number) => {
             if (this.showOnlyChanges && type === 'context') {
                 if (lineNumLeft !== null) leftLineNum++;
                 if (lineNumRight !== null) rightLineNum++;
@@ -2845,13 +2830,9 @@ class DiffModal extends Modal {
             if (lineNumLeft) lineEl.dataset.lineNumberLeft = String(lineNumLeft);
             if (lineNumRight) lineEl.dataset.lineNumberRight = String(lineNumRight);
             
-            // ================= [START] ANDROID/MOBILE OPTIMIZATIONS =================
-            // 【新增】单击行以显示/隐藏操作按钮
             lineEl.addEventListener('click', (e) => {
                 const target = e.target as HTMLElement;
-                // 如果点击的不是按钮本身，则切换当前行的激活状态
                 if (!target.closest('.diff-line-action-btn, .diff-line-history-btn')) {
-                    // 如果当前行已激活，则取消激活；否则，激活它并取消其他行
                     if (lineEl.hasClass('line-active')) {
                         lineEl.removeClass('line-active');
                     } else {
@@ -2860,7 +2841,6 @@ class DiffModal extends Modal {
                     }
                 }
             });
-            // ================= [END] ANDROID/MOBILE OPTIMIZATIONS =================
 
             const lineNumContainer = lineEl.createEl('div', { cls: 'line-number-container' });
             if (this.showLineNumbers) {
@@ -2869,21 +2849,18 @@ class DiffModal extends Modal {
             }
             
             const historyBtn = lineNumContainer.createEl('span', { text: '📜', cls: 'diff-line-history-btn', attr: { 'aria-label': '查看行历史' } });
-            historyBtn.addEventListener('click', () => this.showLineHistory(content));
+            historyBtn.addEventListener('click', () => this.showLineHistory(typeof content === 'string' ? content : content.textContent || ''));
     
             if ((this.versionId === 'current' && type === 'removed') || (this.secondVersionId === 'current' && type === 'added')) {
                 if (type === 'added' && this.secondVersionId === 'current') {
                     const revertBtn = lineNumContainer.createEl('span', { text: '-', cls: 'diff-line-action-btn', attr: { 'aria-label': '撤销此更改' } });
-                    revertBtn.addEventListener('click', () => this.revertChanges(content, rightLineNum - 1));
-                } else if (type === 'removed' && this.versionId === 'current') {
-                    // This logic is tricky. Reverting a deletion from 'current' means adding it back.
-                    // Let's assume comparison is always against 'current' as version B for simplicity.
+                    revertBtn.addEventListener('click', () => this.revertChanges(typeof content === 'string' ? content : content.textContent || '', rightLineNum - 1));
                 }
             }
             if ((this.versionId === 'current' && type === 'added') || (this.secondVersionId === 'current' && type === 'removed')) {
                  if (type === 'removed' && this.secondVersionId === 'current') {
                     const applyBtn = lineNumContainer.createEl('span', { text: '+', cls: 'diff-line-action-btn', attr: { 'aria-label': '应用此更改' } });
-                    applyBtn.addEventListener('click', () => this.applyChanges(content, rightLineNum));
+                    applyBtn.addEventListener('click', () => this.applyChanges(typeof content === 'string' ? content : content.textContent || '', rightLineNum));
                 }
             }
     
@@ -2895,8 +2872,13 @@ class DiffModal extends Modal {
 
             lineEl.createEl('span', { cls: 'diff-marker', text: marker });
             
-            const contentEl = lineEl.createEl('span', { cls: 'line-content', text: this.showWhitespace ? this.visualizeWhitespace(content) : content });
-            if (content.trim() === '') contentEl.innerHTML = '&nbsp;';
+            const contentEl = lineEl.createEl('span', { cls: 'line-content' });
+            if (typeof content === 'string') {
+                contentEl.setText(this.showWhitespace ? this.visualizeWhitespace(content) : content);
+                if (content.trim() === '') contentEl.innerHTML = '&nbsp;';
+            } else {
+                contentEl.appendChild(content);
+            }
         };
     
         for (let i = 0; i < diffResult.length; i++) {
@@ -3589,17 +3571,29 @@ class DiffModal extends Modal {
         this.renderSplitViewAdvanced(leftContentEl, rightContentEl, left, right, granularity);
     }
 
+    // ================= [START] ENHANCEMENT: INTRA-LINE DIFF =================
+    /**
+     * 【修改】增强的分栏视图渲染逻辑，增加了行内差异高亮功能。
+     */
     renderSplitViewAdvanced(leftPanel: HTMLElement, rightPanel: HTMLElement, leftText: string, rightText: string, granularity: 'char' | 'word' | 'line') {
-        const diff = Diff.diffLines(leftText, rightText);
+        // 【修复】确保 diff 变量始终是 ProcessedDiff[] 类型
+        const rawDiff = Diff.diffLines(leftText, rightText);
+        const diff: ProcessedDiff[] = this.enableMoveDetection
+            ? this.processDiffForMoves(rawDiff)
+            : rawDiff.map(p => ({ ...p, type: p.added ? 'added' : p.removed ? 'removed' : 'context' }));
+
         let leftLineNum = 1;
         let rightLineNum = 1;
         let diffIdx = 0;
     
-        const createHighlightedFragment = (text: string, diffParts: Diff.Change[]): DocumentFragment => {
+        const createHighlightedFragment = (diffParts: Diff.Change[], isAdded: boolean): DocumentFragment => {
             const fragment = document.createDocumentFragment();
             diffParts.forEach(part => {
-                const className = part.added ? 'diff-char-added' : part.removed ? 'diff-char-removed' : '';
+                if (isAdded ? part.removed : part.added) return;
+
+                const className = part.added ? 'diff-word-added' : part.removed ? 'diff-word-removed' : '';
                 const processedText = this.showWhitespace ? this.visualizeWhitespace(part.value) : part.value;
+                
                 if (className) {
                     fragment.append(createEl('span', { text: processedText, cls: className }));
                 } else {
@@ -3609,16 +3603,15 @@ class DiffModal extends Modal {
             return fragment;
         };
     
-        const renderLine = (panel: HTMLElement, content: string | DocumentFragment, type: string, lineNum: number | null) => {
+        const renderLine = (panel: HTMLElement, content: string | DocumentFragment, type: string, lineNum: number | null, moveId?: number) => {
             const lineEl = panel.createEl('div', { cls: `diff-line diff-${type}` });
             if (type !== 'context' && type !== 'placeholder') {
                 lineEl.dataset.diffIndex = String(diffIdx++);
                 this.diffElements.push(lineEl);
             }
             if (lineNum) lineEl.dataset.lineNumber = String(lineNum);
+            if (moveId !== undefined) lineEl.dataset.moveId = String(moveId);
 
-            // ================= [START] ANDROID/MOBILE OPTIMIZATIONS =================
-            // 【新增】单击行以显示/隐藏操作按钮 (用于分栏视图)
             lineEl.addEventListener('click', (e) => {
                 const target = e.target as HTMLElement;
                 if (!target.closest('.diff-line-action-btn, .diff-line-history-btn')) {
@@ -3630,7 +3623,6 @@ class DiffModal extends Modal {
                     }
                 }
             });
-            // ================= [END] ANDROID/MOBILE OPTIMIZATIONS =================
 
             if (this.showLineNumbers) {
                 lineEl.createEl('span', { cls: 'line-number', text: lineNum ? String(lineNum) : '' });
@@ -3657,9 +3649,9 @@ class DiffModal extends Modal {
                     const rightLine = rightLines[j];
     
                     if (leftLine !== undefined && rightLine !== undefined) {
-                        const lineDiff = granularity === 'word' ? Diff.diffWordsWithSpace(leftLine, rightLine) : Diff.diffChars(leftLine, rightLine);
-                        const leftFrag = createHighlightedFragment(leftLine, lineDiff.filter(p => !p.added));
-                        const rightFrag = createHighlightedFragment(rightLine, lineDiff.filter(p => !p.removed));
+                        const lineDiff = Diff.diffWordsWithSpace(leftLine, rightLine);
+                        const leftFrag = createHighlightedFragment(lineDiff, false);
+                        const rightFrag = createHighlightedFragment(lineDiff, true);
                         renderLine(leftPanel, leftFrag, 'modified', leftLineNum++);
                         renderLine(rightPanel, rightFrag, 'modified', rightLineNum++);
                     } else if (leftLine !== undefined) {
@@ -3671,16 +3663,16 @@ class DiffModal extends Modal {
                     }
                 }
                 i++;
-            } else if (part.added) {
+            } else if (part.added || part.type === 'moved-to') {
                 const lines = part.value.replace(/\n$/, '').split('\n');
                 for (const line of lines) {
                     renderLine(leftPanel, '', 'placeholder', null);
-                    renderLine(rightPanel, line, 'added', rightLineNum++);
+                    renderLine(rightPanel, line, part.type || 'added', rightLineNum++, part.moveId);
                 }
-            } else if (part.removed) {
+            } else if (part.removed || part.type === 'moved-from') {
                 const lines = part.value.replace(/\n$/, '').split('\n');
                 for (const line of lines) {
-                    renderLine(leftPanel, line, 'removed', leftLineNum++);
+                    renderLine(leftPanel, line, part.type || 'removed', leftLineNum++, part.moveId);
                     renderLine(rightPanel, '', 'placeholder', null);
                 }
             } else {
@@ -3698,6 +3690,7 @@ class DiffModal extends Modal {
             }
         }
     }
+    // ================= [END] ENHANCEMENT: INTRA-LINE DIFF =================
 
     scrollToDiff() {
         if (this.diffElements.length === 0 || this.currentDiffIndex >= this.diffElements.length) return;
