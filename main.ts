@@ -123,6 +123,7 @@ export default class VersionControlPlugin extends Plugin {
     versionCache: Map<string, VersionFile> = new Map();
     previousActiveFile: TFile | null = null;
     globalTimeUpdater: number | null = null;
+    isSaving: Map<string, boolean> = new Map(); // [新增] 保存锁
 
     async onload() {
         await this.loadSettings();
@@ -496,7 +497,6 @@ export default class VersionControlPlugin extends Plugin {
         );
     }
 
-    // [修复] 手动创建版本前，取消待处理的自动保存
     async createManualVersion() {
         const file = this.app.workspace.getActiveFile();
         if (!file) {
@@ -504,7 +504,6 @@ export default class VersionControlPlugin extends Plugin {
             return;
         }
 
-        // 取消任何待处理的自动保存，以确保手动保存优先
         const existingTimeout = this.pendingSaves.get(file.path);
         if (existingTimeout) {
             clearTimeout(existingTimeout);
@@ -516,7 +515,17 @@ export default class VersionControlPlugin extends Plugin {
         }).open();
     }
 
+    // [修改] 引入保存锁机制
     async createVersion(file: TFile, message: string, showNotification: boolean = false, tags: string[] = []) {
+        if (this.isSaving.get(file.path)) {
+            if (showNotification && this.settings.showNotifications) {
+                new Notice('⚠️ 正在进行另一个保存操作，请稍候。', 3000);
+            }
+            return;
+        }
+
+        this.isSaving.set(file.path, true);
+
         try {
             const content = await this.app.vault.read(file);
             const timestamp = Date.now();
@@ -531,7 +540,7 @@ export default class VersionControlPlugin extends Plugin {
                      if (showNotification && this.settings.showNotifications) {
                         new Notice('ℹ️ 内容未变化,跳过创建版本');
                     }
-                    return;
+                    return; // 锁将在 finally 中释放
                 }
             }
 
@@ -607,6 +616,8 @@ export default class VersionControlPlugin extends Plugin {
         } catch (error) {
             console.error('创建版本失败:', error);
             new Notice('❌ 创建版本失败,请查看控制台');
+        } finally {
+            this.isSaving.set(file.path, false); // 确保锁总是被释放
         }
     }
 
