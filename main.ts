@@ -1,3 +1,4 @@
+
 import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, Modal, ItemView, WorkspaceLeaf, Menu, TextComponent, MarkdownRenderer } from 'obsidian';
 import * as Diff from 'diff';
 import * as pako from 'pako';
@@ -3428,7 +3429,6 @@ class DiffModal extends Modal {
                 lineNumContainer.createEl('span', { cls: 'line-number line-number-right', text: lineNumRight ? String(lineNumRight) : '' });
             }
             
-            // 【修复】恢复行操作按钮的创建逻辑
             const historyBtn = lineNumContainer.createEl('span', { text: '📜', cls: 'diff-line-history-btn', attr: { 'aria-label': '查看行历史' } });
             historyBtn.addEventListener('click', () => this.showLineHistory(typeof content === 'string' ? content : content.textContent || ''));
     
@@ -3468,7 +3468,7 @@ class DiffModal extends Modal {
                 const lineDiff = secondaryDiffFn(part.value.replace(/\n$/, ''), nextPart.value.replace(/\n$/, ''));
                 const combinedFrag = createHighlightedFragment(lineDiff);
                 renderLine(combinedFrag, 'modified', leftLineNum++, rightLineNum++);
-                i++; // Skip next part
+                i++;
             } else if (part.removed && nextPart && nextPart.added) {
                 const leftLines = part.value.replace(/\n$/, '').split('\n');
                 const rightLines = nextPart.value.replace(/\n$/, '').split('\n');
@@ -3490,18 +3490,19 @@ class DiffModal extends Modal {
                         renderLine(rightLine, 'added', null, rightLineNum++);
                     }
                 }
-                i++; // Skip next part
+                i++;
             } else {
                 const lines = part.value.replace(/\n$/, '').split('\n');
                 for (const line of lines) {
-                    if (part.added) {
-                        renderLine(line, 'added', null, rightLineNum++);
-                    } else if (part.removed) {
-                        renderLine(line, 'removed', leftLineNum++, null);
-                    } else if (part.type === 'moved-from') {
+                    // 【修复】修正逻辑判断的优先级
+                    if (part.type === 'moved-from') {
                         renderLine(line, 'moved-from', leftLineNum++, null, part.moveId);
                     } else if (part.type === 'moved-to') {
                         renderLine(line, 'moved-to', null, rightLineNum++, part.moveId);
+                    } else if (part.added) {
+                        renderLine(line, 'added', null, rightLineNum++);
+                    } else if (part.removed) {
+                        renderLine(line, 'removed', leftLineNum++, null);
                     } else { // context
                         if (!this.showOnlyChanges) {
                             renderLine(line, 'context', leftLineNum, rightLineNum);
@@ -3570,7 +3571,6 @@ class DiffModal extends Modal {
                 lineNumContainer.createEl('span', { cls: 'line-number', text: lineNum ? String(lineNum) : '' });
             }
 
-            // 【修复】恢复行操作按钮的创建逻辑
             const historyBtn = lineNumContainer.createEl('span', { text: '📜', cls: 'diff-line-history-btn', attr: { 'aria-label': '查看行历史' } });
             historyBtn.addEventListener('click', () => this.showLineHistory(typeof content === 'string' ? content : content.textContent || ''));
 
@@ -3622,16 +3622,28 @@ class DiffModal extends Modal {
                     }
                 }
                 i++;
-            } else if (part.added || part.type === 'moved-to') {
+            } else if (part.type === 'moved-from') {
+                const lines = part.value.replace(/\n$/, '').split('\n');
+                for (const line of lines) {
+                    renderLine(leftPanel, line, 'moved-from', leftLineNum++, part.moveId);
+                    renderLine(rightPanel, '', 'placeholder', null);
+                }
+            } else if (part.type === 'moved-to') {
                 const lines = part.value.replace(/\n$/, '').split('\n');
                 for (const line of lines) {
                     renderLine(leftPanel, '', 'placeholder', null);
-                    renderLine(rightPanel, line, part.type || 'added', rightLineNum++, part.moveId);
+                    renderLine(rightPanel, line, 'moved-to', rightLineNum++, part.moveId);
                 }
-            } else if (part.removed || part.type === 'moved-from') {
+            } else if (part.added) {
                 const lines = part.value.replace(/\n$/, '').split('\n');
                 for (const line of lines) {
-                    renderLine(leftPanel, line, part.type || 'removed', leftLineNum++, part.moveId);
+                    renderLine(leftPanel, '', 'placeholder', null);
+                    renderLine(rightPanel, line, 'added', rightLineNum++, part.moveId);
+                }
+            } else if (part.removed) {
+                const lines = part.value.replace(/\n$/, '').split('\n');
+                for (const line of lines) {
+                    renderLine(leftPanel, line, 'removed', leftLineNum++, part.moveId);
                     renderLine(rightPanel, '', 'placeholder', null);
                 }
             } else { // context

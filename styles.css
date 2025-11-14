@@ -1897,47 +1897,49 @@
 }
 
 /* ======================================================================= */
-/* =================== [增强] 移动文本检测样式 ======================= */
+/* =================== [修正] 移动文本检测样式 ======================= */
 /* ======================================================================= */
 
+/* 为移动的行提供独特的、中性的蓝色视觉样式 */
 .diff-line.diff-moved-from,
 .diff-line.diff-moved-to {
-    background: rgba(240, 185, 10, 0.15); /* 增强背景色 */
-    border-left: 3px solid #f0b90a;
-}
-
-.diff-line.diff-moved-from .diff-marker,
-.diff-line.diff-moved-to .diff-marker {
-    color: #f0b90a;
-    font-weight: bold;
+  background-color: rgba(58, 112, 165, 0.15); /* 使用蓝色调作为移动的背景 */
+  border-left: 3px solid #3a70a5;
 }
 
 .diff-line.diff-moved-from:hover,
 .diff-line.diff-moved-to:hover {
-    background: rgba(240, 185, 10, 0.25) !important; /* 增强悬停背景色 */
+  background-color: rgba(58, 112, 165, 0.25) !important;
 }
 
-/* 悬停时的高亮效果 */
+/* 统一视图下，为移动的行设置标记颜色 */
+.diff-line.diff-moved-from .diff-marker,
+.diff-line.diff-moved-to .diff-marker {
+  color: #6c95bd;
+  font-weight: bold;
+}
+
+/* 悬停时关联高亮的效果 */
 .diff-line.diff-move-highlight {
-    outline: 2px solid #f0b90a;
-    box-shadow: 0 0 10px rgba(240, 185, 10, 0.5);
-    z-index: 20; /* 确保高亮在最上层 */
+  outline: 2px solid #3a70a5;
+  box-shadow: 0 0 10px rgba(58, 112, 165, 0.5);
+  z-index: 20; /* 确保高亮在最上层 */
 }
 
 /* 深色模式下的移动文本样式 */
 .theme-dark .diff-line.diff-moved-from,
 .theme-dark .diff-line.diff-moved-to {
-    background: rgba(240, 185, 10, 0.2);
-    border-left-color: #e3b341;
+    background: rgba(58, 112, 165, 0.2);
+    border-left-color: #58a6ff;
 }
 
 .theme-dark .diff-line.diff-moved-from .diff-marker,
 .theme-dark .diff-line.diff-moved-to .diff-marker {
-    color: #e3b341;
+    color: #58a6ff;
 }
 
 /* ======================================================================= */
-/* ======================= END OF 增强 =================================== */
+/* ======================= END OF 修正 =================================== */
 /* ======================================================================= */
 
 
