@@ -496,11 +496,19 @@ export default class VersionControlPlugin extends Plugin {
         );
     }
 
+    // [修复] 手动创建版本前，取消待处理的自动保存
     async createManualVersion() {
         const file = this.app.workspace.getActiveFile();
         if (!file) {
             new Notice('没有打开的文件');
             return;
+        }
+
+        // 取消任何待处理的自动保存，以确保手动保存优先
+        const existingTimeout = this.pendingSaves.get(file.path);
+        if (existingTimeout) {
+            clearTimeout(existingTimeout);
+            this.pendingSaves.delete(file.path);
         }
 
         new VersionMessageModal(this.app, this.settings, async (message, tags) => {
@@ -1794,12 +1802,11 @@ class VersionHistoryView extends ItemView {
                 
                 const messageEl = info.createEl('div', { cls: 'version-message-row' });
                 
-                // [修复] 重构标签显示逻辑，确保所有类型都显示
                 const saveTypeLabel = this.plugin.getSaveTypeLabel(version.message);
-                let tagClass = 'version-tag-auto'; // 默认为自动保存样式
+                let tagClass = 'version-tag-auto';
                 
                 if (saveTypeLabel === '手动保存') {
-                    tagClass = 'version-tag-manual'; // 为手动保存指定一个新类（或使用现有类）
+                    tagClass = 'version-tag-manual';
                 } else if (saveTypeLabel === '全库快照') {
                     tagClass = 'version-tag-snapshot';
                 } else if (saveTypeLabel === '恢复前备份') {
