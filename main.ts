@@ -56,7 +56,6 @@ interface VersionControlSettings {
     autoSaveOnFileSwitch: boolean;
     autoSaveOnFocusLost: boolean;
 
-    // [重构] 独立的延迟设置
     autoSaveDelayOnModify: number;
     autoSaveDelayOnFileSwitch: number;
     autoSaveDelayOnFocusLost: number;
@@ -98,10 +97,9 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
     autoSaveOnFileSwitch: true,
     autoSaveOnFocusLost: false,
 
-    // [重构] 独立的默认延迟值
-    autoSaveDelayOnModify: 180, // 3分钟
-    autoSaveDelayOnFileSwitch: 2,  // 2秒
-    autoSaveDelayOnFocusLost: 2,   // 2秒
+    autoSaveDelayOnModify: 180,
+    autoSaveDelayOnFileSwitch: 2,
+    autoSaveDelayOnFocusLost: 2,
 
     enableQuickPreview: true,
     enableVersionTags: true,
@@ -275,6 +273,18 @@ export default class VersionControlPlugin extends Plugin {
         }
     }
 
+    // [新增] 辅助函数，用于从版本消息中获取用户友好的保存类型标签
+    getSaveTypeLabel(message: string): string {
+        if (message.includes('[Auto Save - On Modify]')) return '修改保存';
+        if (message.includes('[Auto Save - Interval]')) return '定时保存';
+        if (message.includes('[Auto Save - File Switch]')) return '切换保存';
+        if (message.includes('[Auto Save - Focus Lost]')) return '失焦保存';
+        if (message.includes('[Full Snapshot]')) return '全库快照';
+        if (message.includes('[Before Restore]')) return '恢复前备份';
+        if (message.includes('[Auto Save')) return '自动保存'; // 通用自动保存后备选项
+        return '手动保存';
+    }
+
     async updateStatusBar() {
         if (!this.settings.autoSave) {
             this.statusBarItem.setText('⏸ 版本控制: 已暂停');
@@ -290,21 +300,21 @@ export default class VersionControlPlugin extends Plugin {
             return;
         }
 
-        let lastSaveTime = this.lastModifiedTime.get(file.path);
+        const versions = await this.getAllVersions(file.path);
 
-        if (!lastSaveTime) {
-            const versions = await this.getAllVersions(file.path);
-            if (versions.length > 0) {
-                lastSaveTime = versions[0].timestamp;
-                this.lastModifiedTime.set(file.path, lastSaveTime);
-            }
-        }
+        if (versions.length > 0) {
+            const lastVersion = versions[0];
+            const lastSaveTime = lastVersion.timestamp;
+            this.lastModifiedTime.set(file.path, lastSaveTime);
 
-        if (lastSaveTime) {
+            // [修改] 使用新的辅助函数获取精确的保存类型
+            const saveTypeLabel = this.getSaveTypeLabel(lastVersion.message);
+
             const relativeTime = this.getRelativeTime(lastSaveTime);
-            this.statusBarItem.setText(`上次保存: ${relativeTime}`);
-            this.statusBarItem.title = `上次保存于 ${new Date(lastSaveTime).toLocaleString('zh-CN')}. 点击可快速对比。`;
+            this.statusBarItem.setText(`${saveTypeLabel}: ${relativeTime}`);
+            this.statusBarItem.title = `${saveTypeLabel}于 ${new Date(lastSaveTime).toLocaleString('zh-CN')}. 点击可快速对比。`;
         } else {
+            this.lastModifiedTime.delete(file.path);
             this.statusBarItem.setText('⏱ 版本控制: 已启用');
             this.statusBarItem.title = '当前文件无历史版本。点击可快速对比。';
         }
@@ -376,7 +386,6 @@ export default class VersionControlPlugin extends Plugin {
         }
     }
 
-    // [重构] 通用保存调度器
     scheduleSave(file: TFile, delay: number, message: string) {
         if (this.isExcluded(file.path)) {
             return;
@@ -443,12 +452,10 @@ export default class VersionControlPlugin extends Plugin {
         return changeCount;
     }
 
-    // [重构] 修改时保存
     handleFileModify(file: TFile) {
         this.scheduleSave(file, this.settings.autoSaveDelayOnModify, '[Auto Save - On Modify]');
     }
 
-    // [重构] 切换文件时保存
     async handleFileSwitch() {
         const currentFile = this.app.workspace.getActiveFile();
         
@@ -468,7 +475,6 @@ export default class VersionControlPlugin extends Plugin {
         this.previousActiveFile = currentFile;
     }
 
-    // [重构] 失去焦点时保存
     async handleFocusLost() {
         const file = this.app.workspace.getActiveFile();
         if (!file || this.isExcluded(file.path)) return;
@@ -1790,18 +1796,14 @@ class VersionHistoryView extends ItemView {
                 
                 const messageEl = info.createEl('div', { cls: 'version-message-row' });
                 
-                if (version.message.includes('[Auto Save - On Modify]')) {
-                    messageEl.createEl('span', { text: '修改保存', cls: 'version-tag version-tag-auto' });
-                } else if (version.message.includes('[Auto Save - Interval]')) {
-                    messageEl.createEl('span', { text: '定时保存', cls: 'version-tag version-tag-auto' });
-                } else if (version.message.includes('[Auto Save - File Switch]')) {
-                    messageEl.createEl('span', { text: '切换保存', cls: 'version-tag version-tag-auto' });
-                } else if (version.message.includes('[Auto Save - Focus Lost]')) {
-                    messageEl.createEl('span', { text: '失焦保存', cls: 'version-tag version-tag-auto' });
-                } else if (version.message.includes('[Full Snapshot]')) {
-                    messageEl.createEl('span', { text: '全库版本', cls: 'version-tag version-tag-snapshot' });
-                } else if (version.message.includes('[Before Restore]')) {
-                    messageEl.createEl('span', { text: '恢复前备份', cls: 'version-tag version-tag-backup' });
+                // [确认] 这部分逻辑已经存在，用于在侧边栏显示详细的保存信息标签
+                const saveTypeLabel = this.plugin.getSaveTypeLabel(version.message);
+                if (saveTypeLabel !== '手动保存' && saveTypeLabel !== '全库快照' && saveTypeLabel !== '恢复前备份') {
+                    messageEl.createEl('span', { text: saveTypeLabel, cls: 'version-tag version-tag-auto' });
+                } else if (saveTypeLabel === '全库快照') {
+                    messageEl.createEl('span', { text: saveTypeLabel, cls: 'version-tag version-tag-snapshot' });
+                } else if (saveTypeLabel === '恢复前备份') {
+                    messageEl.createEl('span', { text: saveTypeLabel, cls: 'version-tag version-tag-backup' });
                 }
                 
                 if (version.diff) {
@@ -4432,16 +4434,18 @@ class VersionControlSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
+        // [修改] 滑块改为文本输入，单位为分钟
         new Setting(containerEl)
-            .setName('修改时保存延迟 (秒)')
-            .setDesc('修改后等待多久才保存,避免频繁创建版本')
-            .addSlider(slider => slider
-                .setLimits(30, 600, 30)
-                .setValue(this.plugin.settings.autoSaveDelayOnModify)
-                .setDynamicTooltip()
+            .setName('修改时保存延迟 (分钟)')
+            .setDesc('修改后等待多久才保存。支持小数,例如 0.5 代表30秒。')
+            .addText(text => text
+                .setValue(String(this.plugin.settings.autoSaveDelayOnModify / 60))
                 .onChange(async (value) => {
-                    this.plugin.settings.autoSaveDelayOnModify = value;
-                    await this.plugin.saveSettings();
+                    const num = parseFloat(value);
+                    if (!isNaN(num) && num >= 0) {
+                        this.plugin.settings.autoSaveDelayOnModify = num * 60;
+                        await this.plugin.saveSettings();
+                    }
                 }));
 
         new Setting(containerEl)
@@ -4500,16 +4504,18 @@ class VersionControlSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
         
+        // [修改] 滑块改为文本输入，单位为分钟
         new Setting(containerEl)
-            .setName('切换文件时保存延迟 (秒)')
-            .setDesc('切换文件后等待多久才保存。0秒为立即保存。')
-            .addSlider(slider => slider
-                .setLimits(0, 60, 1)
-                .setValue(this.plugin.settings.autoSaveDelayOnFileSwitch)
-                .setDynamicTooltip()
+            .setName('切换文件时保存延迟 (分钟)')
+            .setDesc('切换文件后等待多久才保存。支持小数,例如 0.1 代表6秒。')
+            .addText(text => text
+                .setValue(String(this.plugin.settings.autoSaveDelayOnFileSwitch / 60))
                 .onChange(async (value) => {
-                    this.plugin.settings.autoSaveDelayOnFileSwitch = value;
-                    await this.plugin.saveSettings();
+                    const num = parseFloat(value);
+                    if (!isNaN(num) && num >= 0) {
+                        this.plugin.settings.autoSaveDelayOnFileSwitch = num * 60;
+                        await this.plugin.saveSettings();
+                    }
                 }));
 
         new Setting(containerEl)
@@ -4522,16 +4528,18 @@ class VersionControlSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
+        // [修改] 滑块改为文本输入，单位为分钟
         new Setting(containerEl)
-            .setName('失去焦点时保存延迟 (秒)')
-            .setDesc('失去焦点后等待多久才保存。0秒为立即保存。')
-            .addSlider(slider => slider
-                .setLimits(0, 60, 1)
-                .setValue(this.plugin.settings.autoSaveDelayOnFocusLost)
-                .setDynamicTooltip()
+            .setName('失去焦点时保存延迟 (分钟)')
+            .setDesc('失去焦点后等待多久才保存。支持小数,例如 0.1 代表6秒。')
+            .addText(text => text
+                .setValue(String(this.plugin.settings.autoSaveDelayOnFocusLost / 60))
                 .onChange(async (value) => {
-                    this.plugin.settings.autoSaveDelayOnFocusLost = value;
-                    await this.plugin.saveSettings();
+                    const num = parseFloat(value);
+                    if (!isNaN(num) && num >= 0) {
+                        this.plugin.settings.autoSaveDelayOnFocusLost = num * 60;
+                        await this.plugin.saveSettings();
+                    }
                 }));
 
         new Setting(containerEl)
