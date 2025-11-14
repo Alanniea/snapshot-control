@@ -2412,7 +2412,6 @@ class ConfirmModal extends Modal {
 // ======================= [START] FINAL DIFFMODAL =========================
 // =======================================================================
 
-// 【修复】将 'modified' 添加到类型定义中
 type ProcessedDiff = {
     type: 'context' | 'added' | 'removed' | 'moved-from' | 'moved-to' | 'modified';
     moveId?: number;
@@ -3384,13 +3383,6 @@ class DiffModal extends Modal {
         }
     }
 
-    // =======================================================================
-    // ======================= [BUG FIX] UNIFIED RENDERER ====================
-    // =======================================================================
-    /**
-     * 【修复】重构了统一视图的渲染逻辑，采用统一的两阶段对比引擎，
-     * 解决了字符/单词级对比下，修改被错误地显示为行替换的问题。
-     */
     renderUnifiedDiff(container: HTMLElement, left: string, right: string) {
         const diffResult = Diff.diffLines(left, right);
         const processedDiff: ProcessedDiff[] = this.enableMoveDetection 
@@ -3436,6 +3428,21 @@ class DiffModal extends Modal {
                 lineNumContainer.createEl('span', { cls: 'line-number line-number-right', text: lineNumRight ? String(lineNumRight) : '' });
             }
             
+            // 【修复】恢复行操作按钮的创建逻辑
+            const historyBtn = lineNumContainer.createEl('span', { text: '📜', cls: 'diff-line-history-btn', attr: { 'aria-label': '查看行历史' } });
+            historyBtn.addEventListener('click', () => this.showLineHistory(typeof content === 'string' ? content : content.textContent || ''));
+    
+            if (this.secondVersionId === 'current') {
+                if (type === 'added' || (type === 'modified' && lineNumRight)) {
+                    const revertBtn = lineNumContainer.createEl('span', { text: '-', cls: 'diff-line-action-btn', attr: { 'aria-label': '撤销此更改' } });
+                    revertBtn.addEventListener('click', () => this.revertChanges(typeof content === 'string' ? content : content.textContent || '', lineNumRight! - 1));
+                }
+                if (type === 'removed' || (type === 'modified' && lineNumLeft)) {
+                    const applyBtn = lineNumContainer.createEl('span', { text: '+', cls: 'diff-line-action-btn', attr: { 'aria-label': '应用此更改' } });
+                    applyBtn.addEventListener('click', () => this.applyChanges(typeof content === 'string' ? content : content.textContent || '', lineNumRight || rightLineNum));
+                }
+            }
+    
             let marker = ' ';
             if (type === 'added') marker = '+';
             else if (type === 'removed') marker = '-';
@@ -3506,7 +3513,6 @@ class DiffModal extends Modal {
             }
         }
     }
-    // ======================= [END BUG FIX] UNIFIED RENDERER ==================
 
     renderSplitDiff(container: HTMLElement, left: string, right: string, leftLabel: string, rightLabel: string) {
         const leftPanel = container.createEl('div', { cls: 'diff-panel' });
@@ -3559,9 +3565,27 @@ class DiffModal extends Modal {
             if (lineNum) lineEl.dataset.lineNumber = String(lineNum);
             if (moveId !== undefined) lineEl.dataset.moveId = String(moveId);
 
+            const lineNumContainer = lineEl.createEl('div', { cls: 'line-number-container' });
             if (this.showLineNumbers) {
-                lineEl.createEl('span', { cls: 'line-number', text: lineNum ? String(lineNum) : '' });
+                lineNumContainer.createEl('span', { cls: 'line-number', text: lineNum ? String(lineNum) : '' });
             }
+
+            // 【修复】恢复行操作按钮的创建逻辑
+            const historyBtn = lineNumContainer.createEl('span', { text: '📜', cls: 'diff-line-history-btn', attr: { 'aria-label': '查看行历史' } });
+            historyBtn.addEventListener('click', () => this.showLineHistory(typeof content === 'string' ? content : content.textContent || ''));
+
+            if (this.secondVersionId === 'current') {
+                const isRightPanel = panel === rightPanel;
+                if (isRightPanel && (type === 'added' || type === 'modified')) {
+                    const revertBtn = lineNumContainer.createEl('span', { text: '-', cls: 'diff-line-action-btn', attr: { 'aria-label': '撤销此更改' } });
+                    revertBtn.addEventListener('click', () => this.revertChanges(typeof content === 'string' ? content : content.textContent || '', lineNum! - 1));
+                }
+                if (!isRightPanel && (type === 'removed' || type === 'modified')) {
+                    const applyBtn = lineNumContainer.createEl('span', { text: '+', cls: 'diff-line-action-btn', attr: { 'aria-label': '应用此更改' } });
+                    applyBtn.addEventListener('click', () => this.applyChanges(typeof content === 'string' ? content : content.textContent || '', rightLineNum));
+                }
+            }
+
             const contentEl = lineEl.createEl('span', { cls: 'line-content' });
             if (typeof content === 'string') {
                 contentEl.setText(this.showWhitespace ? this.visualizeWhitespace(content) : content);
