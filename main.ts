@@ -123,7 +123,6 @@ export default class VersionControlPlugin extends Plugin {
     versionCache: Map<string, VersionFile> = new Map();
     previousActiveFile: TFile | null = null;
     globalTimeUpdater: number | null = null;
-    isSaving: Map<string, boolean> = new Map(); // [新增] 保存锁
 
     async onload() {
         await this.loadSettings();
@@ -511,21 +510,11 @@ export default class VersionControlPlugin extends Plugin {
         }
 
         new VersionMessageModal(this.app, this.settings, async (message, tags) => {
-            await this.createVersion(file, message, true, tags);
+            await this.createVersion(file, message, true, tags, true);
         }).open();
     }
 
-    // [修改] 引入保存锁机制
-    async createVersion(file: TFile, message: string, showNotification: boolean = false, tags: string[] = []) {
-        if (this.isSaving.get(file.path)) {
-            if (showNotification && this.settings.showNotifications) {
-                new Notice('⚠️ 正在进行另一个保存操作，请稍候。', 3000);
-            }
-            return;
-        }
-
-        this.isSaving.set(file.path, true);
-
+    async createVersion(file: TFile, message: string, showNotification: boolean = false, tags: string[] = [], isManual: boolean = false) {
         try {
             const content = await this.app.vault.read(file);
             const timestamp = Date.now();
@@ -537,10 +526,26 @@ export default class VersionControlPlugin extends Plugin {
             if (this.settings.enableDeduplication) {
                 const latestVersion = versionFile.versions[0];
                 if (latestVersion && latestVersion.hash === hash) {
-                     if (showNotification && this.settings.showNotifications) {
+                    if (isManual && latestVersion.message.includes('[Auto Save')) {
+                        latestVersion.message = message;
+                        latestVersion.timestamp = timestamp;
+                        latestVersion.tags = tags.length > 0 ? tags : latestVersion.tags;
+
+                        await this.saveVersionFile(file.path, versionFile);
+                        this.versionCache.set(file.path, versionFile);
+                        this.refreshVersionHistoryView();
+                        this.updateStatusBar();
+                        
+                        if (showNotification && this.settings.showNotifications) {
+                            new Notice(`✅ 版本已创建 (自动保存已更新)`);
+                        }
+                        return;
+                    }
+
+                    if (showNotification && this.settings.showNotifications) {
                         new Notice('ℹ️ 内容未变化,跳过创建版本');
                     }
-                    return; // 锁将在 finally 中释放
+                    return;
                 }
             }
 
@@ -616,8 +621,6 @@ export default class VersionControlPlugin extends Plugin {
         } catch (error) {
             console.error('创建版本失败:', error);
             new Notice('❌ 创建版本失败,请查看控制台');
-        } finally {
-            this.isSaving.set(file.path, false); // 确保锁总是被释放
         }
     }
 
