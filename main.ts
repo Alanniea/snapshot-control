@@ -3527,6 +3527,36 @@ class DiffModal extends Modal {
     }
 
     renderUnifiedDiff(container: HTMLElement, left: string, right: string) {
+        // [FIX] Handle char and word granularity with a dedicated, non-line-based renderer.
+        if (this.currentGranularity === 'char' || this.currentGranularity === 'word') {
+            const diffFn = this.currentGranularity === 'char'
+                ? Diff.diffChars
+                : (this.plugin.settings.smartWordDiff ? this.smartDiffWords : Diff.diffWordsWithSpace);
+            
+            const diffResult = diffFn(left, right);
+            
+            const contentEl = container.createEl('div', { cls: 'line-content' });
+            let diffIdx = 0;
+
+            diffResult.forEach(part => {
+                const text = this.showWhitespace ? this.visualizeWhitespace(part.value) : part.value;
+                const span = contentEl.createEl('span', { text });
+                
+                if (part.added) {
+                    span.addClass('diff-word-added');
+                    span.dataset.diffIndex = String(diffIdx++);
+                    this.diffElements.push(span);
+                } else if (part.removed) {
+                    span.addClass('diff-word-removed');
+                    span.dataset.diffIndex = String(diffIdx++);
+                    this.diffElements.push(span);
+                }
+            });
+            // Early exit for this simple rendering path
+            return;
+        }
+
+        // --- Original logic for line-based granularity ---
         const diffResult = Diff.diffLines(left, right);
         const processedDiff: ProcessedDiff[] = this.enableMoveDetection 
             ? this.processDiffForMoves(diffResult) 
@@ -3537,10 +3567,7 @@ class DiffModal extends Modal {
         let diffIdx = 0;
 
         const getSecondaryDiffFn = () => {
-            if (this.currentGranularity === 'line') {
-                return this.plugin.settings.inlineDiffAlgorithm === 'char' ? Diff.diffChars : (this.plugin.settings.smartWordDiff ? this.smartDiffWords : Diff.diffWordsWithSpace);
-            }
-            return this.currentGranularity === 'char' ? Diff.diffChars : (this.plugin.settings.smartWordDiff ? this.smartDiffWords : Diff.diffWordsWithSpace);
+            return this.plugin.settings.inlineDiffAlgorithm === 'char' ? Diff.diffChars : (this.plugin.settings.smartWordDiff ? this.smartDiffWords : Diff.diffWordsWithSpace);
         };
         const secondaryDiffFn = getSecondaryDiffFn();
 
@@ -3627,7 +3654,6 @@ class DiffModal extends Modal {
                 const leftLines = part.value.replace(/\n$/, '').split('\n');
                 const rightLines = nextPart.value.replace(/\n$/, '').split('\n');
                 
-                // Treat as modification if line counts are equal
                 if (leftLines.length === rightLines.length) {
                     for (let j = 0; j < leftLines.length; j++) {
                         const oldLine = leftLines[j];
@@ -3640,7 +3666,7 @@ class DiffModal extends Modal {
                         renderLine(leftFrag, 'removed', leftLineNum++, null);
                         renderLine(rightFrag, 'added', null, rightLineNum++, undefined, oldLine);
                     }
-                } else { // Treat as separate removal and addition
+                } else {
                     part.value.replace(/\n$/, '').split('\n').forEach(line => {
                         renderLine(line, 'removed', leftLineNum++, null);
                     });
@@ -3660,7 +3686,7 @@ class DiffModal extends Modal {
                         renderLine(line, 'added', null, rightLineNum++, undefined, null);
                     } else if (part.removed) {
                         renderLine(line, 'removed', leftLineNum++, null);
-                    } else { // context
+                    } else {
                         if (!this.showOnlyChanges) {
                             renderLine(line, 'context', leftLineNum, rightLineNum);
                         }
@@ -3686,6 +3712,35 @@ class DiffModal extends Modal {
     }
 
     renderSplitViewAdvanced(leftPanel: HTMLElement, rightPanel: HTMLElement, leftText: string, rightText: string) {
+        // [FIX] Handle char and word granularity with a dedicated, non-line-based renderer.
+        if (this.currentGranularity === 'char' || this.currentGranularity === 'word') {
+            const diffFn = this.currentGranularity === 'char'
+                ? Diff.diffChars
+                : (this.plugin.settings.smartWordDiff ? this.smartDiffWords : Diff.diffWordsWithSpace);
+            
+            const diffResult = diffFn(leftText, rightText);
+            let diffIdx = 0;
+
+            diffResult.forEach(part => {
+                const text = this.showWhitespace ? this.visualizeWhitespace(part.value) : part.value;
+                if (part.added) {
+                    const span = rightPanel.createEl('span', { text, cls: 'diff-word-added' });
+                    span.dataset.diffIndex = String(diffIdx++);
+                    this.diffElements.push(span);
+                } else if (part.removed) {
+                    const span = leftPanel.createEl('span', { text, cls: 'diff-word-removed' });
+                    span.dataset.diffIndex = String(diffIdx++);
+                    this.diffElements.push(span);
+                } else {
+                    leftPanel.createEl('span', { text });
+                    rightPanel.createEl('span', { text });
+                }
+            });
+            // Early exit for this simple rendering path
+            return;
+        }
+
+        // --- Original logic for line-based granularity ---
         const rawDiff = Diff.diffLines(leftText, rightText);
         const diff: ProcessedDiff[] = this.enableMoveDetection
             ? this.processDiffForMoves(rawDiff)
@@ -3696,10 +3751,7 @@ class DiffModal extends Modal {
         let diffIdx = 0;
 
         const getSecondaryDiffFn = () => {
-            if (this.currentGranularity === 'line') {
-                return this.plugin.settings.inlineDiffAlgorithm === 'char' ? Diff.diffChars : (this.plugin.settings.smartWordDiff ? this.smartDiffWords : Diff.diffWordsWithSpace);
-            }
-            return this.currentGranularity === 'char' ? Diff.diffChars : (this.plugin.settings.smartWordDiff ? this.smartDiffWords : Diff.diffWordsWithSpace);
+            return this.plugin.settings.inlineDiffAlgorithm === 'char' ? Diff.diffChars : (this.plugin.settings.smartWordDiff ? this.smartDiffWords : Diff.diffWordsWithSpace);
         };
         const secondaryDiffFn = getSecondaryDiffFn();
     
