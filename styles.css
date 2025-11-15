@@ -2076,3 +2076,25 @@
     padding-top: 10px;
     border-top: 1px solid var(--background-modifier-border);
 }
+
+/* Mobile-specific styles for diff view action buttons */
+.diff-modal.is-mobile .diff-line .diff-line-action-btn,
+.diff-modal.is-mobile .diff-line .diff-line-history-btn {
+    visibility: hidden;
+    opacity: 0;
+    transition: opacity 0.2s ease-in-out;
+}
+
+/* Disable default hover behavior on mobile */
+.diff-modal.is-mobile .diff-line:hover .diff-line-action-btn,
+.diff-modal.is-mobile .diff-line:hover .diff-line-history-btn {
+    visibility: hidden;
+    opacity: 0;
+}
+
+/* Show buttons when the line has the 'actions-visible' class */
+.diff-modal.is-mobile .diff-line.actions-visible .diff-line-action-btn,
+.diff-modal.is-mobile .diff-line.actions-visible .diff-line-history-btn {
+    visibility: visible;
+    opacity: 1;
+}

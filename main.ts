@@ -1,5 +1,5 @@
 
-import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, Modal, ItemView, WorkspaceLeaf, Menu, TextComponent, MarkdownRenderer } from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, Modal, ItemView, WorkspaceLeaf, Menu, TextComponent, MarkdownRenderer, Platform } from 'obsidian';
 import * as Diff from 'diff';
 import * as pako from 'pako';
 
@@ -2436,7 +2436,7 @@ class ConfirmModal extends Modal {
 }
 
 // =======================================================================
-// ======================= [START] FINAL DIFFMODAL =========================
+// ======================= [START] MODIFIED DIFFMODAL ====================
 // =======================================================================
 
 type ProcessedDiff = {
@@ -2611,6 +2611,11 @@ class DiffModal extends Modal {
     async onOpen() {
         const { contentEl } = this;
         contentEl.addClass('diff-modal');
+        
+        // Add class for mobile-specific styling
+        if (Platform.isMobile) {
+            contentEl.addClass('is-mobile');
+        }
 
         contentEl.createEl('h2', { text: '📊 版本差异对比' });
 
@@ -2939,22 +2944,30 @@ class DiffModal extends Modal {
         }
     }
 
-    async revertChanges(content: string, lineNumber: number) {
+    async revertChanges(newContent: string, lineNumber: number, oldContent: string | null = null) {
         if (this.secondVersionId !== 'current') return;
-
+    
         try {
             const currentContent = await this.app.vault.read(this.file);
             let lines = currentContent.split('\n');
             
-            if (lines[lineNumber] === content) {
-                lines.splice(lineNumber, 1);
-            } else {
-                const index = lines.indexOf(content);
-                if (index > -1) {
-                    lines.splice(index, 1);
+            let targetIndex = lineNumber;
+            if (targetIndex >= lines.length || lines[targetIndex] !== newContent) {
+                // Fallback to searching for the content if the line number is off
+                const foundIndex = lines.indexOf(newContent);
+                if (foundIndex !== -1) {
+                    targetIndex = foundIndex;
                 } else {
                     throw new Error("无法找到要撤销的行。");
                 }
+            }
+    
+            if (oldContent !== null) {
+                // This is a modification, replace the new line with the old one.
+                lines[targetIndex] = oldContent;
+            } else {
+                // This is an addition, remove the line.
+                lines.splice(targetIndex, 1);
             }
             
             await this.app.vault.modify(this.file, lines.join('\n'));
@@ -3546,7 +3559,7 @@ class DiffModal extends Modal {
             return fragment;
         };
 
-        const renderLine = (content: string | DocumentFragment, type: ProcessedDiff['type'], lineNumLeft: number | null, lineNumRight: number | null, moveId?: number) => {
+        const renderLine = (content: string | DocumentFragment, type: ProcessedDiff['type'], lineNumLeft: number | null, lineNumRight: number | null, moveId?: number, oldContentForRevert: string | null = null) => {
             const lineEl = container.createEl('div', { cls: `diff-line diff-${type}` });
             if (type !== 'context') {
                 lineEl.dataset.diffIndex = String(diffIdx++);
@@ -3568,7 +3581,8 @@ class DiffModal extends Modal {
             if (this.secondVersionId === 'current') {
                 if (type === 'added' || (type === 'modified' && lineNumRight)) {
                     const revertBtn = lineNumContainer.createEl('span', { text: '-', cls: 'diff-line-action-btn', attr: { 'aria-label': '撤销此更改' } });
-                    revertBtn.addEventListener('click', () => this.revertChanges(typeof content === 'string' ? content : content.textContent || '', lineNumRight! - 1));
+                    const newContent = typeof content === 'string' ? content : content.textContent || '';
+                    revertBtn.addEventListener('click', () => this.revertChanges(newContent, lineNumRight! - 1, oldContentForRevert));
                 }
                 if (type === 'removed' || (type === 'modified' && lineNumLeft)) {
                     const applyBtn = lineNumContainer.createEl('span', { text: '+', cls: 'diff-line-action-btn', attr: { 'aria-label': '应用此更改' } });
@@ -3591,37 +3605,48 @@ class DiffModal extends Modal {
             } else {
                 contentEl.appendChild(content);
             }
+
+            if (Platform.isMobile) {
+                lineEl.addEventListener('dblclick', (e) => {
+                    e.stopPropagation();
+                    const wasVisible = lineEl.hasClass('actions-visible');
+                    const allLines = lineEl.parentElement?.querySelectorAll('.diff-line');
+                    allLines?.forEach(el => el.removeClass('actions-visible'));
+                    if (!wasVisible) {
+                        lineEl.addClass('actions-visible');
+                    }
+                });
+            }
         };
 
         for (let i = 0; i < processedDiff.length; i++) {
             const part = processedDiff[i];
             const nextPart = processedDiff[i + 1];
 
-            if (this.currentGranularity !== 'line' && part.removed && nextPart && nextPart.added && part.count === 1 && nextPart.count === 1) {
-                const lineDiff = secondaryDiffFn(part.value.replace(/\n$/, ''), nextPart.value.replace(/\n$/, ''));
-                const combinedFrag = createHighlightedFragment(lineDiff);
-                renderLine(combinedFrag, 'modified', leftLineNum++, rightLineNum++);
-                i++;
-            } else if (part.removed && nextPart && nextPart.added) {
+            if (part.removed && nextPart && nextPart.added) {
                 const leftLines = part.value.replace(/\n$/, '').split('\n');
                 const rightLines = nextPart.value.replace(/\n$/, '').split('\n');
-                const maxLines = Math.max(leftLines.length, rightLines.length);
-
-                for (let j = 0; j < maxLines; j++) {
-                    const leftLine = leftLines[j];
-                    const rightLine = rightLines[j];
-
-                    if (leftLine !== undefined && rightLine !== undefined) {
-                        const lineDiff = secondaryDiffFn(leftLine, rightLine);
+                
+                // Treat as modification if line counts are equal
+                if (leftLines.length === rightLines.length) {
+                    for (let j = 0; j < leftLines.length; j++) {
+                        const oldLine = leftLines[j];
+                        const newLine = rightLines[j];
+                        const lineDiff = secondaryDiffFn(oldLine, newLine);
+                        
                         const leftFrag = createHighlightedFragment(lineDiff.filter(p => !p.added));
                         const rightFrag = createHighlightedFragment(lineDiff.filter(p => !p.removed));
+                        
                         renderLine(leftFrag, 'removed', leftLineNum++, null);
-                        renderLine(rightFrag, 'added', null, rightLineNum++);
-                    } else if (leftLine !== undefined) {
-                        renderLine(leftLine, 'removed', leftLineNum++, null);
-                    } else if (rightLine !== undefined) {
-                        renderLine(rightLine, 'added', null, rightLineNum++);
+                        renderLine(rightFrag, 'added', null, rightLineNum++, undefined, oldLine);
                     }
+                } else { // Treat as separate removal and addition
+                    part.value.replace(/\n$/, '').split('\n').forEach(line => {
+                        renderLine(line, 'removed', leftLineNum++, null);
+                    });
+                    nextPart.value.replace(/\n$/, '').split('\n').forEach(line => {
+                        renderLine(line, 'added', null, rightLineNum++, undefined, null);
+                    });
                 }
                 i++;
             } else {
@@ -3632,7 +3657,7 @@ class DiffModal extends Modal {
                     } else if (part.type === 'moved-to') {
                         renderLine(line, 'moved-to', null, rightLineNum++, part.moveId);
                     } else if (part.added) {
-                        renderLine(line, 'added', null, rightLineNum++);
+                        renderLine(line, 'added', null, rightLineNum++, undefined, null);
                     } else if (part.removed) {
                         renderLine(line, 'removed', leftLineNum++, null);
                     } else { // context
@@ -3693,7 +3718,7 @@ class DiffModal extends Modal {
             return fragment;
         };
     
-        const renderLine = (panel: HTMLElement, content: string | DocumentFragment, type: string, lineNum: number | null, moveId?: number) => {
+        const renderLine = (panel: HTMLElement, content: string | DocumentFragment, type: string, lineNum: number | null, moveId?: number, oldContentForRevert: string | null = null) => {
             const lineEl = panel.createEl('div', { cls: `diff-line diff-${type}` });
             if (type !== 'context' && type !== 'placeholder') {
                 lineEl.dataset.diffIndex = String(diffIdx++);
@@ -3714,7 +3739,8 @@ class DiffModal extends Modal {
                 const isRightPanel = panel === rightPanel;
                 if (isRightPanel && (type === 'added' || type === 'modified')) {
                     const revertBtn = lineNumContainer.createEl('span', { text: '-', cls: 'diff-line-action-btn', attr: { 'aria-label': '撤销此更改' } });
-                    revertBtn.addEventListener('click', () => this.revertChanges(typeof content === 'string' ? content : content.textContent || '', lineNum! - 1));
+                    const newContent = typeof content === 'string' ? content : content.textContent || '';
+                    revertBtn.addEventListener('click', () => this.revertChanges(newContent, lineNum! - 1, oldContentForRevert));
                 }
                 if (!isRightPanel && (type === 'removed' || type === 'modified')) {
                     const applyBtn = lineNumContainer.createEl('span', { text: '+', cls: 'diff-line-action-btn', attr: { 'aria-label': '应用此更改' } });
@@ -3727,6 +3753,18 @@ class DiffModal extends Modal {
                 contentEl.setText(this.showWhitespace ? this.visualizeWhitespace(content) : content);
             } else {
                 contentEl.appendChild(content);
+            }
+
+            if (Platform.isMobile) {
+                lineEl.addEventListener('dblclick', (e) => {
+                    e.stopPropagation();
+                    const wasVisible = lineEl.hasClass('actions-visible');
+                    const allLines = lineEl.parentElement?.parentElement?.querySelectorAll('.diff-line');
+                    allLines?.forEach(el => el.removeClass('actions-visible'));
+                    if (!wasVisible) {
+                        lineEl.addClass('actions-visible');
+                    }
+                });
             }
         };
     
@@ -3748,13 +3786,13 @@ class DiffModal extends Modal {
                         const leftFrag = createHighlightedFragment(lineDiff.filter(p => !p.added));
                         const rightFrag = createHighlightedFragment(lineDiff.filter(p => !p.removed));
                         renderLine(leftPanel, leftFrag, 'modified', leftLineNum++);
-                        renderLine(rightPanel, rightFrag, 'modified', rightLineNum++);
+                        renderLine(rightPanel, rightFrag, 'modified', rightLineNum++, undefined, leftLine);
                     } else if (leftLine !== undefined) {
                         renderLine(leftPanel, leftLine, 'removed', leftLineNum++);
                         renderLine(rightPanel, '', 'placeholder', null);
                     } else if (rightLine !== undefined) {
                         renderLine(leftPanel, '', 'placeholder', null);
-                        renderLine(rightPanel, rightLine, 'added', rightLineNum++);
+                        renderLine(rightPanel, rightLine, 'added', rightLineNum++, undefined, null);
                     }
                 }
                 i++;
@@ -3774,7 +3812,7 @@ class DiffModal extends Modal {
                 const lines = part.value.replace(/\n$/, '').split('\n');
                 for (const line of lines) {
                     renderLine(leftPanel, '', 'placeholder', null);
-                    renderLine(rightPanel, line, 'added', rightLineNum++, part.moveId);
+                    renderLine(rightPanel, line, 'added', rightLineNum++, part.moveId, null);
                 }
             } else if (part.removed) {
                 const lines = part.value.replace(/\n$/, '').split('\n');
@@ -4139,6 +4177,10 @@ class DiffModal extends Modal {
     }
 }
 
+// =======================================================================
+// ======================== [END] MODIFIED DIFFMODAL =====================
+// =======================================================================
+
 class LineHistoryModal extends Modal {
     plugin: VersionControlPlugin;
     file: TFile;
@@ -4187,10 +4229,6 @@ class LineHistoryModal extends Modal {
         this.contentEl.empty();
     }
 }
-
-// =======================================================================
-// ======================== [END] FINAL DIFFMODAL ==========================
-// =======================================================================
 
 class VersionSelectModal extends Modal {
     plugin: VersionControlPlugin;
