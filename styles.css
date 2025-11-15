@@ -1,4 +1,46 @@
 /* ======================================================================= */
+/* =================== [新增] Diff Modal 加载蒙层样式 ==================== */
+/* ======================================================================= */
+
+/* 让主容器可以容纳绝对定位的子元素 */
+.diff-main-container {
+  position: relative;
+}
+
+/* 加载蒙层的样式 */
+.diff-loading-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(var(--background-primary-rgb), 0.6); /* 使用主题背景色，并增加透明度 */
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px); /* 增加模糊效果，更美观 */
+  z-index: 10; /* 确保在最上层 */
+  display: flex; /* 使用 flex 布局来居中 */
+  align-items: center;
+  justify-content: center;
+  color: var(--text-normal);
+  border-radius: var(--radius-m);
+  transition: opacity 0.2s ease-in-out;
+}
+
+/* 加载消息文本的样式 */
+.diff-loading-message {
+  font-size: 1.2em;
+  padding: 12px 24px;
+  background-color: var(--background-secondary-alt);
+  border-radius: var(--radius-s);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+}
+
+/* ======================================================================= */
+/* ===================== [END OF 新增加载蒙层样式] ======================= */
+/* ======================================================================= */
+
+
+/* ======================================================================= */
 /* ================= [新增] 双击跳转高亮 & 统一视图行号对齐 ================= */
 /* ======================================================================= */
 

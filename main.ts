@@ -2490,6 +2490,9 @@ class DiffModal extends Modal {
     private isStructuredViewBuilt: boolean = false;
     private allVersions: VersionData[] = [];
     private infoBannerContainer: HTMLElement;
+    // --- MODIFICATION START: Add loading overlay property ---
+    private loadingOverlay: HTMLElement;
+    // --- MODIFICATION END ---
 
     constructor(app: App, plugin: VersionControlPlugin, file: TFile, versionId: string, secondVersionId?: string) {
         super(app);
@@ -2624,6 +2627,11 @@ class DiffModal extends Modal {
         this.textDiffContainer = mainContainer.createEl('div', { cls: 'diff-container' });
         this.renderedDiffContainer = mainContainer.createEl('div', { cls: 'rendered-diff-container', attr: { style: 'display: none;' } });
         this.structuredDiffContainer = mainContainer.createEl('div', { cls: 'structured-diff-container', attr: { style: 'display: none;' } });
+
+        // --- MODIFICATION START: Create loading overlay element ---
+        this.loadingOverlay = mainContainer.createEl('div', { cls: 'diff-loading-overlay', attr: { style: 'display: none;' } });
+        this.loadingOverlay.createEl('div', { text: '正在加载新版本...', cls: 'diff-loading-message' });
+        // --- MODIFICATION END ---
 
         this.addMobileInteraction(this.renderedDiffContainer);
         this.addMobileInteraction(this.structuredDiffContainer);
@@ -3109,8 +3117,9 @@ class DiffModal extends Modal {
         await this.updateDiffView();
     }
 
+    // --- MODIFICATION START: Replace Notice with overlay ---
     async updateDiffView() {
-        const loadingNotice = new Notice('正在加载新版本...', 0);
+        this.loadingOverlay.style.display = 'flex';
         
         try {
             if (this.versionId === 'current') {
@@ -3144,9 +3153,10 @@ class DiffModal extends Modal {
             console.error("加载差异失败:", error);
             new Notice('❌ 加载版本内容失败');
         } finally {
-            loadingNotice.hide();
+            this.loadingOverlay.style.display = 'none';
         }
     }
+    // --- MODIFICATION END ---
 
     updateSelectorButtonLabels() {
         const leftBtn = this.containerEl.querySelector('#diff-left-version-btn') as HTMLButtonElement;
