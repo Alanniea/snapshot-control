@@ -1523,20 +1523,32 @@ class VersionHistoryView extends ItemView {
     }
 
 
+    // --- MODIFICATION START: Replaced refresh method to prevent flickering ---
     async refresh() {
         const container = this.containerEl.children[1] as HTMLElement;
-        container.empty();
-        container.addClass('version-history-view');
+        
+        // 1. 创建一个临时的文档片段，在内存中构建UI
+        const fragment = document.createDocumentFragment();
+        // 我们在片段内创建一个主容器，后续所有操作都针对这个临时容器
+        const tempContainer = fragment.createEl('div');
+        tempContainer.addClass('version-history-view');
 
         const file = this.app.workspace.getActiveFile();
         this.currentFile = file;
         
         if (!file) {
-            this.renderEmptyState(container, '请先打开一个文件');
+            // 将内容渲染到临时容器中
+            this.renderEmptyState(tempContainer, '请先打开一个文件');
+            
+            // 2. 一次性清空并替换内容
+            container.empty();
+            container.appendChild(fragment);
             return;
         }
 
-        const header = container.createEl('div', { cls: 'version-header' });
+        // 注意：从这里开始，所有的 container.createEl() 都需要改成 tempContainer.createEl()
+
+        const header = tempContainer.createEl('div', { cls: 'version-header' });
         
         const title = header.createEl('div', { cls: 'version-title' });
         title.createEl('h3', { text: file.basename });
@@ -1648,7 +1660,10 @@ class VersionHistoryView extends ItemView {
         this.totalVersions = allVersions.length;
 
         if (this.totalVersions === 0) {
-            this.renderEmptyState(container, '暂无版本历史');
+            this.renderEmptyState(tempContainer, '暂无版本历史');
+            
+            container.empty();
+            container.appendChild(fragment);
             return;
         }
 
@@ -1667,7 +1682,7 @@ class VersionHistoryView extends ItemView {
                         if (part.removed) removed += part.count || 0;
                     });
                     
-                    const diffBanner = container.createEl('div', { cls: 'version-diff-banner' });
+                    const diffBanner = tempContainer.createEl('div', { cls: 'version-diff-banner' });
                     diffBanner.createEl('span', { text: '⚠️ 文件已修改' });
                     diffBanner.createEl('span', { 
                         text: `+${added} -${removed}`,
@@ -1715,7 +1730,10 @@ class VersionHistoryView extends ItemView {
         }
 
         if (filteredVersions.length === 0) {
-            this.renderEmptyState(container, `未找到匹配的版本`);
+            this.renderEmptyState(tempContainer, `未找到匹配的版本`);
+            
+            container.empty();
+            container.appendChild(fragment);
             return;
         }
 
@@ -1743,7 +1761,7 @@ class VersionHistoryView extends ItemView {
 
 
         if (this.selectedVersions.size > 0) {
-            const toolbar = container.createEl('div', { cls: 'version-toolbar' });
+            const toolbar = tempContainer.createEl('div', { cls: 'version-toolbar' });
             toolbar.createEl('span', { 
                 text: `已选择 ${this.selectedVersions.size} 个版本` 
             });
@@ -1761,7 +1779,7 @@ class VersionHistoryView extends ItemView {
             deleteBtn.addEventListener('click', () => this.batchDelete(file));
         }
 
-        const listContainer = container.createEl('div', { cls: 'version-list' });
+        const listContainer = tempContainer.createEl('div', { cls: 'version-list' });
 
         const groupedVersions: { [key: string]: VersionData[] } = {};
         pageVersions.forEach(version => {
@@ -1929,7 +1947,7 @@ class VersionHistoryView extends ItemView {
         }
 
         if (totalPages > 1) {
-            const pagination = container.createEl('div', { cls: 'version-pagination' });
+            const pagination = tempContainer.createEl('div', { cls: 'version-pagination' });
             
             const prevBtn = pagination.createEl('button', { 
                 text: '← 上一页',
@@ -1961,13 +1979,18 @@ class VersionHistoryView extends ItemView {
             });
         }
 
-        const stats = container.createEl('div', { cls: 'version-footer' });
+        const stats = tempContainer.createEl('div', { cls: 'version-footer' });
         stats.createEl('span', { text: `共 ${this.totalVersions} 个版本` });
         if (this.searchQuery || this.showStarredOnly || this.filterTag) {
             stats.createEl('span', { text: ` · 显示 ${filteredVersions.length} 个结果` });
         }
         stats.createEl('span', { text: ` · 显示 ${start + 1}-${end}` });
+
+        // 最后，一次性清空并替换内容
+        container.empty();
+        container.appendChild(fragment);
     }
+    // --- MODIFICATION END ---
     
     showVersionContextMenu(event: MouseEvent, file: TFile, version: VersionData) {
         const menu = new Menu();
@@ -2490,9 +2513,7 @@ class DiffModal extends Modal {
     private isStructuredViewBuilt: boolean = false;
     private allVersions: VersionData[] = [];
     private infoBannerContainer: HTMLElement;
-    // --- MODIFICATION START: Add loading overlay property ---
     private loadingOverlay: HTMLElement;
-    // --- MODIFICATION END ---
 
     constructor(app: App, plugin: VersionControlPlugin, file: TFile, versionId: string, secondVersionId?: string) {
         super(app);
@@ -2615,7 +2636,6 @@ class DiffModal extends Modal {
         const { contentEl } = this;
         contentEl.addClass('diff-modal');
         
-        // Add class for mobile-specific styling
         if (Platform.isMobile) {
             contentEl.addClass('is-mobile');
         }
@@ -2628,10 +2648,8 @@ class DiffModal extends Modal {
         this.renderedDiffContainer = mainContainer.createEl('div', { cls: 'rendered-diff-container', attr: { style: 'display: none;' } });
         this.structuredDiffContainer = mainContainer.createEl('div', { cls: 'structured-diff-container', attr: { style: 'display: none;' } });
 
-        // --- MODIFICATION START: Create loading overlay element ---
         this.loadingOverlay = mainContainer.createEl('div', { cls: 'diff-loading-overlay', attr: { style: 'display: none;' } });
         this.loadingOverlay.createEl('div', { text: '正在加载新版本...', cls: 'diff-loading-message' });
-        // --- MODIFICATION END ---
 
         this.addMobileInteraction(this.renderedDiffContainer);
         this.addMobileInteraction(this.structuredDiffContainer);
@@ -3117,7 +3135,6 @@ class DiffModal extends Modal {
         await this.updateDiffView();
     }
 
-    // --- MODIFICATION START: Replace Notice with overlay ---
     async updateDiffView() {
         this.loadingOverlay.style.display = 'flex';
         
@@ -3156,7 +3173,6 @@ class DiffModal extends Modal {
             this.loadingOverlay.style.display = 'none';
         }
     }
-    // --- MODIFICATION END ---
 
     updateSelectorButtonLabels() {
         const leftBtn = this.containerEl.querySelector('#diff-left-version-btn') as HTMLButtonElement;
@@ -3537,7 +3553,6 @@ class DiffModal extends Modal {
     }
 
     renderUnifiedDiff(container: HTMLElement, left: string, right: string) {
-        // [FIX] Handle char and word granularity with a dedicated, non-line-based renderer.
         if (this.currentGranularity === 'char' || this.currentGranularity === 'word') {
             const diffFn = this.currentGranularity === 'char'
                 ? Diff.diffChars
@@ -3562,11 +3577,9 @@ class DiffModal extends Modal {
                     this.diffElements.push(span);
                 }
             });
-            // Early exit for this simple rendering path
             return;
         }
 
-        // --- Original logic for line-based granularity ---
         const diffResult = Diff.diffLines(left, right);
         const processedDiff: ProcessedDiff[] = this.enableMoveDetection 
             ? this.processDiffForMoves(diffResult) 
@@ -3722,7 +3735,6 @@ class DiffModal extends Modal {
     }
 
     renderSplitViewAdvanced(leftPanel: HTMLElement, rightPanel: HTMLElement, leftText: string, rightText: string) {
-        // [FIX] Handle char and word granularity with a dedicated, non-line-based renderer.
         if (this.currentGranularity === 'char' || this.currentGranularity === 'word') {
             const diffFn = this.currentGranularity === 'char'
                 ? Diff.diffChars
@@ -3746,11 +3758,9 @@ class DiffModal extends Modal {
                     rightPanel.createEl('span', { text });
                 }
             });
-            // Early exit for this simple rendering path
             return;
         }
 
-        // --- Original logic for line-based granularity ---
         const rawDiff = Diff.diffLines(leftText, rightText);
         const diff: ProcessedDiff[] = this.enableMoveDetection
             ? this.processDiffForMoves(rawDiff)
@@ -3882,7 +3892,7 @@ class DiffModal extends Modal {
                     renderLine(leftPanel, line, 'removed', leftLineNum++, part.moveId);
                     renderLine(rightPanel, '', 'placeholder', null);
                 }
-            } else { // context
+            } else {
                 const lines = part.value.replace(/\n$/, '').split('\n');
                 for (const line of lines) {
                     if (!this.showOnlyChanges) {
@@ -3943,7 +3953,7 @@ class DiffModal extends Modal {
                 const addedText = nextPart.value.join(' ');
                 const wordDiff = secondaryDiffFn(removedText, addedText);
                 renderSentence(createHighlightedFragment(wordDiff), 'modified');
-                i++; // Skip next part
+                i++;
             } else if (part.added) {
                 part.value.forEach(sentence => renderSentence(sentence, 'added'));
             } else if (part.removed) {
@@ -4039,7 +4049,7 @@ class DiffModal extends Modal {
             for (let i = 0; i < candidates.length; i++) {
                 if (usedIndices.has(i)) continue;
                 const score = this.calculateSimilarity(block.content, candidates[i].content);
-                if (score > (bestMatch?.score || 0.5)) { // 相似度阈值
+                if (score > (bestMatch?.score || 0.5)) {
                     bestMatch = { index: i, score: score };
                 }
             }
