@@ -2732,19 +2732,60 @@ class DiffModal extends Modal {
 
             menu.addSeparator();
 
+            // --- MODIFICATION START ---
+            const isLineBased = this.currentGranularity === 'line';
+            const isWordCharBased = this.currentGranularity === 'char' || this.currentGranularity === 'word';
+            const contextControlsEnabled = !isWordCharBased; // 在 line, sentence, semantic 模式下启用
+
+            const lineNumTitle = '显示行号' + (isLineBased ? '' : ' (行模式下可用)');
+            const moveDetectTitle = '检测移动' + (isLineBased ? '' : ' (行模式下可用)');
+            const contextTitle = '上下文行数' + (contextControlsEnabled ? '' : ' (行/句/语义模式下可用)');
+
             menu.addItem(item => item.setTitle('自动换行').setChecked(this.wrapLines).onClick(() => { this.wrapLines = !this.wrapLines; this.renderTextDiff(); }));
-            menu.addItem(item => item.setTitle('显示行号').setChecked(this.showLineNumbers).onClick(() => { this.showLineNumbers = !this.showLineNumbers; this.renderTextDiff(); }));
+            
+            menu.addItem(item => item
+                .setTitle(lineNumTitle)
+                .setChecked(this.showLineNumbers)
+                .setDisabled(!isLineBased) // 仅在 'line' 模式下启用
+                .onClick(() => { this.showLineNumbers = !this.showLineNumbers; this.renderTextDiff(); }));
+            
             menu.addItem(item => item.setTitle('忽略空白').setChecked(this.ignoreWhitespace).onClick(() => { this.ignoreWhitespace = !this.ignoreWhitespace; this.renderTextDiff(); }));
             menu.addItem(item => item.setTitle('显示空白').setChecked(this.showWhitespace).onClick(() => { this.showWhitespace = !this.showWhitespace; this.renderTextDiff(); }));
-            menu.addItem(item => item.setTitle('检测移动').setChecked(this.enableMoveDetection).onClick(() => { this.enableMoveDetection = !this.enableMoveDetection; this.renderTextDiff(); }));
             
-            menu.addItem(item => item.setTitle('上下文行数').setDisabled(true).setSection('diff-settings-group-label'));
-            menu.addItem(item => item.setTitle('0 行 (仅变更)').setChecked(this.contextLines === 0).onClick(() => { this.contextLines = 0; this.renderTextDiff(); }));
-            menu.addItem(item => item.setTitle('1 行').setChecked(this.contextLines === 1).onClick(() => { this.contextLines = 1; this.renderTextDiff(); }));
-            menu.addItem(item => item.setTitle('3 行').setChecked(this.contextLines === 3).onClick(() => { this.contextLines = 3; this.renderTextDiff(); }));
-            menu.addItem(item => item.setTitle('5 行').setChecked(this.contextLines === 5).onClick(() => { this.contextLines = 5; this.renderTextDiff(); }));
-            menu.addItem(item => item.setTitle('全部').setChecked(this.contextLines >= 9999).onClick(() => { this.contextLines = 9999; this.renderTextDiff(); }));
-
+            menu.addItem(item => item
+                .setTitle(moveDetectTitle)
+                .setChecked(this.enableMoveDetection)
+                .setDisabled(!isLineBased) // 仅在 'line' 模式下启用
+                .onClick(() => { this.enableMoveDetection = !this.enableMoveDetection; this.renderTextDiff(); }));
+            
+            menu.addItem(item => item.setTitle(contextTitle).setDisabled(true).setSection('diff-settings-group-label'));
+            
+            menu.addItem(item => item
+                .setTitle('0 行 (仅变更)')
+                .setChecked(this.contextLines === 0)
+                .setDisabled(!contextControlsEnabled)
+                .onClick(() => { this.contextLines = 0; this.renderTextDiff(); }));
+            menu.addItem(item => item
+                .setTitle('1 行')
+                .setChecked(this.contextLines === 1)
+                .setDisabled(!contextControlsEnabled)
+                .onClick(() => { this.contextLines = 1; this.renderTextDiff(); }));
+            menu.addItem(item => item
+                .setTitle('3 行')
+                .setChecked(this.contextLines === 3)
+                .setDisabled(!contextControlsEnabled)
+                .onClick(() => { this.contextLines = 3; this.renderTextDiff(); }));
+            menu.addItem(item => item
+                .setTitle('5 行')
+                .setChecked(this.contextLines === 5)
+                .setDisabled(!contextControlsEnabled)
+                .onClick(() => { this.contextLines = 5; this.renderTextDiff(); }));
+            menu.addItem(item => item
+                .setTitle('全部')
+                .setChecked(this.contextLines >= 9999)
+                .setDisabled(!contextControlsEnabled)
+                .onClick(() => { this.contextLines = 9999; this.renderTextDiff(); }));
+            // --- MODIFICATION END ---
 
             menu.addSeparator();
             menu.addItem(item => item.setTitle('展开所有').setIcon('chevrons-down-up').onClick(() => { this.collapsedSections.clear(); this.renderTextDiff(); }));
