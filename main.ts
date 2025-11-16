@@ -2735,18 +2735,26 @@ class DiffModal extends Modal {
             // --- MODIFICATION START ---
             const isLineBased = this.currentGranularity === 'line';
             const isWordCharBased = this.currentGranularity === 'char' || this.currentGranularity === 'word';
-            const contextControlsEnabled = !isWordCharBased; // 在 line, sentence, semantic 模式下启用
 
-            const lineNumTitle = '显示行号' + (isLineBased ? '' : ' (行模式下可用)');
-            const moveDetectTitle = '检测移动' + (isLineBased ? '' : ' (行模式下可用)');
-            const contextTitle = '上下文行数' + (contextControlsEnabled ? '' : ' (行/句/语义模式下可用)');
+            // Line numbers and move detection are strictly for 'line' mode
+            const lineNumAndMoveEnabled = isLineBased;
+
+            const lineNumTitle = '显示行号' + (lineNumAndMoveEnabled ? '' : ' (行模式下可用)');
+            const moveDetectTitle = '检测移动' + (lineNumAndMoveEnabled ? '' : ' (行模式下可用)');
+            
+            let contextTitle = '上下文行数';
+            if (isWordCharBased) {
+                contextTitle += ' (0=隐藏, >0=显示)';
+            } else if (!isLineBased) { // sentence or semantic
+                contextTitle += ' (0=隐藏, >0=显示)';
+            }
 
             menu.addItem(item => item.setTitle('自动换行').setChecked(this.wrapLines).onClick(() => { this.wrapLines = !this.wrapLines; this.renderTextDiff(); }));
             
             menu.addItem(item => item
                 .setTitle(lineNumTitle)
                 .setChecked(this.showLineNumbers)
-                .setDisabled(!isLineBased) // 仅在 'line' 模式下启用
+                .setDisabled(!lineNumAndMoveEnabled) // Only for 'line'
                 .onClick(() => { this.showLineNumbers = !this.showLineNumbers; this.renderTextDiff(); }));
             
             menu.addItem(item => item.setTitle('忽略空白').setChecked(this.ignoreWhitespace).onClick(() => { this.ignoreWhitespace = !this.ignoreWhitespace; this.renderTextDiff(); }));
@@ -2755,36 +2763,19 @@ class DiffModal extends Modal {
             menu.addItem(item => item
                 .setTitle(moveDetectTitle)
                 .setChecked(this.enableMoveDetection)
-                .setDisabled(!isLineBased) // 仅在 'line' 模式下启用
+                .setDisabled(!lineNumAndMoveEnabled) // Only for 'line'
                 .onClick(() => { this.enableMoveDetection = !this.enableMoveDetection; this.renderTextDiff(); }));
             
             menu.addItem(item => item.setTitle(contextTitle).setDisabled(true).setSection('diff-settings-group-label'));
             
-            menu.addItem(item => item
-                .setTitle('0 行 (仅变更)')
-                .setChecked(this.contextLines === 0)
-                .setDisabled(!contextControlsEnabled)
-                .onClick(() => { this.contextLines = 0; this.renderTextDiff(); }));
-            menu.addItem(item => item
-                .setTitle('1 行')
-                .setChecked(this.contextLines === 1)
-                .setDisabled(!contextControlsEnabled)
-                .onClick(() => { this.contextLines = 1; this.renderTextDiff(); }));
-            menu.addItem(item => item
-                .setTitle('3 行')
-                .setChecked(this.contextLines === 3)
-                .setDisabled(!contextControlsEnabled)
-                .onClick(() => { this.contextLines = 3; this.renderTextDiff(); }));
-            menu.addItem(item => item
-                .setTitle('5 行')
-                .setChecked(this.contextLines === 5)
-                .setDisabled(!contextControlsEnabled)
-                .onClick(() => { this.contextLines = 5; this.renderTextDiff(); }));
-            menu.addItem(item => item
-                .setTitle('全部')
-                .setChecked(this.contextLines >= 9999)
-                .setDisabled(!contextControlsEnabled)
-                .onClick(() => { this.contextLines = 9999; this.renderTextDiff(); }));
+            // All context options are always enabled, but behavior differs by mode
+            // 0 = hide context (all modes)
+            // >0 = show N lines (line mode) or show all context (other modes)
+            menu.addItem(item => item.setTitle('0 行 (仅变更)').setChecked(this.contextLines === 0).onClick(() => { this.contextLines = 0; this.renderTextDiff(); }));
+            menu.addItem(item => item.setTitle('1 行').setChecked(this.contextLines === 1).onClick(() => { this.contextLines = 1; this.renderTextDiff(); }));
+            menu.addItem(item => item.setTitle('3 行').setChecked(this.contextLines === 3).onClick(() => { this.contextLines = 3; this.renderTextDiff(); }));
+            menu.addItem(item => item.setTitle('5 行').setChecked(this.contextLines === 5).onClick(() => { this.contextLines = 5; this.renderTextDiff(); }));
+            menu.addItem(item => item.setTitle('全部').setChecked(this.contextLines >= 9999).onClick(() => { this.contextLines = 9999; this.renderTextDiff(); }));
             // --- MODIFICATION END ---
 
             menu.addSeparator();
@@ -3623,6 +3614,10 @@ class DiffModal extends Modal {
                     span.addClass('diff-word-removed');
                     span.dataset.diffIndex = String(diffIdx++);
                     this.diffElements.push(span);
+                } else {
+                    if (this.contextLines > 0) { // 0 = 隐藏, >0 = 显示
+                        contentEl.createEl('span', { text });
+                    }
                 }
             });
             return;
@@ -3832,8 +3827,10 @@ class DiffModal extends Modal {
                     span.dataset.diffIndex = String(diffIdx++);
                     this.diffElements.push(span);
                 } else {
-                    leftPanel.createEl('span', { text });
-                    rightPanel.createEl('span', { text });
+                    if (this.contextLines > 0) { // 0 = 隐藏, >0 = 显示
+                        leftPanel.createEl('span', { text });
+                        rightPanel.createEl('span', { text });
+                    }
                 }
             });
             return;
