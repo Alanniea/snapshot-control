@@ -69,7 +69,7 @@ interface VersionControlSettings {
 
     inlineDiffAlgorithm: 'word' | 'char';
     smartWordDiff: boolean;
-    diffShowOnlyChanges: boolean;
+    diffContextLines: number;
 }
 
 const DEFAULT_SETTINGS: VersionControlSettings = {
@@ -110,7 +110,7 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
     
     inlineDiffAlgorithm: 'word',
     smartWordDiff: true,
-    diffShowOnlyChanges: true,
+    diffContextLines: 3,
 };
 
 
@@ -2501,7 +2501,7 @@ class DiffModal extends Modal {
     leftContent: string = '';
     rightContent: string = '';
     currentGranularity: 'char' | 'word' | 'line' | 'sentence' | 'semantic';
-    showOnlyChanges: boolean;
+    contextLines: number;
     enableMoveDetection: boolean = true;
     showWhitespace: boolean = false;
 
@@ -2522,7 +2522,7 @@ class DiffModal extends Modal {
         this.versionId = versionId;
         this.secondVersionId = secondVersionId || 'current';
         this.currentGranularity = this.plugin.settings.diffGranularity;
-        this.showOnlyChanges = this.plugin.settings.diffShowOnlyChanges;
+        this.contextLines = this.plugin.settings.diffContextLines;
     }
 
     processDiffForMoves(diffResult: Diff.Change[]): ProcessedDiff[] {
@@ -2737,7 +2737,14 @@ class DiffModal extends Modal {
             menu.addItem(item => item.setTitle('忽略空白').setChecked(this.ignoreWhitespace).onClick(() => { this.ignoreWhitespace = !this.ignoreWhitespace; this.renderTextDiff(); }));
             menu.addItem(item => item.setTitle('显示空白').setChecked(this.showWhitespace).onClick(() => { this.showWhitespace = !this.showWhitespace; this.renderTextDiff(); }));
             menu.addItem(item => item.setTitle('检测移动').setChecked(this.enableMoveDetection).onClick(() => { this.enableMoveDetection = !this.enableMoveDetection; this.renderTextDiff(); }));
-            menu.addItem(item => item.setTitle('仅显示变更').setChecked(this.showOnlyChanges).onClick(() => { this.showOnlyChanges = !this.showOnlyChanges; this.renderTextDiff(); }));
+            
+            menu.addItem(item => item.setTitle('上下文行数').setDisabled(true).setSection('diff-settings-group-label'));
+            menu.addItem(item => item.setTitle('0 行 (仅变更)').setChecked(this.contextLines === 0).onClick(() => { this.contextLines = 0; this.renderTextDiff(); }));
+            menu.addItem(item => item.setTitle('1 行').setChecked(this.contextLines === 1).onClick(() => { this.contextLines = 1; this.renderTextDiff(); }));
+            menu.addItem(item => item.setTitle('3 行').setChecked(this.contextLines === 3).onClick(() => { this.contextLines = 3; this.renderTextDiff(); }));
+            menu.addItem(item => item.setTitle('5 行').setChecked(this.contextLines === 5).onClick(() => { this.contextLines = 5; this.renderTextDiff(); }));
+            menu.addItem(item => item.setTitle('全部').setChecked(this.contextLines >= 9999).onClick(() => { this.contextLines = 9999; this.renderTextDiff(); }));
+
 
             menu.addSeparator();
             menu.addItem(item => item.setTitle('展开所有').setIcon('chevrons-down-up').onClick(() => { this.collapsedSections.clear(); this.renderTextDiff(); }));
@@ -3698,23 +3705,53 @@ class DiffModal extends Modal {
                     });
                 }
                 i++;
-            } else {
+            } else { // 'context', 'added', 'removed', 'moved' block
                 const lines = part.value.replace(/\n$/, '').split('\n');
-                for (const line of lines) {
-                    if (part.type === 'moved-from') {
-                        renderLine(line, 'moved-from', leftLineNum++, null, part.moveId);
-                    } else if (part.type === 'moved-to') {
-                        renderLine(line, 'moved-to', null, rightLineNum++, part.moveId);
-                    } else if (part.added) {
-                        renderLine(line, 'added', null, rightLineNum++, undefined, null);
-                    } else if (part.removed) {
-                        renderLine(line, 'removed', leftLineNum++, null);
-                    } else {
-                        if (!this.showOnlyChanges) {
+                
+                if (part.type === 'context') {
+                    const prevPartIsChange = i > 0 && processedDiff[i - 1].type !== 'context';
+                    const nextPartIsChange = i < processedDiff.length - 1 && processedDiff[i + 1].type !== 'context';
+                    
+                    let lastLineShown = -1;
+                    for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+                        const line = lines[lineIdx];
+                        let showLine = false;
+
+                        if (this.contextLines >= 9999) { // "Show All"
+                            showLine = true;
+                        } else { // "Show N Lines"
+                            const distanceToPrev = prevPartIsChange ? lineIdx : Infinity;
+                            const distanceToNext = nextPartIsChange ? (lines.length - 1 - lineIdx) : Infinity;
+                            
+                            if (distanceToPrev < this.contextLines || distanceToNext < this.contextLines) {
+                                showLine = true;
+                            }
+                        }
+
+                        if (showLine) {
+                            if (lineIdx > lastLineShown + 1 && this.contextLines < 9999) {
+                                // We skipped lines, add a separator
+                                const skippedEl = container.createEl('div', { cls: 'diff-line diff-context-gap' });
+                                skippedEl.createEl('span', { cls: 'line-number-container' });
+                                skippedEl.createEl('span', { cls: 'diff-marker', text: '...' });
+                            }
                             renderLine(line, 'context', leftLineNum, rightLineNum);
+                            lastLineShown = lineIdx;
                         }
                         leftLineNum++;
                         rightLineNum++;
+                    }
+                } else { // 'added', 'removed', 'moved-from', 'moved-to'
+                    for (const line of lines) {
+                        if (part.type === 'moved-from') {
+                            renderLine(line, 'moved-from', leftLineNum++, null, part.moveId);
+                        } else if (part.type === 'moved-to') {
+                            renderLine(line, 'moved-to', null, rightLineNum++, part.moveId);
+                        } else if (part.added) {
+                            renderLine(line, 'added', null, rightLineNum++, undefined, null);
+                        } else if (part.removed) {
+                            renderLine(line, 'removed', leftLineNum++, null);
+                        }
                     }
                 }
             }
@@ -3892,12 +3929,41 @@ class DiffModal extends Modal {
                     renderLine(leftPanel, line, 'removed', leftLineNum++, part.moveId);
                     renderLine(rightPanel, '', 'placeholder', null);
                 }
-            } else {
+            } else { // context block
                 const lines = part.value.replace(/\n$/, '').split('\n');
-                for (const line of lines) {
-                    if (!this.showOnlyChanges) {
+                const prevPartIsChange = i > 0 && diff[i - 1].type !== 'context';
+                const nextPartIsChange = i < diff.length - 1 && diff[i + 1].type !== 'context';
+
+                let lastLineShown = -1;
+                for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+                    const line = lines[lineIdx];
+                    let showLine = false;
+
+                    if (this.contextLines >= 9999) { // "Show All"
+                        showLine = true;
+                    } else { // "Show N Lines"
+                        const distanceToPrev = prevPartIsChange ? lineIdx : Infinity;
+                        const distanceToNext = nextPartIsChange ? (lines.length - 1 - lineIdx) : Infinity;
+                        
+                        if (distanceToPrev < this.contextLines || distanceToNext < this.contextLines) {
+                            showLine = true;
+                        }
+                    }
+
+                    if (showLine) {
+                        if (lineIdx > lastLineShown + 1 && this.contextLines < 9999) {
+                            // We skipped lines, add a separator
+                            const skippedLeft = leftPanel.createEl('div', { cls: 'diff-line diff-context-gap' });
+                            skippedLeft.createEl('span', { cls: 'line-number-container' });
+                            skippedLeft.createEl('span', { cls: 'diff-marker', text: '...' });
+                            
+                            const skippedRight = rightPanel.createEl('div', { cls: 'diff-line diff-context-gap' });
+                            skippedRight.createEl('span', { cls: 'line-number-container' });
+                            skippedRight.createEl('span', { cls: 'diff-marker', text: '...' });
+                        }
                         renderLine(leftPanel, line, 'context', leftLineNum);
                         renderLine(rightPanel, line, 'context', rightLineNum);
+                        lastLineShown = lineIdx;
                     }
                     leftLineNum++;
                     rightLineNum++;
@@ -3959,7 +4025,7 @@ class DiffModal extends Modal {
             } else if (part.removed) {
                 part.value.forEach(sentence => renderSentence(sentence, 'removed'));
             } else {
-                if (!this.showOnlyChanges) {
+                if (this.contextLines > 0) { // 0 = hide, >0 = show for sentence diff
                     part.value.forEach(sentence => renderSentence(sentence, 'context'));
                 }
             }
@@ -4030,7 +4096,7 @@ class DiffModal extends Modal {
                     renderSentence(rightContentEl, '', 'placeholder');
                 });
             } else {
-                if (!this.showOnlyChanges) {
+                if (this.contextLines > 0) { // 0 = hide, >0 = show for sentence diff
                     part.value.forEach(sentence => {
                         renderSentence(leftContentEl, sentence, 'context');
                         renderSentence(rightContentEl, sentence, 'context');
@@ -4106,7 +4172,7 @@ class DiffModal extends Modal {
                 const leftBlock = leftBlocks[i];
                 const rightBlock = rightBlocks[matchIndex];
                 if (leftBlock.hash === rightBlock.hash) {
-                    if (!this.showOnlyChanges) renderBlock(leftBlock, 'context');
+                    if (this.contextLines > 0) renderBlock(leftBlock, 'context'); // 0 = hide, >0 = show
                 } else {
                     const innerDiffContainer = createDiv();
                     this.renderUnifiedDiff(innerDiffContainer, leftBlock.content, rightBlock.content);
@@ -4863,14 +4929,22 @@ class VersionControlSettingTab extends PluginSettingTab {
                 }));
         
         new Setting(containerEl)
-            .setName('默认仅显示变更')
-            .setDesc('开启后，差异对比窗口默认只显示有变化的内容。')
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.diffShowOnlyChanges)
-                .onChange(async (value) => {
-                    this.plugin.settings.diffShowOnlyChanges = value;
-                    await this.plugin.saveSettings();
-                }));
+            .setName('差异上下文行数')
+            .setDesc('差异对比时，在变更内容周围显示的上下文行数。')
+            .addDropdown(dropdown => {
+                dropdown
+                    .addOption('0', '0 行 (仅变更)')
+                    .addOption('1', '1 行')
+                    .addOption('3', '3 行 (默认)')
+                    .addOption('5', '5 行')
+                    .addOption('9999', '全部 (显示所有)')
+                    .setValue(String(this.plugin.settings.diffContextLines))
+                    .onChange(async (value) => {
+                        this.plugin.settings.diffContextLines = Number(value);
+                        if (this.plugin.settings.diffContextLines > 9000) this.plugin.settings.diffContextLines = 9999;
+                        await this.plugin.saveSettings();
+                    });
+            });
 
         new Setting(containerEl)
             .setName('启用智能单词对比')
