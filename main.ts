@@ -1,5 +1,4 @@
 
-
 import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, Modal, ItemView, WorkspaceLeaf, Menu, TextComponent, MarkdownRenderer, Platform } from 'obsidian';
 import * as Diff from 'diff';
 import * as pako from 'pako';
@@ -71,6 +70,7 @@ interface VersionControlSettings {
     inlineDiffAlgorithm: 'word' | 'char';
     smartWordDiff: boolean;
     diffContextLines: number;
+    compactUnifiedDiff: boolean; // <--- [新功能] 新增设置
 }
 
 const DEFAULT_SETTINGS: VersionControlSettings = {
@@ -112,6 +112,7 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
     inlineDiffAlgorithm: 'word',
     smartWordDiff: true,
     diffContextLines: 3,
+    compactUnifiedDiff: false, // <--- [新功能] 设置默认值
 };
 
 
@@ -3630,6 +3631,7 @@ class DiffModal extends Modal {
         }
     }
 
+    // <--- [新功能] 已替换为支持紧凑模式的完整方法 ---
     renderUnifiedDiff(container: HTMLElement, left: string, right: string) {
         if (this.currentGranularity === 'char' || this.currentGranularity === 'word') {
             const diffFn = this.currentGranularity === 'char'
@@ -3676,13 +3678,17 @@ class DiffModal extends Modal {
         };
         const secondaryDiffFn = getSecondaryDiffFn();
 
-        const createHighlightedFragment = (diffParts: Diff.Change[]): DocumentFragment => {
+        const createHighlightedFragment = (diffParts: Diff.Change[], isCompact: boolean): DocumentFragment => {
             const fragment = document.createDocumentFragment();
             diffParts.forEach(part => {
-                const className = part.added ? 'diff-word-added' : part.removed ? 'diff-word-removed' : '';
+                const className = part.added ? 'diff-word-added' : (part.removed ? 'diff-word-removed' : '');
                 const processedText = this.showWhitespace ? this.visualizeWhitespace(part.value) : part.value;
                 
                 if (className) {
+                    if (!isCompact && part.removed) {
+                        fragment.append(document.createTextNode(processedText));
+                        return;
+                    }
                     fragment.append(createEl('span', { text: processedText, cls: className }));
                 } else {
                     fragment.append(document.createTextNode(processedText));
@@ -3756,6 +3762,7 @@ class DiffModal extends Modal {
             const nextPart = processedDiff[i + 1];
 
             if (part.removed && nextPart && nextPart.added) {
+                const useCompactView = this.plugin.settings.compactUnifiedDiff;
                 const leftLines = part.value.replace(/\n$/, '').split('\n');
                 const rightLines = nextPart.value.replace(/\n$/, '').split('\n');
                 
@@ -3765,11 +3772,15 @@ class DiffModal extends Modal {
                         const newLine = rightLines[j];
                         const lineDiff = secondaryDiffFn(oldLine, newLine);
                         
-                        const leftFrag = createHighlightedFragment(lineDiff.filter(p => !p.added));
-                        const rightFrag = createHighlightedFragment(lineDiff.filter(p => !p.removed));
+                        if (!useCompactView) {
+                            const leftFrag = createHighlightedFragment(lineDiff.filter(p => !p.added), false);
+                            renderLine(leftFrag, 'removed', leftLineNum++, null);
+                        } else {
+                            leftLineNum++;
+                        }
                         
-                        renderLine(leftFrag, 'removed', leftLineNum++, null);
-                        renderLine(rightFrag, 'added', null, rightLineNum++, undefined, oldLine);
+                        const rightFrag = createHighlightedFragment(lineDiff, useCompactView);
+                        renderLine(rightFrag, useCompactView ? 'modified' : 'added', useCompactView ? leftLineNum - 1 : null, rightLineNum++, undefined, oldLine);
                     }
                 } else {
                     part.value.replace(/\n$/, '').split('\n').forEach(line => {
@@ -3805,7 +3816,6 @@ class DiffModal extends Modal {
 
                         if (showLine) {
                             if (lineIdx > lastLineShown + 1 && this.contextLines < 9999) {
-                                // We skipped lines, add a separator
                                 const skippedEl = container.createEl('div', { cls: 'diff-line diff-context-gap' });
                                 skippedEl.createEl('span', { cls: 'line-number-container' });
                                 skippedEl.createEl('span', { cls: 'diff-marker', text: '...' });
@@ -3816,7 +3826,7 @@ class DiffModal extends Modal {
                         leftLineNum++;
                         rightLineNum++;
                     }
-                } else { // 'added', 'removed', 'moved-from', 'moved-to'
+                } else {
                     for (const line of lines) {
                         if (part.type === 'moved-from') {
                             renderLine(line, 'moved-from', leftLineNum++, null, part.moveId);
@@ -5042,6 +5052,17 @@ class VersionControlSettingTab extends PluginSettingTab {
                 .setValue(this.plugin.settings.inlineDiffAlgorithm)
                 .onChange(async (value: 'word' | 'char') => {
                     this.plugin.settings.inlineDiffAlgorithm = value;
+                    await this.plugin.saveSettings();
+                }));
+        
+        // <--- [新功能] 添加设置UI ---
+        new Setting(containerEl)
+            .setName('启用紧凑型统一视图')
+            .setDesc('开启后，在统一视图模式下，修改的行将只显示为一行（而不是一删一增），并高亮具体变化。')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.compactUnifiedDiff)
+                .onChange(async (value) => {
+                    this.plugin.settings.compactUnifiedDiff = value;
                     await this.plugin.saveSettings();
                 }));
 
