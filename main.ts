@@ -112,7 +112,7 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
     inlineDiffAlgorithm: 'word',
     smartWordDiff: true,
     diffContextLines: 3,
-    compactUnifiedDiff: false, // <--- [新功能] 设置默认值
+    compactUnifiedDiff: false, // <--- [新功能] 默认关闭
 };
 
 
@@ -3631,8 +3631,9 @@ class DiffModal extends Modal {
         }
     }
 
-    // <--- [新功能] 已替换为支持紧凑模式的完整方法 ---
+    // <--- [修改后的方法] 替换原有的 renderUnifiedDiff，支持紧凑模式
     renderUnifiedDiff(container: HTMLElement, left: string, right: string) {
+        // 0. 如果是字符或单词粒度，保持原有简单逻辑
         if (this.currentGranularity === 'char' || this.currentGranularity === 'word') {
             const diffFn = this.currentGranularity === 'char'
                 ? Diff.diffChars
@@ -3656,7 +3657,7 @@ class DiffModal extends Modal {
                     span.dataset.diffIndex = String(diffIdx++);
                     this.diffElements.push(span);
                 } else {
-                    if (this.contextLines > 0) { // 0 = 隐藏, >0 = 显示
+                    if (this.contextLines > 0) {
                         contentEl.createEl('span', { text });
                     }
                 }
@@ -3664,6 +3665,7 @@ class DiffModal extends Modal {
             return;
         }
 
+        // 1. 行级对比逻辑开始
         const diffResult = Diff.diffLines(left, right);
         const processedDiff: ProcessedDiff[] = this.enableMoveDetection 
             ? this.processDiffForMoves(diffResult) 
@@ -3672,24 +3674,33 @@ class DiffModal extends Modal {
         let leftLineNum = 1;
         let rightLineNum = 1;
         let diffIdx = 0;
+        
+        // 获取设置：是否开启紧凑模式
+        const useCompactView = this.plugin.settings.compactUnifiedDiff;
 
         const getSecondaryDiffFn = () => {
             return this.plugin.settings.inlineDiffAlgorithm === 'char' ? Diff.diffChars : (this.plugin.settings.smartWordDiff ? this.smartDiffWords : Diff.diffWordsWithSpace);
         };
         const secondaryDiffFn = getSecondaryDiffFn();
 
-        const createHighlightedFragment = (diffParts: Diff.Change[], isCompact: boolean): DocumentFragment => {
+        // 辅助函数：创建高亮片段
+        // includeRemoved: 如果为 true (紧凑模式)，则把删除的词也渲染出来；如果为 false，只渲染保留/新增的词
+        const createHighlightedFragment = (diffParts: Diff.Change[], includeRemoved: boolean): DocumentFragment => {
             const fragment = document.createDocumentFragment();
             diffParts.forEach(part => {
                 const className = part.added ? 'diff-word-added' : (part.removed ? 'diff-word-removed' : '');
                 const processedText = this.showWhitespace ? this.visualizeWhitespace(part.value) : part.value;
                 
                 if (className) {
-                    if (!isCompact && part.removed) {
-                        fragment.append(document.createTextNode(processedText));
-                        return;
+                    // 如果不是紧凑模式，且当前是删除部分，通常 Unified View 的新增行不显示删除内容
+                    // 但如果是紧凑模式 (includeRemoved=true)，我们全都要显示
+                    if (!includeRemoved && part.removed) {
+                        // 这里的逻辑取决于你是渲染“删除行”还是“新增行”。
+                        // 为简化，我们在主循环里通过 filter 来控制传进来的 diffParts
+                        fragment.append(createEl('span', { text: processedText, cls: className }));
+                    } else {
+                        fragment.append(createEl('span', { text: processedText, cls: className }));
                     }
-                    fragment.append(createEl('span', { text: processedText, cls: className }));
                 } else {
                     fragment.append(document.createTextNode(processedText));
                 }
@@ -3697,6 +3708,7 @@ class DiffModal extends Modal {
             return fragment;
         };
 
+        // 渲染单行函数
         const renderLine = (content: string | DocumentFragment, type: ProcessedDiff['type'], lineNumLeft: number | null, lineNumRight: number | null, moveId?: number, oldContentForRevert: string | null = null) => {
             const lineEl = container.createEl('div', { cls: `diff-line diff-${type}` });
             if (type !== 'context') {
@@ -3761,11 +3773,12 @@ class DiffModal extends Modal {
             const part = processedDiff[i];
             const nextPart = processedDiff[i + 1];
 
+            // 关键修改：检测到 删除 -> 新增 模式
             if (part.removed && nextPart && nextPart.added) {
-                const useCompactView = this.plugin.settings.compactUnifiedDiff;
                 const leftLines = part.value.replace(/\n$/, '').split('\n');
                 const rightLines = nextPart.value.replace(/\n$/, '').split('\n');
                 
+                // 只有当行数一致时，我们才尝试合并为“修改”
                 if (leftLines.length === rightLines.length) {
                     for (let j = 0; j < leftLines.length; j++) {
                         const oldLine = leftLines[j];
@@ -3773,16 +3786,27 @@ class DiffModal extends Modal {
                         const lineDiff = secondaryDiffFn(oldLine, newLine);
                         
                         if (!useCompactView) {
+                            // === 原有逻辑：显示两行 (一红一绿) ===
+                            
+                            // 1. 删除行 (只显示非新增部分)
                             const leftFrag = createHighlightedFragment(lineDiff.filter(p => !p.added), false);
                             renderLine(leftFrag, 'removed', leftLineNum++, null);
+                            
+                            // 2. 新增行 (只显示非删除部分)
+                            const rightFrag = createHighlightedFragment(lineDiff.filter(p => !p.removed), false);
+                            renderLine(rightFrag, 'added', null, rightLineNum++, undefined, oldLine);
                         } else {
-                            leftLineNum++;
+                            // === 新逻辑：显示一行 (修改) ===
+                            // 我们传入完整的 lineDiff (包含删除和新增)，这样它们会在同一行显示
+                            // 类型设为 'modified'，这样会显示 '~' 符号
+                            
+                            const combinedFrag = createHighlightedFragment(lineDiff, true);
+                            // 注意：这里同时传入了 leftLineNum 和 rightLineNum，让两边的行号都递增
+                            renderLine(combinedFrag, 'modified', leftLineNum++, rightLineNum++, undefined, oldLine);
                         }
-                        
-                        const rightFrag = createHighlightedFragment(lineDiff, useCompactView);
-                        renderLine(rightFrag, useCompactView ? 'modified' : 'added', useCompactView ? leftLineNum - 1 : null, rightLineNum++, undefined, oldLine);
                     }
                 } else {
+                    // 行数不匹配，无法完美合并，退回标准显示
                     part.value.replace(/\n$/, '').split('\n').forEach(line => {
                         renderLine(line, 'removed', leftLineNum++, null);
                     });
@@ -3790,42 +3814,38 @@ class DiffModal extends Modal {
                         renderLine(line, 'added', null, rightLineNum++, undefined, null);
                     });
                 }
-                i++;
-            } else { // 'context', 'added', 'removed', 'moved' block
+                i++; // 跳过下一个 part，因为它已经被处理了
+            } else { 
+                // 处理 context, added, removed, moved 等常规块
                 const lines = part.value.replace(/\n$/, '').split('\n');
                 
                 if (part.type === 'context') {
-                    const prevPartIsChange = i > 0 && processedDiff[i - 1].type !== 'context';
-                    const nextPartIsChange = i < processedDiff.length - 1 && processedDiff[i + 1].type !== 'context';
+                   const prevPartIsChange = i > 0 && processedDiff[i - 1].type !== 'context';
+                   const nextPartIsChange = i < processedDiff.length - 1 && processedDiff[i + 1].type !== 'context';
                     
-                    let lastLineShown = -1;
-                    for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+                   let lastLineShown = -1;
+                   for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
                         const line = lines[lineIdx];
                         let showLine = false;
-
-                        if (this.contextLines >= 9999) { // "Show All"
-                            showLine = true;
-                        } else { // "Show N Lines"
-                            const distanceToPrev = prevPartIsChange ? lineIdx : Infinity;
-                            const distanceToNext = nextPartIsChange ? (lines.length - 1 - lineIdx) : Infinity;
-                            
-                            if (distanceToPrev < this.contextLines || distanceToNext < this.contextLines) {
-                                showLine = true;
-                            }
+                        if (this.contextLines >= 9999) { showLine = true; } 
+                        else {
+                             const distanceToPrev = prevPartIsChange ? lineIdx : Infinity;
+                             const distanceToNext = nextPartIsChange ? (lines.length - 1 - lineIdx) : Infinity;
+                             if (distanceToPrev < this.contextLines || distanceToNext < this.contextLines) { showLine = true; }
                         }
 
                         if (showLine) {
-                            if (lineIdx > lastLineShown + 1 && this.contextLines < 9999) {
-                                const skippedEl = container.createEl('div', { cls: 'diff-line diff-context-gap' });
-                                skippedEl.createEl('span', { cls: 'line-number-container' });
-                                skippedEl.createEl('span', { cls: 'diff-marker', text: '...' });
-                            }
-                            renderLine(line, 'context', leftLineNum, rightLineNum);
-                            lastLineShown = lineIdx;
+                             if (lineIdx > lastLineShown + 1 && this.contextLines < 9999) {
+                                 const skippedEl = container.createEl('div', { cls: 'diff-line diff-context-gap' });
+                                 skippedEl.createEl('span', { cls: 'line-number-container' });
+                                 skippedEl.createEl('span', { cls: 'diff-marker', text: '...' });
+                             }
+                             renderLine(line, 'context', leftLineNum, rightLineNum);
+                             lastLineShown = lineIdx;
                         }
                         leftLineNum++;
                         rightLineNum++;
-                    }
+                   }
                 } else {
                     for (const line of lines) {
                         if (part.type === 'moved-from') {
