@@ -3686,13 +3686,13 @@ class DiffModal extends Modal {
 
             diffResult.forEach(part => {
                 const text = this.showWhitespace ? this.visualizeWhitespace(part.value) : part.value;
-                const span = contentEl.createEl('span', { text });
-                
                 if (part.added) {
+                    const span = contentEl.createEl('span', { text });
                     span.addClass('diff-word-added');
                     span.dataset.diffIndex = String(diffIdx++);
                     this.diffElements.push(span);
                 } else if (part.removed) {
+                    const span = contentEl.createEl('span', { text });
                     span.addClass('diff-word-removed');
                     span.dataset.diffIndex = String(diffIdx++);
                     this.diffElements.push(span);
@@ -3728,11 +3728,10 @@ class DiffModal extends Modal {
                 const processedText = this.showWhitespace ? this.visualizeWhitespace(part.value) : part.value;
                 
                 if (className) {
-                    if (!includeRemoved && part.removed) {
-                        fragment.append(createEl('span', { text: processedText, cls: className }));
-                    } else {
-                        fragment.append(createEl('span', { text: processedText, cls: className }));
+                    if (part.removed && !includeRemoved) {
+                        return;
                     }
+                    fragment.append(createEl('span', { text: processedText, cls: className }));
                 } else {
                     fragment.append(document.createTextNode(processedText));
                 }
@@ -3822,7 +3821,7 @@ class DiffModal extends Modal {
                             const rightFrag = createHighlightedFragment(lineDiff.filter(p => !p.removed), false);
                             renderLine(rightFrag, 'added', null, rightLineNum++, undefined, oldLine);
                         } else {
-                            const combinedFrag = createHighlightedFragment(lineDiff, true);
+                            const combinedFrag = createHighlightedFragment(lineDiff, false);
                             renderLine(combinedFrag, 'modified', leftLineNum++, rightLineNum++, undefined, oldLine);
                         }
                     }
@@ -5091,7 +5090,7 @@ class VersionControlSettingTab extends PluginSettingTab {
         
         new Setting(containerEl)
             .setName('启用紧凑型统一视图')
-            .setDesc('开启后，在统一视图模式下，修改的行将只显示为一行（而不是一删一增），并高亮具体变化。')
+            .setDesc('开启后，在统一视图模式下，修改的行将只显示为一行（隐藏删除的文字），只高亮显示最终结果中的新增部分。')
             .addToggle(toggle => toggle
                 .setValue(this.plugin.settings.compactUnifiedDiff)
                 .onChange(async (value) => {
