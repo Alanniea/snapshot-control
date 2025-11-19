@@ -70,7 +70,7 @@ interface VersionControlSettings {
     inlineDiffAlgorithm: 'word' | 'char';
     smartWordDiff: boolean;
     diffContextLines: number;
-    compactUnifiedDiff: boolean; // <--- [新功能] 新增设置
+    compactUnifiedDiff: boolean; // [新功能] 新增设置
 }
 
 const DEFAULT_SETTINGS: VersionControlSettings = {
@@ -112,7 +112,7 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
     inlineDiffAlgorithm: 'word',
     smartWordDiff: true,
     diffContextLines: 3,
-    compactUnifiedDiff: false, // <--- [新功能] 默认关闭
+    compactUnifiedDiff: false, // 默认关闭
 };
 
 
@@ -3402,6 +3402,7 @@ class DiffModal extends Modal {
         this.plugin.refreshVersionHistoryView();
     }
     
+    // 修正统计逻辑：正确计算 Compact 模式下的 Modified 行数
     updateCompactDiffInfo() {
         const container = this.infoBannerContainer;
         if (!container) return;
@@ -3417,23 +3418,50 @@ class DiffModal extends Modal {
         const diffResult = Diff.diffLines(leftProcessed, rightProcessed);
         let addedLines = 0;
         let removedLines = 0;
-        
-        for (const part of diffResult) {
-            if (part.added) {
-                addedLines += part.count || 0;
-            } else if (part.removed) {
-                removedLines += part.count || 0;
+        let modifiedLines = 0; // 新增：统计修改的行数
+
+        const useCompact = this.plugin.settings.compactUnifiedDiff; // 检查是否开启了紧凑模式
+
+        for (let i = 0; i < diffResult.length; i++) {
+            const part = diffResult[i];
+            const nextPart = diffResult[i + 1];
+
+            // 逻辑：如果开启了紧凑模式，检测先删后增的组合
+            if (useCompact && part.removed && nextPart && nextPart.added) {
+                 const remCount = part.count || 0;
+                 const addCount = nextPart.count || 0;
+                 
+                 // 修改的行数 = 删除和新增中较小的那个数（重叠部分）
+                 const overlap = Math.min(remCount, addCount);
+                 
+                 modifiedLines += overlap;
+                 removedLines += (remCount - overlap); // 剩余部分才算纯删除
+                 addedLines += (addCount - overlap);   // 剩余部分才算纯新增
+                 
+                 i++; // 跳过下一部分，因为它已经被处理了
+            } else {
+                if (part.added) {
+                    addedLines += part.count || 0;
+                } else if (part.removed) {
+                    removedLines += part.count || 0;
+                }
             }
         }
         
         const totalLines = this.leftContent.split('\n').length;
-        const changedLines = addedLines + removedLines;
-        const changePercent = totalLines > 0 ? ((changedLines / totalLines) * 100).toFixed(1) : '0';
+        const totalChangesCount = addedLines + removedLines + modifiedLines;
+        const changePercent = totalLines > 0 ? ((totalChangesCount / totalLines) * 100).toFixed(1) : '0';
         
         container.createEl('span', { text: `📊 总行数: ${totalLines}`, cls: 'diff-info-item' });
+        
+        // 如果有修改的行，或者开启了紧凑模式，显示修改行数
+        if (modifiedLines > 0) {
+            const modSpan = container.createEl('span', { text: `~${modifiedLines} (修)`, cls: 'diff-info-changed' });
+            modSpan.style.color = 'var(--text-accent)'; // 简单样式修正，使其醒目
+        }
+
         container.createEl('span', { text: `+${addedLines}`, cls: 'diff-info-added' });
         container.createEl('span', { text: `-${removedLines}`, cls: 'diff-info-removed' });
-        container.createEl('span', { text: `~${changedLines}`, cls: 'diff-info-changed' });
         container.createEl('span', { text: `变化率: ${changePercent}%`, cls: 'diff-info-percent' });
 
         container.addClass('diff-info-updated');
@@ -3442,20 +3470,42 @@ class DiffModal extends Modal {
         }, 500);
     }
 
+    // 同样修正详细统计的弹出信息
     showDetailedStats() {
         const diffResult = Diff.diffLines(this.leftContent, this.rightContent);
         let addedLines = 0;
         let removedLines = 0;
+        let modifiedLines = 0;
         let addedChars = 0;
         let removedChars = 0;
-        
-        for (const part of diffResult) {
-            if (part.added) {
-                addedLines += (part.value.match(/\n/g) || []).length;
-                addedChars += part.value.length;
-            } else if (part.removed) {
-                removedLines += (part.value.match(/\n/g) || []).length;
+
+        const useCompact = this.plugin.settings.compactUnifiedDiff;
+
+        for (let i = 0; i < diffResult.length; i++) {
+            const part = diffResult[i];
+            const nextPart = diffResult[i + 1];
+
+             if (useCompact && part.removed && nextPart && nextPart.added) {
+                const remCount = (part.value.match(/\n/g) || []).length;
+                const addCount = (nextPart.value.match(/\n/g) || []).length;
+                
+                const overlap = Math.min(remCount, addCount);
+                modifiedLines += overlap;
+                removedLines += (remCount - overlap);
+                addedLines += (addCount - overlap);
+                
                 removedChars += part.value.length;
+                addedChars += nextPart.value.length;
+
+                i++;
+            } else {
+                if (part.added) {
+                    addedLines += (part.value.match(/\n/g) || []).length;
+                    addedChars += part.value.length;
+                } else if (part.removed) {
+                    removedLines += (part.value.match(/\n/g) || []).length;
+                    removedChars += part.value.length;
+                }
             }
         }
         
@@ -3463,16 +3513,20 @@ class DiffModal extends Modal {
         const rightLines = this.rightContent.split('\n').length;
         const similarity = this.calculateSimilarity(this.leftContent, this.rightContent);
         
-        new Notice(
-            '📊 详细统计\n\n' +
+        let statsMsg = '📊 详细统计\n\n' +
             `左侧版本: ${leftLines} 行, ${this.leftContent.length} 字符\n` +
-            `右侧版本: ${rightLines} 行, ${this.rightContent.length} 字符\n\n` +
-            `新增: ${addedLines} 行, ${addedChars} 字符\n` +
+            `右侧版本: ${rightLines} 行, ${this.rightContent.length} 字符\n\n`;
+            
+        if (modifiedLines > 0) {
+            statsMsg += `修改: ${modifiedLines} 行\n`;
+        }
+        
+        statsMsg += `新增: ${addedLines} 行, ${addedChars} 字符\n` +
             `删除: ${removedLines} 行, ${removedChars} 字符\n` +
             `相似度: ${similarity.toFixed(1)}%\n` +
-            `差异块: ${this.totalDiffs} 个`,
-            10000
-        );
+            `差异块: ${this.totalDiffs} 个`;
+
+        new Notice(statsMsg, 10000);
     }
 
     calculateSimilarity(text1: string, text2: string): number {
@@ -4422,9 +4476,8 @@ class DiffModal extends Modal {
     }
 }
 
-// =======================================================================
-// ======================== [END] MODIFIED DIFFMODAL =====================
-// =======================================================================
+// ... (Rest of the file remains unchanged from the previous provided full file, including LineHistoryModal, VersionSelectModal, VersionControlSettingTab) ...
+// Since the user requested the full merged main.ts, I will output the rest of the classes below to ensure completeness.
 
 class LineHistoryModal extends Modal {
     plugin: VersionControlPlugin;
@@ -5075,7 +5128,7 @@ class VersionControlSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
         
-        // <--- [新功能] 添加设置UI ---
+        // [新功能] 添加设置UI
         new Setting(containerEl)
             .setName('启用紧凑型统一视图')
             .setDesc('开启后，在统一视图模式下，修改的行将只显示为一行（而不是一删一增），并高亮具体变化。')
