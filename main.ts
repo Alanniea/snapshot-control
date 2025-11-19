@@ -1,4 +1,3 @@
-
 import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, Modal, ItemView, WorkspaceLeaf, Menu, TextComponent, MarkdownRenderer, Platform } from 'obsidian';
 import * as Diff from 'diff';
 import * as pako from 'pako';
@@ -1828,11 +1827,26 @@ class VersionHistoryView extends ItemView {
                     await this.plugin.toggleVersionStar(file.path, version.id);
                 });
                 
+                // <--- MODIFICATION START: Add absolute time tooltip and text --->
+                const absoluteTimeStr = new Date(version.timestamp).toLocaleString('zh-CN');
                 const timeEl = timeRow.createEl('span', { 
                     text: this.plugin.formatTime(version.timestamp),
-                    cls: 'version-time'
+                    cls: 'version-time',
+                    attr: { title: absoluteTimeStr } // Add tooltip
                 });
                 timeEl.dataset.timestamp = String(version.timestamp);
+
+                // 如果使用相对时间，额外显示一个绝对时间的小字
+                if (this.plugin.settings.useRelativeTime) {
+                    timeRow.createEl('small', {
+                        text: new Date(version.timestamp).toLocaleString('zh-CN', { 
+                            month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' 
+                        }),
+                        cls: 'version-time-absolute',
+                        attr: { style: 'margin-left: 6px; color: var(--text-muted); font-size: 0.8em;' }
+                    });
+                }
+                // <--- MODIFICATION END --->
                 
                 const messageEl = info.createEl('div', { cls: 'version-message-row' });
                 
@@ -4475,9 +4489,6 @@ class DiffModal extends Modal {
         contentEl.empty();
     }
 }
-
-// ... (Rest of the file remains unchanged from the previous provided full file, including LineHistoryModal, VersionSelectModal, VersionControlSettingTab) ...
-// Since the user requested the full merged main.ts, I will output the rest of the classes below to ensure completeness.
 
 class LineHistoryModal extends Modal {
     plugin: VersionControlPlugin;
