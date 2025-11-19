@@ -1,3 +1,4 @@
+
 import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, Modal, ItemView, WorkspaceLeaf, Menu, TextComponent, MarkdownRenderer, Platform } from 'obsidian';
 import * as Diff from 'diff';
 import * as pako from 'pako';
@@ -69,7 +70,7 @@ interface VersionControlSettings {
     inlineDiffAlgorithm: 'word' | 'char';
     smartWordDiff: boolean;
     diffContextLines: number;
-    compactUnifiedDiff: boolean; // [新功能] 新增设置
+    compactUnifiedDiff: boolean; 
 }
 
 const DEFAULT_SETTINGS: VersionControlSettings = {
@@ -111,7 +112,7 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
     inlineDiffAlgorithm: 'word',
     smartWordDiff: true,
     diffContextLines: 3,
-    compactUnifiedDiff: false, // 默认关闭
+    compactUnifiedDiff: false, 
 };
 
 
@@ -1524,13 +1525,10 @@ class VersionHistoryView extends ItemView {
     }
 
 
-    // --- MODIFICATION START: Replaced refresh method to prevent flickering ---
     async refresh() {
         const container = this.containerEl.children[1] as HTMLElement;
         
-        // 1. 创建一个临时的文档片段，在内存中构建UI
         const fragment = document.createDocumentFragment();
-        // 我们在片段内创建一个主容器，后续所有操作都针对这个临时容器
         const tempContainer = fragment.createEl('div');
         tempContainer.addClass('version-history-view');
 
@@ -1538,16 +1536,12 @@ class VersionHistoryView extends ItemView {
         this.currentFile = file;
         
         if (!file) {
-            // 将内容渲染到临时容器中
             this.renderEmptyState(tempContainer, '请先打开一个文件');
             
-            // 2. 一次性清空并替换内容
             container.empty();
             container.appendChild(fragment);
             return;
         }
-
-        // 注意：从这里开始，所有的 container.createEl() 都需要改成 tempContainer.createEl()
 
         const header = tempContainer.createEl('div', { cls: 'version-header' });
         
@@ -1827,26 +1821,24 @@ class VersionHistoryView extends ItemView {
                     await this.plugin.toggleVersionStar(file.path, version.id);
                 });
                 
-                // <--- MODIFICATION START: Add absolute time tooltip and text --->
                 const absoluteTimeStr = new Date(version.timestamp).toLocaleString('zh-CN');
                 const timeEl = timeRow.createEl('span', { 
                     text: this.plugin.formatTime(version.timestamp),
                     cls: 'version-time',
-                    attr: { title: absoluteTimeStr } // Add tooltip
+                    attr: { title: absoluteTimeStr } 
                 });
                 timeEl.dataset.timestamp = String(version.timestamp);
 
-                // 如果使用相对时间，额外显示一个绝对时间的小字
                 if (this.plugin.settings.useRelativeTime) {
                     timeRow.createEl('small', {
                         text: new Date(version.timestamp).toLocaleString('zh-CN', { 
-                            month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' 
+                            year: 'numeric', month: '2-digit', day: '2-digit',
+                            hour: '2-digit', minute: '2-digit', second: '2-digit' 
                         }),
                         cls: 'version-time-absolute',
                         attr: { style: 'margin-left: 6px; color: var(--text-muted); font-size: 0.8em;' }
                     });
                 }
-                // <--- MODIFICATION END --->
                 
                 const messageEl = info.createEl('div', { cls: 'version-message-row' });
                 
@@ -2002,11 +1994,9 @@ class VersionHistoryView extends ItemView {
         }
         stats.createEl('span', { text: ` · 显示 ${start + 1}-${end}` });
 
-        // 最后，一次性清空并替换内容
         container.empty();
         container.appendChild(fragment);
     }
-    // --- MODIFICATION END ---
     
     showVersionContextMenu(event: MouseEvent, file: TFile, version: VersionData) {
         const menu = new Menu();
@@ -2474,10 +2464,6 @@ class ConfirmModal extends Modal {
     }
 }
 
-// =======================================================================
-// ======================= [START] MODIFIED DIFFMODAL ====================
-// =======================================================================
-
 type ProcessedDiff = {
     type: 'context' | 'added' | 'removed' | 'moved-from' | 'moved-to' | 'modified';
     moveId?: number;
@@ -2748,12 +2734,10 @@ class DiffModal extends Modal {
 
             menu.addSeparator();
 
-            // --- MODIFICATION START: 根据粒度禁用不适用的选项 ---
             const isLineBased = this.currentGranularity === 'line';
             const isWordCharBased = this.currentGranularity === 'char' || this.currentGranularity === 'word';
             const isSentenceSemantic = this.currentGranularity === 'sentence' || this.currentGranularity === 'semantic';
 
-            // 行号和移动检测仅在行模式下可用
             const lineNumAndMoveEnabled = isLineBased;
             
             const lineNumTitle = '显示行号' + (!lineNumAndMoveEnabled ? ' (仅行模式可用)' : '');
@@ -2800,7 +2784,6 @@ class DiffModal extends Modal {
                 .setDisabled(true)
                 .setSection('diff-settings-group-label'));
             
-            // 上下文选项在字符/单词模式下全部禁用
             if (isWordCharBased) {
                 menu.addItem(item => item
                     .setTitle('字符/单词模式不使用上下文')
@@ -2830,7 +2813,6 @@ class DiffModal extends Modal {
                     .setChecked(this.contextLines >= 9999)
                     .onClick(() => { this.contextLines = 9999; this.renderTextDiff(); }));
             }
-            // --- MODIFICATION END ---
 
             menu.addSeparator();
             menu.addItem(item => item.setTitle('展开所有').setIcon('chevrons-down-up').onClick(() => { this.collapsedSections.clear(); this.renderTextDiff(); }));
@@ -3072,7 +3054,6 @@ class DiffModal extends Modal {
             
             let targetIndex = lineNumber;
             if (targetIndex >= lines.length || lines[targetIndex] !== newContent) {
-                // Fallback to searching for the content if the line number is off
                 const foundIndex = lines.indexOf(newContent);
                 if (foundIndex !== -1) {
                     targetIndex = foundIndex;
@@ -3082,10 +3063,8 @@ class DiffModal extends Modal {
             }
     
             if (oldContent !== null) {
-                // This is a modification, replace the new line with the old one.
                 lines[targetIndex] = oldContent;
             } else {
-                // This is an addition, remove the line.
                 lines.splice(targetIndex, 1);
             }
             
@@ -3416,7 +3395,6 @@ class DiffModal extends Modal {
         this.plugin.refreshVersionHistoryView();
     }
     
-    // 修正统计逻辑：正确计算 Compact 模式下的 Modified 行数
     updateCompactDiffInfo() {
         const container = this.infoBannerContainer;
         if (!container) return;
@@ -3432,27 +3410,25 @@ class DiffModal extends Modal {
         const diffResult = Diff.diffLines(leftProcessed, rightProcessed);
         let addedLines = 0;
         let removedLines = 0;
-        let modifiedLines = 0; // 新增：统计修改的行数
+        let modifiedLines = 0; 
 
-        const useCompact = this.plugin.settings.compactUnifiedDiff; // 检查是否开启了紧凑模式
+        const useCompact = this.plugin.settings.compactUnifiedDiff; 
 
         for (let i = 0; i < diffResult.length; i++) {
             const part = diffResult[i];
             const nextPart = diffResult[i + 1];
 
-            // 逻辑：如果开启了紧凑模式，检测先删后增的组合
             if (useCompact && part.removed && nextPart && nextPart.added) {
                  const remCount = part.count || 0;
                  const addCount = nextPart.count || 0;
                  
-                 // 修改的行数 = 删除和新增中较小的那个数（重叠部分）
                  const overlap = Math.min(remCount, addCount);
                  
                  modifiedLines += overlap;
-                 removedLines += (remCount - overlap); // 剩余部分才算纯删除
-                 addedLines += (addCount - overlap);   // 剩余部分才算纯新增
+                 removedLines += (remCount - overlap); 
+                 addedLines += (addCount - overlap);   
                  
-                 i++; // 跳过下一部分，因为它已经被处理了
+                 i++; 
             } else {
                 if (part.added) {
                     addedLines += part.count || 0;
@@ -3468,10 +3444,9 @@ class DiffModal extends Modal {
         
         container.createEl('span', { text: `📊 总行数: ${totalLines}`, cls: 'diff-info-item' });
         
-        // 如果有修改的行，或者开启了紧凑模式，显示修改行数
         if (modifiedLines > 0) {
             const modSpan = container.createEl('span', { text: `~${modifiedLines} (修)`, cls: 'diff-info-changed' });
-            modSpan.style.color = 'var(--text-accent)'; // 简单样式修正，使其醒目
+            modSpan.style.color = 'var(--text-accent)'; 
         }
 
         container.createEl('span', { text: `+${addedLines}`, cls: 'diff-info-added' });
@@ -3484,7 +3459,6 @@ class DiffModal extends Modal {
         }, 500);
     }
 
-    // 同样修正详细统计的弹出信息
     showDetailedStats() {
         const diffResult = Diff.diffLines(this.leftContent, this.rightContent);
         let addedLines = 0;
@@ -3699,9 +3673,7 @@ class DiffModal extends Modal {
         }
     }
 
-    // <--- [修改后的方法] 替换原有的 renderUnifiedDiff，支持紧凑模式
     renderUnifiedDiff(container: HTMLElement, left: string, right: string) {
-        // 0. 如果是字符或单词粒度，保持原有简单逻辑
         if (this.currentGranularity === 'char' || this.currentGranularity === 'word') {
             const diffFn = this.currentGranularity === 'char'
                 ? Diff.diffChars
@@ -3733,7 +3705,6 @@ class DiffModal extends Modal {
             return;
         }
 
-        // 1. 行级对比逻辑开始
         const diffResult = Diff.diffLines(left, right);
         const processedDiff: ProcessedDiff[] = this.enableMoveDetection 
             ? this.processDiffForMoves(diffResult) 
@@ -3743,7 +3714,6 @@ class DiffModal extends Modal {
         let rightLineNum = 1;
         let diffIdx = 0;
         
-        // 获取设置：是否开启紧凑模式
         const useCompactView = this.plugin.settings.compactUnifiedDiff;
 
         const getSecondaryDiffFn = () => {
@@ -3751,8 +3721,6 @@ class DiffModal extends Modal {
         };
         const secondaryDiffFn = getSecondaryDiffFn();
 
-        // 辅助函数：创建高亮片段
-        // includeRemoved: 如果为 true (紧凑模式)，则把删除的词也渲染出来；如果为 false，只渲染保留/新增的词
         const createHighlightedFragment = (diffParts: Diff.Change[], includeRemoved: boolean): DocumentFragment => {
             const fragment = document.createDocumentFragment();
             diffParts.forEach(part => {
@@ -3760,11 +3728,7 @@ class DiffModal extends Modal {
                 const processedText = this.showWhitespace ? this.visualizeWhitespace(part.value) : part.value;
                 
                 if (className) {
-                    // 如果不是紧凑模式，且当前是删除部分，通常 Unified View 的新增行不显示删除内容
-                    // 但如果是紧凑模式 (includeRemoved=true)，我们全都要显示
                     if (!includeRemoved && part.removed) {
-                        // 这里的逻辑取决于你是渲染“删除行”还是“新增行”。
-                        // 为简化，我们在主循环里通过 filter 来控制传进来的 diffParts
                         fragment.append(createEl('span', { text: processedText, cls: className }));
                     } else {
                         fragment.append(createEl('span', { text: processedText, cls: className }));
@@ -3776,7 +3740,6 @@ class DiffModal extends Modal {
             return fragment;
         };
 
-        // 渲染单行函数
         const renderLine = (content: string | DocumentFragment, type: ProcessedDiff['type'], lineNumLeft: number | null, lineNumRight: number | null, moveId?: number, oldContentForRevert: string | null = null) => {
             const lineEl = container.createEl('div', { cls: `diff-line diff-${type}` });
             if (type !== 'context') {
@@ -3841,12 +3804,10 @@ class DiffModal extends Modal {
             const part = processedDiff[i];
             const nextPart = processedDiff[i + 1];
 
-            // 关键修改：检测到 删除 -> 新增 模式
             if (part.removed && nextPart && nextPart.added) {
                 const leftLines = part.value.replace(/\n$/, '').split('\n');
                 const rightLines = nextPart.value.replace(/\n$/, '').split('\n');
                 
-                // 只有当行数一致时，我们才尝试合并为“修改”
                 if (leftLines.length === rightLines.length) {
                     for (let j = 0; j < leftLines.length; j++) {
                         const oldLine = leftLines[j];
@@ -3854,27 +3815,18 @@ class DiffModal extends Modal {
                         const lineDiff = secondaryDiffFn(oldLine, newLine);
                         
                         if (!useCompactView) {
-                            // === 原有逻辑：显示两行 (一红一绿) ===
                             
-                            // 1. 删除行 (只显示非新增部分)
                             const leftFrag = createHighlightedFragment(lineDiff.filter(p => !p.added), false);
                             renderLine(leftFrag, 'removed', leftLineNum++, null);
                             
-                            // 2. 新增行 (只显示非删除部分)
                             const rightFrag = createHighlightedFragment(lineDiff.filter(p => !p.removed), false);
                             renderLine(rightFrag, 'added', null, rightLineNum++, undefined, oldLine);
                         } else {
-                            // === 新逻辑：显示一行 (修改) ===
-                            // 我们传入完整的 lineDiff (包含删除和新增)，这样它们会在同一行显示
-                            // 类型设为 'modified'，这样会显示 '~' 符号
-                            
                             const combinedFrag = createHighlightedFragment(lineDiff, true);
-                            // 注意：这里同时传入了 leftLineNum 和 rightLineNum，让两边的行号都递增
                             renderLine(combinedFrag, 'modified', leftLineNum++, rightLineNum++, undefined, oldLine);
                         }
                     }
                 } else {
-                    // 行数不匹配，无法完美合并，退回标准显示
                     part.value.replace(/\n$/, '').split('\n').forEach(line => {
                         renderLine(line, 'removed', leftLineNum++, null);
                     });
@@ -3882,9 +3834,8 @@ class DiffModal extends Modal {
                         renderLine(line, 'added', null, rightLineNum++, undefined, null);
                     });
                 }
-                i++; // 跳过下一个 part，因为它已经被处理了
+                i++; 
             } else { 
-                // 处理 context, added, removed, moved 等常规块
                 const lines = part.value.replace(/\n$/, '').split('\n');
                 
                 if (part.type === 'context') {
@@ -3964,7 +3915,7 @@ class DiffModal extends Modal {
                     span.dataset.diffIndex = String(diffIdx++);
                     this.diffElements.push(span);
                 } else {
-                    if (this.contextLines > 0) { // 0 = 隐藏, >0 = 显示
+                    if (this.contextLines > 0) { 
                         leftPanel.createEl('span', { text });
                         rightPanel.createEl('span', { text });
                     }
@@ -4104,7 +4055,7 @@ class DiffModal extends Modal {
                     renderLine(leftPanel, line, 'removed', leftLineNum++, part.moveId);
                     renderLine(rightPanel, '', 'placeholder', null);
                 }
-            } else { // context block
+            } else { 
                 const lines = part.value.replace(/\n$/, '').split('\n');
                 const prevPartIsChange = i > 0 && diff[i - 1].type !== 'context';
                 const nextPartIsChange = i < diff.length - 1 && diff[i + 1].type !== 'context';
@@ -4114,9 +4065,9 @@ class DiffModal extends Modal {
                     const line = lines[lineIdx];
                     let showLine = false;
 
-                    if (this.contextLines >= 9999) { // "Show All"
+                    if (this.contextLines >= 9999) { 
                         showLine = true;
-                    } else { // "Show N Lines"
+                    } else { 
                         const distanceToPrev = prevPartIsChange ? lineIdx : Infinity;
                         const distanceToNext = nextPartIsChange ? (lines.length - 1 - lineIdx) : Infinity;
                         
@@ -4127,7 +4078,6 @@ class DiffModal extends Modal {
 
                     if (showLine) {
                         if (lineIdx > lastLineShown + 1 && this.contextLines < 9999) {
-                            // We skipped lines, add a separator
                             const skippedLeft = leftPanel.createEl('div', { cls: 'diff-line diff-context-gap' });
                             skippedLeft.createEl('span', { cls: 'line-number-container' });
                             skippedLeft.createEl('span', { cls: 'diff-marker', text: '...' });
@@ -4200,7 +4150,7 @@ class DiffModal extends Modal {
             } else if (part.removed) {
                 part.value.forEach(sentence => renderSentence(sentence, 'removed'));
             } else {
-                if (this.contextLines > 0) { // 0 = hide, >0 = show for sentence diff
+                if (this.contextLines > 0) { 
                     part.value.forEach(sentence => renderSentence(sentence, 'context'));
                 }
             }
@@ -4271,7 +4221,7 @@ class DiffModal extends Modal {
                     renderSentence(rightContentEl, '', 'placeholder');
                 });
             } else {
-                if (this.contextLines > 0) { // 0 = hide, >0 = show for sentence diff
+                if (this.contextLines > 0) { 
                     part.value.forEach(sentence => {
                         renderSentence(leftContentEl, sentence, 'context');
                         renderSentence(rightContentEl, sentence, 'context');
@@ -4347,7 +4297,7 @@ class DiffModal extends Modal {
                 const leftBlock = leftBlocks[i];
                 const rightBlock = rightBlocks[matchIndex];
                 if (leftBlock.hash === rightBlock.hash) {
-                    if (this.contextLines > 0) renderBlock(leftBlock, 'context'); // 0 = hide, >0 = show
+                    if (this.contextLines > 0) renderBlock(leftBlock, 'context'); 
                 } else {
                     const innerDiffContainer = createDiv();
                     this.renderUnifiedDiff(innerDiffContainer, leftBlock.content, rightBlock.content);
@@ -5139,7 +5089,6 @@ class VersionControlSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
         
-        // [新功能] 添加设置UI
         new Setting(containerEl)
             .setName('启用紧凑型统一视图')
             .setDesc('开启后，在统一视图模式下，修改的行将只显示为一行（而不是一删一增），并高亮具体变化。')
