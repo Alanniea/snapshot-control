@@ -10,7 +10,7 @@ interface VersionData {
     message: string;
     content?: string;
     diff?: string;
-    baseVersionId?: string;
+    baseVersionId?: string; // 修复：用于链式增量存储
     size: number;
     hash?: string;
     tags?: string[];
@@ -24,7 +24,7 @@ interface VersionFile {
     filePath: string;
     versions: VersionData[];
     lastModified: number;
-    baseVersion?: string;
+    baseVersion?: string; // 保留用于向后兼容，但新逻辑主要依赖 VersionData.content
     versionIndex?: Map<string, number>;
 }
 
@@ -124,8 +124,7 @@ export default class VersionControlPlugin extends Plugin {
     statusBarItem: HTMLElement;
     versionCache: Map<string, VersionFile> = new Map();
     previousActiveFile: TFile | null = null;
-    globalTimeUpdater: number | null = null;
-
+    
     async onload() {
         await this.loadSettings();
 
@@ -229,9 +228,12 @@ export default class VersionControlPlugin extends Plugin {
 
         await this.ensureVersionFolder();
 
-        this.globalTimeUpdater = window.setInterval(() => {
-            this.updateAllRelativeTimes();
-        }, 60000);
+        // FIX: 使用 registerInterval 管理全局定时器
+        this.registerInterval(
+            window.setInterval(() => {
+                this.updateAllRelativeTimes();
+            }, 60000)
+        );
 
         if (this.settings.showNotifications) {
             new Notice('✅ 版本控制插件已启动');
@@ -241,9 +243,6 @@ export default class VersionControlPlugin extends Plugin {
     onunload() {
         if (this.autoSaveTimer) {
             window.clearInterval(this.autoSaveTimer);
-        }
-        if (this.globalTimeUpdater) {
-            window.clearInterval(this.globalTimeUpdater);
         }
         this.pendingSaves.forEach(timeout => clearTimeout(timeout));
         this.pendingSaves.clear();
@@ -374,12 +373,16 @@ export default class VersionControlPlugin extends Plugin {
         workspace.revealLeaf(leaf);
     }
 
+    // FIX: 优化定时器管理
     startAutoSave() {
         if (this.autoSaveTimer) {
             window.clearInterval(this.autoSaveTimer);
+            this.autoSaveTimer = null;
         }
         
         if (this.settings.autoSaveOnInterval) {
+            // 使用 window.setInterval 并保存引用以便清理
+            // 同时我们也在 onload 中使用了 registerInterval 处理其他定时器
             this.autoSaveTimer = window.setInterval(() => {
                 this.autoSaveCurrentFile();
             }, this.settings.autoSaveInterval * 60 * 1000);
@@ -410,7 +413,14 @@ export default class VersionControlPlugin extends Plugin {
         this.pendingSaves.set(file.path, timeout);
     }
 
+    // FIX: 增加文件存在性检查
     async autoSaveFile(file: TFile, message: string) {
+        // 安全检查：确保文件仍然存在于 Vault 中
+        if (!file || !this.app.vault.getAbstractFileByPath(file.path)) {
+            this.pendingSaves.delete(file.path);
+            return;
+        }
+
         try {
             const content = await this.app.vault.read(file);
             
@@ -516,6 +526,7 @@ export default class VersionControlPlugin extends Plugin {
         }).open();
     }
 
+    // FIX: 核心修复 - 链式增量存储逻辑
     async createVersion(file: TFile, message: string, showNotification: boolean = false, tags: string[] = [], isManual: boolean = false) {
         try {
             const content = await this.app.vault.read(file);
@@ -566,25 +577,29 @@ export default class VersionControlPlugin extends Plugin {
                 addedLines = content.split('\n').length;
             }
 
+            // 改进的增量存储逻辑
             if (this.settings.enableIncrementalStorage && versionFile.versions.length > 0) {
-                const hasNoBase = (versionFile.baseVersion === undefined || versionFile.baseVersion === null);
-                const shouldRebuildBase = hasNoBase || 
-                    (versionFile.versions.length % this.settings.rebuildBaseInterval === 0);
+                const shouldRebuildBase = (versionFile.versions.length % this.settings.rebuildBaseInterval === 0);
                 
                 if (shouldRebuildBase) {
+                    // 基准点：存储完整内容在当前版本对象中
                     newVersion = {
-                        id, timestamp, message, content, size: content.length, hash,
+                        id, timestamp, message, 
+                        content: content, // 显式存储
+                        size: content.length, hash,
                         tags: tags.length > 0 ? tags : undefined,
                         starred: false, addedLines, removedLines
                     };
-                    versionFile.baseVersion = content;
                 } else {
-                    const baseContent = versionFile.baseVersion || await this.reconstructLatestFullContent(versionFile);
+                    // 增量点：基于上一版本
+                    const prevVersionId = versionFile.versions[0].id;
+                    const baseContent = await this.getVersionContent(file.path, prevVersionId);
                     const diff = this.createDiff(baseContent, content);
                     
                     newVersion = {
-                        id, timestamp, message, diff, 
-                        baseVersionId: versionFile.versions[0].id, 
+                        id, timestamp, message, 
+                        diff: diff, 
+                        baseVersionId: prevVersionId, // 指向父版本
                         size: diff.length, hash,
                         tags: tags.length > 0 ? tags : undefined,
                         starred: false, addedLines, removedLines
@@ -597,7 +612,8 @@ export default class VersionControlPlugin extends Plugin {
                     starred: false, addedLines, removedLines
                 };
                 
-                if (this.settings.enableIncrementalStorage) {
+                // 向后兼容：仅初始化时设置全局 baseVersion
+                if (!versionFile.baseVersion) {
                     versionFile.baseVersion = content;
                 }
             }
@@ -800,42 +816,51 @@ export default class VersionControlPlugin extends Plugin {
         }
     }
 
+    // FIX: 修复 getVersionContent 以支持递归还原
     async getVersionContent(filePath: string, versionId: string): Promise<string> {
         try {
             const versionFile = await this.loadVersionFile(filePath);
             
-            const index = versionFile.versionIndex?.get(versionId);
-            const version = index !== undefined ? versionFile.versions[index] : 
-                          versionFile.versions.find(v => v.id === versionId);
-            
-            if (!version) {
-                throw new Error(`版本 ${versionId} 不存在`);
-            }
-    
-            if (version.content !== undefined && version.content !== null) {
-                return version.content;
-            }
-    
-            if (version.diff) {
-                if (versionFile.baseVersion !== undefined && versionFile.baseVersion !== null) {
-                    try {
-                        return this.applyDiff(versionFile.baseVersion, version.diff);
-                    } catch (error) {
-                        console.warn('从基准版本应用差异失败，尝试使用 baseVersionId:', error);
-                    }
-                }
+            // 内部递归函数，带深度限制
+            const resolveContent = async (vId: string, depth: number = 0): Promise<string> => {
+                if (depth > 100) throw new Error(`版本依赖链过深 (${depth})`);
+
+                const index = versionFile.versionIndex?.get(vId);
+                const version = index !== undefined ? versionFile.versions[index] : 
+                              versionFile.versions.find(v => v.id === vId);
                 
-                if (version.baseVersionId) {
+                if (!version) {
+                    throw new Error(`版本 ${vId} 不存在`);
+                }
+        
+                if (version.content !== undefined && version.content !== null) {
+                    return version.content;
+                }
+        
+                if (version.diff) {
+                    let baseContent = "";
+                    
+                    if (version.baseVersionId) {
+                        baseContent = await resolveContent(version.baseVersionId, depth + 1);
+                    } else if (versionFile.baseVersion !== undefined && versionFile.baseVersion !== null) {
+                        baseContent = versionFile.baseVersion;
+                    } else {
+                         throw new Error(`版本 ${vId} 既无内容也无有效基准引用`);
+                    }
+
                     try {
-                        const baseVersionContent = await this.getVersionContent(filePath, version.baseVersionId);
-                        return this.applyDiff(baseVersionContent, version.diff);
+                        return this.applyDiff(baseContent, version.diff);
                     } catch (error) {
-                        console.error('从 baseVersionId 应用差异失败:', error);
+                        console.error(`应用补丁失败 (Version: ${vId}):`, error);
+                        throw new Error(`还原版本 ${vId} 失败: 补丁应用错误`);
                     }
                 }
-            }
-    
-            throw new Error(`无法获取版本 ${versionId} 的内容：缺少 content 和有效的 diff`);
+        
+                throw new Error(`无法获取版本 ${vId} 的内容：缺少 content 和 diff`);
+            };
+
+            return await resolveContent(versionId);
+
         } catch (error) {
             console.error('读取版本内容失败:', error);
             throw new Error(`无法读取版本内容: ${error.message}`);
@@ -3031,10 +3056,21 @@ class DiffModal extends Modal {
         if (this.secondVersionId !== 'current') return;
 
         try {
+            if (lineNumber < 1) {
+                 new Notice('❌ 无效的行号');
+                 return;
+            }
+
             const currentContent = await this.app.vault.read(this.file);
             const lines = currentContent.split('\n');
             
-            lines.splice(lineNumber, 0, content);
+            const insertIndex = lineNumber - 1;
+            
+            if (insertIndex > lines.length) {
+                lines.push(content);
+            } else {
+                lines.splice(insertIndex, 0, content);
+            }
             
             await this.app.vault.modify(this.file, lines.join('\n'));
             new Notice('✅ 已应用更改');
@@ -3045,6 +3081,7 @@ class DiffModal extends Modal {
         }
     }
 
+    // FIX: 修复撤销逻辑，使用行号而不是内容匹配
     async revertChanges(newContent: string, lineNumber: number, oldContent: string | null = null) {
         if (this.secondVersionId !== 'current') return;
     
@@ -3052,14 +3089,15 @@ class DiffModal extends Modal {
             const currentContent = await this.app.vault.read(this.file);
             let lines = currentContent.split('\n');
             
-            let targetIndex = lineNumber;
-            if (targetIndex >= lines.length || lines[targetIndex] !== newContent) {
-                const foundIndex = lines.indexOf(newContent);
-                if (foundIndex !== -1) {
-                    targetIndex = foundIndex;
-                } else {
-                    throw new Error("无法找到要撤销的行。");
-                }
+            const targetIndex = lineNumber - 1;
+    
+            if (targetIndex < 0 || targetIndex >= lines.length) {
+                new Notice("❌ 无法撤销：行号超出范围，请刷新视图。");
+                return;
+            }
+
+            if (lines[targetIndex] !== newContent) {
+                console.warn(`撤销内容不匹配: 期望 "${newContent}", 实际 "${lines[targetIndex]}"`);
             }
     
             if (oldContent !== null) {
@@ -3762,7 +3800,7 @@ class DiffModal extends Modal {
                 if (type === 'added' || (type === 'modified' && lineNumRight)) {
                     const revertBtn = lineNumContainer.createEl('span', { text: '-', cls: 'diff-line-action-btn', attr: { 'aria-label': '撤销此更改' } });
                     const newContent = typeof content === 'string' ? content : content.textContent || '';
-                    revertBtn.addEventListener('click', () => this.revertChanges(newContent, lineNumRight! - 1, oldContentForRevert));
+                    revertBtn.addEventListener('click', () => this.revertChanges(newContent, lineNumRight!, oldContentForRevert));
                 }
                 if (type === 'removed' || (type === 'modified' && lineNumLeft)) {
                     const applyBtn = lineNumContainer.createEl('span', { text: '+', cls: 'diff-line-action-btn', attr: { 'aria-label': '应用此更改' } });
@@ -3974,7 +4012,7 @@ class DiffModal extends Modal {
                 if (isRightPanel && (type === 'added' || type === 'modified')) {
                     const revertBtn = lineNumContainer.createEl('span', { text: '-', cls: 'diff-line-action-btn', attr: { 'aria-label': '撤销此更改' } });
                     const newContent = typeof content === 'string' ? content : content.textContent || '';
-                    revertBtn.addEventListener('click', () => this.revertChanges(newContent, lineNum! - 1, oldContentForRevert));
+                    revertBtn.addEventListener('click', () => this.revertChanges(newContent, lineNum!, oldContentForRevert));
                 }
                 if (!isRightPanel && (type === 'removed' || type === 'modified')) {
                     const applyBtn = lineNumContainer.createEl('span', { text: '+', cls: 'diff-line-action-btn', attr: { 'aria-label': '应用此更改' } });
