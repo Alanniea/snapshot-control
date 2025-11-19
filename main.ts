@@ -10,7 +10,7 @@ interface VersionData {
     message: string;
     content?: string;
     diff?: string;
-    baseVersionId?: string; // 修复：用于链式增量存储
+    baseVersionId?: string; // 用于链式增量存储
     size: number;
     hash?: string;
     tags?: string[];
@@ -24,7 +24,7 @@ interface VersionFile {
     filePath: string;
     versions: VersionData[];
     lastModified: number;
-    baseVersion?: string; // 保留用于向后兼容，但新逻辑主要依赖 VersionData.content
+    baseVersion?: string; // 保留用于向后兼容
     versionIndex?: Map<string, number>;
 }
 
@@ -228,7 +228,6 @@ export default class VersionControlPlugin extends Plugin {
 
         await this.ensureVersionFolder();
 
-        // FIX: 使用 registerInterval 管理全局定时器
         this.registerInterval(
             window.setInterval(() => {
                 this.updateAllRelativeTimes();
@@ -373,7 +372,6 @@ export default class VersionControlPlugin extends Plugin {
         workspace.revealLeaf(leaf);
     }
 
-    // FIX: 优化定时器管理
     startAutoSave() {
         if (this.autoSaveTimer) {
             window.clearInterval(this.autoSaveTimer);
@@ -381,8 +379,6 @@ export default class VersionControlPlugin extends Plugin {
         }
         
         if (this.settings.autoSaveOnInterval) {
-            // 使用 window.setInterval 并保存引用以便清理
-            // 同时我们也在 onload 中使用了 registerInterval 处理其他定时器
             this.autoSaveTimer = window.setInterval(() => {
                 this.autoSaveCurrentFile();
             }, this.settings.autoSaveInterval * 60 * 1000);
@@ -413,9 +409,7 @@ export default class VersionControlPlugin extends Plugin {
         this.pendingSaves.set(file.path, timeout);
     }
 
-    // FIX: 增加文件存在性检查
     async autoSaveFile(file: TFile, message: string) {
-        // 安全检查：确保文件仍然存在于 Vault 中
         if (!file || !this.app.vault.getAbstractFileByPath(file.path)) {
             this.pendingSaves.delete(file.path);
             return;
@@ -526,7 +520,6 @@ export default class VersionControlPlugin extends Plugin {
         }).open();
     }
 
-    // FIX: 核心修复 - 链式增量存储逻辑
     async createVersion(file: TFile, message: string, showNotification: boolean = false, tags: string[] = [], isManual: boolean = false) {
         try {
             const content = await this.app.vault.read(file);
@@ -577,21 +570,18 @@ export default class VersionControlPlugin extends Plugin {
                 addedLines = content.split('\n').length;
             }
 
-            // 改进的增量存储逻辑
             if (this.settings.enableIncrementalStorage && versionFile.versions.length > 0) {
                 const shouldRebuildBase = (versionFile.versions.length % this.settings.rebuildBaseInterval === 0);
                 
                 if (shouldRebuildBase) {
-                    // 基准点：存储完整内容在当前版本对象中
                     newVersion = {
                         id, timestamp, message, 
-                        content: content, // 显式存储
+                        content: content, 
                         size: content.length, hash,
                         tags: tags.length > 0 ? tags : undefined,
                         starred: false, addedLines, removedLines
                     };
                 } else {
-                    // 增量点：基于上一版本
                     const prevVersionId = versionFile.versions[0].id;
                     const baseContent = await this.getVersionContent(file.path, prevVersionId);
                     const diff = this.createDiff(baseContent, content);
@@ -599,7 +589,7 @@ export default class VersionControlPlugin extends Plugin {
                     newVersion = {
                         id, timestamp, message, 
                         diff: diff, 
-                        baseVersionId: prevVersionId, // 指向父版本
+                        baseVersionId: prevVersionId, 
                         size: diff.length, hash,
                         tags: tags.length > 0 ? tags : undefined,
                         starred: false, addedLines, removedLines
@@ -612,7 +602,6 @@ export default class VersionControlPlugin extends Plugin {
                     starred: false, addedLines, removedLines
                 };
                 
-                // 向后兼容：仅初始化时设置全局 baseVersion
                 if (!versionFile.baseVersion) {
                     versionFile.baseVersion = content;
                 }
@@ -816,12 +805,10 @@ export default class VersionControlPlugin extends Plugin {
         }
     }
 
-    // FIX: 修复 getVersionContent 以支持递归还原
     async getVersionContent(filePath: string, versionId: string): Promise<string> {
         try {
             const versionFile = await this.loadVersionFile(filePath);
             
-            // 内部递归函数，带深度限制
             const resolveContent = async (vId: string, depth: number = 0): Promise<string> => {
                 if (depth > 100) throw new Error(`版本依赖链过深 (${depth})`);
 
@@ -3081,7 +3068,6 @@ class DiffModal extends Modal {
         }
     }
 
-    // FIX: 修复撤销逻辑，使用行号而不是内容匹配
     async revertChanges(newContent: string, lineNumber: number, oldContent: string | null = null) {
         if (this.secondVersionId !== 'current') return;
     
@@ -3759,7 +3745,7 @@ class DiffModal extends Modal {
         };
         const secondaryDiffFn = getSecondaryDiffFn();
 
-        const createHighlightedFragment = (diffParts: Diff.Change[], includeRemoved: boolean): DocumentFragment => {
+        const createHighlightedFragment = (diffParts: Diff.Change[], includeRemoved: boolean = true): DocumentFragment => {
             const fragment = document.createDocumentFragment();
             diffParts.forEach(part => {
                 const className = part.added ? 'diff-word-added' : (part.removed ? 'diff-word-removed' : '');
@@ -3859,7 +3845,8 @@ class DiffModal extends Modal {
                             const rightFrag = createHighlightedFragment(lineDiff.filter(p => !p.removed), false);
                             renderLine(rightFrag, 'added', null, rightLineNum++, undefined, oldLine);
                         } else {
-                            const combinedFrag = createHighlightedFragment(lineDiff, false);
+                            // 修复：将这里的 false 改为 true，以显示删除的内容
+                            const combinedFrag = createHighlightedFragment(lineDiff, true);
                             renderLine(combinedFrag, 'modified', leftLineNum++, rightLineNum++, undefined, oldLine);
                         }
                     }
