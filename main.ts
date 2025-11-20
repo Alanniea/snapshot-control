@@ -594,7 +594,20 @@ export default class VersionControlPlugin extends Plugin {
             let baseVersionId = "";
 
             if (this.settings.enableIncrementalStorage && versionFile.versions.length > 0) {
-                const shouldRebuildBase = (versionFile.versions.length % this.settings.rebuildBaseInterval === 0);
+                // [修复逻辑]
+                // 不再使用 (length % interval) 来判断，因为自动清理会保持 length 不变
+                // 而是计算连续增量版本的数量
+                let continuousIncrementalCount = 0;
+                for (const v of versionFile.versions) {
+                    // 只要找到有 content 且不是仅 diff 的版本，就认为是完整基准
+                    if (v.content !== undefined && v.content !== null && !v.diff) {
+                        break;
+                    }
+                    continuousIncrementalCount++;
+                }
+
+                // 如果连续增量版本达到了设定的间隔，下次就应该重建基准
+                const shouldRebuildBase = (continuousIncrementalCount >= this.settings.rebuildBaseInterval);
                 
                 if (!shouldRebuildBase) {
                     try {
