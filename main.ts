@@ -1076,19 +1076,32 @@ export default class VersionControlPlugin extends Plugin {
 
     async createFullSnapshot() {
         const files = this.app.vault.getMarkdownFiles();
+        const total = files.length;
         let count = 0;
         let skipped = 0;
 
-        const progressNotice = new Notice('正在创建全库版本...', 0);
+        const progressNotice = new Notice(`正在准备全库快照... (0/${total})`, 0);
+        
+        // 辅助函数：简单的睡眠，让出主线程防止卡死
+        const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-        for (const file of files) {
+        for (let i = 0; i < total; i++) {
+            const file = files[i];
+            
+            // 每处理 10 个文件暂停 10ms，防止界面卡死
+            if (i % 10 === 0) {
+                progressNotice.setMessage(`正在创建全库快照... (${i + 1}/${total})`);
+                await sleep(10); 
+            }
+
             if (this.isExcluded(file.path)) {
                 skipped++;
                 continue;
             }
 
             try {
-                await this.createVersion(file, '[Full Snapshot]', false);
+                // 传递 isManual: true 以允许在内容未变化时，将上一条自动保存记录升级为快照记录
+                await this.createVersion(file, '[Full Snapshot]', false, [], true);
                 count++;
             } catch (error) {
                 console.error(`创建版本失败: ${file.path}`, error);
@@ -1098,7 +1111,9 @@ export default class VersionControlPlugin extends Plugin {
         progressNotice.hide();
         
         if (this.settings.showNotifications) {
-            new Notice(`✅ 全库版本已创建\n成功: ${count} 个文件${skipped > 0 ? `\n跳过: ${skipped} 个文件` : ''}`);
+            setTimeout(() => {
+                new Notice(`✅ 全库版本创建完成\n处理: ${count} 个文件${skipped > 0 ? `\n跳过: ${skipped} 个文件` : ''}`);
+            }, 500);
         }
     }
 
