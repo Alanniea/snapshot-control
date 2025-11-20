@@ -4824,10 +4824,84 @@ class IntegrityReportModal extends Modal {
             const warningDiv = contentEl.createEl('div', { cls: 'integrity-warning' });
             warningDiv.createEl('p', { text: `⚠️ 发现 ${this.report.length} 个文件存在问题。` });
 
+            // --- 新增：批量操作区域 ---
+            const batchContainer = contentEl.createEl('div', { cls: 'integrity-batch-actions' });
+            batchContainer.style.display = 'flex';
+            batchContainer.style.gap = '10px';
+            batchContainer.style.marginBottom = '15px';
+            batchContainer.style.padding = '10px';
+            batchContainer.style.backgroundColor = 'var(--background-secondary)';
+            batchContainer.style.borderRadius = '5px';
+            batchContainer.style.border = '1px solid var(--background-modifier-border)';
+
+            // 1. 一键修复按钮
+            const repairAllBtn = batchContainer.createEl('button', { text: '🔧 一键修复所有哈希错误' });
+            repairAllBtn.addClass('mod-cta');
+            const hashErrorCount = this.report.filter(i => i.errors.some(e => e.includes("哈希校验失败"))).length;
+            if (hashErrorCount === 0) {
+                repairAllBtn.setAttr('disabled', 'true');
+                repairAllBtn.setText('无哈希错误可修复');
+            } else {
+                repairAllBtn.addEventListener('click', async () => {
+                    repairAllBtn.setText(`正在修复... (0/${hashErrorCount})`);
+                    repairAllBtn.setAttr('disabled', 'true');
+                    
+                    let fixedCount = 0;
+                    const itemsToRepair = this.report.filter(i => i.errors.some(e => e.includes("哈希校验失败")));
+                    
+                    for (let i = 0; i < itemsToRepair.length; i++) {
+                        const item = itemsToRepair[i];
+                        const success = await this.plugin.repairVersionFile(item.filePath);
+                        if (success) fixedCount++;
+                        repairAllBtn.setText(`正在修复... (${i + 1}/${hashErrorCount})`);
+                    }
+
+                    new Notice(`✅ 批量操作完成：修复了 ${fixedCount} 个文件`);
+                    repairAllBtn.setText(`已修复 ${fixedCount} 个文件`);
+                    
+                    deleteAllBtn.setText('🗑️ 一键删除剩余问题文件'); 
+                });
+            }
+
+            // 2. 一键删除按钮
+            const deleteAllBtn = batchContainer.createEl('button', { text: '🗑️ 一键删除所有问题文件' });
+            deleteAllBtn.addClass('mod-warning');
+            deleteAllBtn.addEventListener('click', () => {
+                new ConfirmModal(
+                    this.app, 
+                    '⚠️ 危险：批量删除', 
+                    `确定要删除列表中的全部 ${this.report.length} 个版本记录文件吗？\n此操作将永久丢失这些文件的历史版本！`, 
+                    async () => {
+                        let deletedCount = 0;
+                        const notice = new Notice('正在批量删除...', 0);
+                        
+                        for (const item of this.report) {
+                            try {
+                                const versionPath = this.plugin.getVersionFilePath(item.filePath);
+                                if (await this.app.vault.adapter.exists(versionPath)) {
+                                    await this.app.vault.adapter.remove(versionPath);
+                                    this.plugin.versionCache.delete(item.filePath);
+                                    deletedCount++;
+                                }
+                            } catch (e) {
+                                console.error(`删除失败: ${item.filePath}`, e);
+                            }
+                        }
+                        
+                        notice.hide();
+                        new Notice(`已删除 ${deletedCount} 个损坏的版本文件`);
+                        this.close(); 
+                    }
+                ).open();
+            });
+            // --- 批量操作区域结束 ---
+
             const listContainer = contentEl.createEl('div', { cls: 'integrity-list' });
 
             this.report.forEach(item => {
                 const fileItem = listContainer.createEl('div', { cls: 'integrity-item' });
+                fileItem.dataset.filePath = item.filePath;
+
                 fileItem.createEl('div', { text: `📄 ${item.filePath}`, cls: 'integrity-filepath' });
                 
                 const errorList = fileItem.createEl('ul', { cls: 'integrity-errors' });
@@ -4842,25 +4916,22 @@ class IntegrityReportModal extends Modal {
 
                 const btnGroup = fileItem.createEl('div', { cls: 'integrity-actions', attr: { style: 'display: flex; gap: 10px; margin-top: 8px;' } });
 
-                // 仅当出现哈希错误时，显示修复按钮
                 if (hasHashError) {
                     const fixBtn = btnGroup.createEl('button', { text: '🔧 尝试修复哈希' });
-                    fixBtn.addClass('mod-cta');
                     fixBtn.addEventListener('click', async () => {
                         const success = await this.plugin.repairVersionFile(item.filePath);
                         if (success) {
                             fixBtn.setText("✅ 已修复");
                             fixBtn.setAttr('disabled', 'true');
-                            // 移除错误提示
                             errorList.empty();
-                            errorList.createEl('li', { text: '哈希值已更新为当前计算结果。' });
+                            errorList.createEl('li', { text: '哈希值已更新为当前计算结果。', attr: { style: 'color: var(--text-success);' } });
                         } else {
                             fixBtn.setText("❌ 修复失败");
                         }
                     });
                 }
 
-                const actionBtn = btnGroup.createEl('button', { text: '🗑️ 删除此版本记录文件' });
+                const actionBtn = btnGroup.createEl('button', { text: '🗑️ 删除此记录' });
                 actionBtn.addClass('mod-warning');
                 actionBtn.addEventListener('click', async () => {
                     new ConfirmModal(this.app, '确认删除', '确定要删除这个损坏的版本文件吗？所有历史记录将丢失。', async () => {
@@ -4870,7 +4941,13 @@ class IntegrityReportModal extends Modal {
                                 await this.app.vault.adapter.remove(versionPath);
                                 this.plugin.versionCache.delete(item.filePath);
                                 new Notice('已删除损坏的文件');
-                                fileItem.remove();
+                                fileItem.remove(); 
+                                
+                                const remaining = listContainer.querySelectorAll('.integrity-item').length;
+                                if (remaining === 0) {
+                                    this.close();
+                                    new Notice("所有问题文件已处理完毕");
+                                }
                             }
                         } catch (e) {
                             new Notice('删除失败');
@@ -4900,7 +4977,7 @@ class VersionControlSettingTab extends PluginSettingTab {
     async display(): Promise<void> {
         const { containerEl } = this;
         containerEl.empty();
-        // ... (省略未变动的 SettingTab 内容，与上方代码相同，请直接使用完整代码块覆盖)
+
         containerEl.createEl('h2', { text: '版本控制设置' });
 
         if (this.plugin.settings.showVersionStats) {
