@@ -641,12 +641,14 @@ export default class VersionControlPlugin extends Plugin {
         return changes;
     }
 
-    applyDiff(baseContent: string, diffStr: string): string {
+    applyDiff(baseContent: string, diffStr: string, suppressNotice: boolean = false): string {
         try {
             const result = Diff.applyPatch(baseContent, diffStr);
             if (result === false) {
                  console.error('应用差异补丁失败 (applyPatch returned false). 返回基础内容。');
-                 new Notice('应用差异补丁失败，版本内容可能不完整。');
+                 if (!suppressNotice) {
+                    new Notice('应用差异补丁失败，版本内容可能不完整。');
+                 }
                  return baseContent;
             }
             return result;
@@ -805,7 +807,7 @@ export default class VersionControlPlugin extends Plugin {
         }
     }
 
-    async getVersionContent(filePath: string, versionId: string): Promise<string> {
+    async getVersionContent(filePath: string, versionId: string, suppressNotice: boolean = false): Promise<string> {
         try {
             const versionFile = await this.loadVersionFile(filePath);
             
@@ -836,7 +838,7 @@ export default class VersionControlPlugin extends Plugin {
                     }
 
                     try {
-                        return this.applyDiff(baseContent, version.diff);
+                        return this.applyDiff(baseContent, version.diff, suppressNotice);
                     } catch (error) {
                         console.error(`应用补丁失败 (Version: ${vId}):`, error);
                         throw new Error(`还原版本 ${vId} 失败: 补丁应用错误`);
@@ -1509,14 +1511,14 @@ class VersionHistoryView extends ItemView {
         }
     
         try {
-            const currentContent = await this.plugin.getVersionContent(versionFile.filePath, version.id);
+            const currentContent = await this.plugin.getVersionContent(versionFile.filePath, version.id, true);
             const previousVersion = versionFile.versions[versionIndex + 1];
             
             let added = 0;
             let removed = 0;
     
             if (previousVersion) {
-                const previousContent = await this.plugin.getVersionContent(versionFile.filePath, previousVersion.id);
+                const previousContent = await this.plugin.getVersionContent(versionFile.filePath, previousVersion.id, true);
                 const diffResult = Diff.diffLines(previousContent, currentContent);
                 diffResult.forEach(part => {
                     if (part.added) added += part.count || 0;
@@ -1530,7 +1532,7 @@ class VersionHistoryView extends ItemView {
             version.removedLines = removed;
     
         } catch (error) {
-            console.error(`计算版本 ${version.id} 的差异统计失败:`, error);
+            // console.error(`计算版本 ${version.id} 的差异统计失败:`, error);
             version.addedLines = 0;
             version.removedLines = 0;
         }
@@ -2509,7 +2511,7 @@ class DiffModal extends Modal {
     totalDiffs: number = 0;
     diffElements: HTMLElement[] = [];
     collapsedSections: Set<number> = new Set();
-    ignoreWhitespace: boolean = false;
+    ignoreWhitespace: boolean = true;
     showLineNumbers: boolean = true;
     wrapLines: boolean = true;
     leftContent: string = '';
