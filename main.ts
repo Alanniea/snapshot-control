@@ -3312,7 +3312,7 @@ class DiffModal extends Modal {
         const rightContentEl = rightPanel.createEl('div', { cls: 'rendered-diff-content' });
     
         const diffResult = this.currentGranularity === 'line' 
-            ? Diff.diffLines(this.leftContent, this.rightContent)
+            ? Diff.diffLines(this.leftContent, this.rightContent, { ignoreWhitespace: this.ignoreWhitespace })
             : (this.currentGranularity === 'word' 
                 ? Diff.diffWordsWithSpace(this.leftContent, this.rightContent) 
                 : Diff.diffChars(this.leftContent, this.rightContent));
@@ -3370,11 +3370,6 @@ class DiffModal extends Modal {
         let leftProcessed = this.leftContent;
         let rightProcessed = this.rightContent;
         
-        if (this.ignoreWhitespace) {
-            leftProcessed = this.leftContent.replace(/\s+/g, ' ').trim();
-            rightProcessed = this.rightContent.replace(/\s+/g, ' ').trim();
-        }
-        
         if (!leftProcessed && !rightProcessed) {
             container.createEl('div', { text: '两个版本都是空文件', cls: 'diff-empty-notice' });
             return;
@@ -3426,12 +3421,8 @@ class DiffModal extends Modal {
 
         let leftProcessed = this.leftContent;
         let rightProcessed = this.rightContent;
-        if (this.ignoreWhitespace) {
-            leftProcessed = this.leftContent.replace(/\s+/g, ' ').trim();
-            rightProcessed = this.rightContent.replace(/\s+/g, ' ').trim();
-        }
         
-        const diffResult = Diff.diffLines(leftProcessed, rightProcessed);
+        const diffResult = Diff.diffLines(leftProcessed, rightProcessed, { ignoreWhitespace: this.ignoreWhitespace });
         let addedLines = 0;
         let removedLines = 0;
         let modifiedLines = 0; 
@@ -3484,7 +3475,7 @@ class DiffModal extends Modal {
     }
 
     showDetailedStats() {
-        const diffResult = Diff.diffLines(this.leftContent, this.rightContent);
+        const diffResult = Diff.diffLines(this.leftContent, this.rightContent, { ignoreWhitespace: this.ignoreWhitespace });
         let addedLines = 0;
         let removedLines = 0;
         let modifiedLines = 0;
@@ -3635,7 +3626,7 @@ class DiffModal extends Modal {
 
     async exportDiffReport() {
         try {
-            const diffResult = Diff.diffLines(this.leftContent, this.rightContent);
+            const diffResult = Diff.diffLines(this.leftContent, this.rightContent, { ignoreWhitespace: this.ignoreWhitespace });
             let report = `# 版本差异报告\n\n`;
             report += `**文件**: ${this.file.path}\n`;
             report += `**生成时间**: ${new Date().toLocaleString('zh-CN')}\n\n`;
@@ -3729,7 +3720,7 @@ class DiffModal extends Modal {
             return;
         }
 
-        const diffResult = Diff.diffLines(left, right);
+        const diffResult = Diff.diffLines(left, right, { ignoreWhitespace: this.ignoreWhitespace });
         const processedDiff: ProcessedDiff[] = this.enableMoveDetection 
             ? this.processDiffForMoves(diffResult) 
             : diffResult.map(part => ({ ...part, type: (part.added ? 'added' : part.removed ? 'removed' : 'context') as any }));
@@ -3948,7 +3939,7 @@ class DiffModal extends Modal {
             return;
         }
 
-        const rawDiff = Diff.diffLines(leftText, rightText);
+        const rawDiff = Diff.diffLines(leftText, rightText, { ignoreWhitespace: this.ignoreWhitespace });
         const diff: ProcessedDiff[] = this.enableMoveDetection
             ? this.processDiffForMoves(rawDiff)
             : rawDiff.map(p => ({ ...p, type: p.added ? 'added' : p.removed ? 'removed' : 'context' }));
@@ -4434,7 +4425,7 @@ class DiffModal extends Modal {
                 if (leftSection.content.trim() === rightSection.content.trim()) {
                     results.push({ type: 'unchanged', left: leftSection, right: rightSection });
                 } else {
-                    const diff = Diff.diffLines(leftSection.content, rightSection.content);
+                    const diff = Diff.diffLines(leftSection.content, rightSection.content, { ignoreWhitespace: this.ignoreWhitespace });
                     const processedDiff = this.processDiffForMoves(diff);
                     results.push({ type: 'modified', left: leftSection, right: rightSection, diff: processedDiff });
                 }
