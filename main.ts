@@ -647,7 +647,7 @@ export default class VersionControlPlugin extends Plugin {
             versionFile.lastModified = timestamp;
 
             if (this.settings.autoClear) {
-                this.cleanupVersionsInMemory(versionFile);
+                await this.cleanupVersionsInMemory(versionFile);
             }
 
             this.buildVersionIndex(versionFile);
@@ -712,28 +712,97 @@ export default class VersionControlPlugin extends Plugin {
         return hash.toString(36);
     }
 
-    cleanupVersionsInMemory(versionFile: VersionFile) {
-        let versionsToKeep = versionFile.versions;
+    // 在内存中递归解析内容，解决清理时的依赖问题
+    resolveContentFromList(versions: VersionData[], versionId: string, depth: number = 0): string {
+        if (depth > 100) throw new Error("版本依赖链过深");
+        
+        const version = versions.find(v => v.id === versionId);
+        if (!version) throw new Error(`无法在内存中找到基准版本: ${versionId}`);
 
+        // 如果是完整版本，直接返回内容
+        if (version.content !== undefined && version.content !== null) {
+            return this.normalizeText(version.content);
+        }
+
+        // 如果是增量版本，递归查找
+        if (version.diff && version.baseVersionId) {
+            const baseContent = this.resolveContentFromList(versions, version.baseVersionId, depth + 1);
+            // 应用补丁
+            const result = Diff.applyPatch(baseContent, version.diff);
+            if (result === false) {
+                throw new Error(`版本 ${versionId} 补丁应用失败`);
+            }
+            return this.normalizeText(result);
+        }
+
+        throw new Error(`版本 ${versionId} 数据不完整`);
+    }
+
+    async cleanupVersionsInMemory(versionFile: VersionFile): Promise<number> {
+        const originalCount = versionFile.versions.length;
+        
+        // 1. 筛选逻辑
+        let versionsToKeep = versionFile.versions;
         const starredVersions = versionsToKeep.filter(v => v.starred);
         let nonStarredVersions = versionsToKeep.filter(v => !v.starred);
 
+        // 按数量筛选
         if (this.settings.enableMaxVersions) {
-            const maxNonStarred = Math.max(this.settings.maxVersions - starredVersions.length, 10);
+            const maxNonStarred = Math.max(this.settings.maxVersions - starredVersions.length, 1); // 至少保留1个
             nonStarredVersions = nonStarredVersions.slice(0, maxNonStarred);
         }
 
+        // 按天数筛选
         if (this.settings.enableMaxDays) {
             const cutoffTime = Date.now() - (this.settings.maxDays * 24 * 60 * 60 * 1000);
             nonStarredVersions = nonStarredVersions.filter(v => v.timestamp >= cutoffTime);
         }
 
-        versionsToKeep = [...starredVersions, ...nonStarredVersions].sort((a, b) => b.timestamp - a.timestamp);
+        // 2. 生成保留列表 (保持时间倒序：新 -> 旧)
+        // 这是一个 ID 集合，用于快速查找
+        const proposedKeepSet = new Set([...starredVersions, ...nonStarredVersions].map(v => v.id));
+        
+        // 过滤出要保留的数组，保持原始顺序
+        const proposedList = versionFile.versions.filter(v => proposedKeepSet.has(v.id));
 
-        const removedCount = versionFile.versions.length - versionsToKeep.length;
-        versionFile.versions = versionsToKeep;
+        // 3. 【关键修复】检查依赖链完整性
+        // 我们需要检查 proposedList 中的每一个版本。
+        // 如果某个版本 V 是增量存储 (有 diff)，且它的 baseVersionId 指向了一个 *不在* proposedList 中的版本
+        // 那么 V 将会变成“孤儿”。我们必须在删除基准之前，将 V 转换为完整快照。
+        
+        // 从最旧的开始检查 (从后往前)，因为通常依赖关系是 新->旧
+        for (let i = proposedList.length - 1; i >= 0; i--) {
+            const v = proposedList[i];
+            
+            // 如果是增量版本
+            if (v.diff && v.baseVersionId) {
+                // 如果它依赖的基准版本 将被删除 (不在保留列表中)
+                if (!proposedKeepSet.has(v.baseVersionId)) {
+                    try {
+                        console.log(`[VersionControl] 版本 ${v.id} 的基准将被清理，正在将其转换为完整快照...`);
+                        
+                        // 使用原始完整列表来解析内容 (因为基准还在原始列表中)
+                        const fullContent = this.resolveContentFromList(versionFile.versions, v.id);
+                        
+                        // 转换为完整版本
+                        v.content = fullContent;
+                        v.diff = undefined;
+                        v.baseVersionId = undefined;
+                        v.size = fullContent.length;
+                        
+                        // 注意：我们不需要修改 proposedKeepSet，因为 v 已经在里面了
+                    } catch (error) {
+                        console.error(`[VersionControl] 严重错误：无法固化版本 ${v.id}，为防止数据丢失，取消本次清理。`, error);
+                        return 0; // 中止清理，保护数据
+                    }
+                }
+            }
+        }
 
-        return removedCount;
+        // 4. 应用清理
+        versionFile.versions = proposedList;
+        
+        return originalCount - versionFile.versions.length;
     }
 
     async loadVersionFile(filePath: string): Promise<VersionFile> {
@@ -2337,7 +2406,7 @@ class VersionHistoryView extends ItemView {
             async () => {
                 const versionFile = await this.plugin.loadVersionFile(file.path);
                 const beforeCount = versionFile.versions.length;
-                const removed = this.plugin.cleanupVersionsInMemory(versionFile);
+                const removed = await this.plugin.cleanupVersionsInMemory(versionFile);
                 
                 if (removed > 0) {
                     await this.plugin.saveVersionFile(file.path, versionFile);
