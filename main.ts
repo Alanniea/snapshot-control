@@ -843,7 +843,7 @@ export default class VersionControlPlugin extends Plugin {
         }
     }
 
-    async getVersionContent(filePath: string, versionId: string, suppressNotice: boolean = false): Promise<string> {
+    async getVersionContent(filePath: string, versionId: string, suppressNotice: boolean = false, strictMode: boolean = false): Promise<string> {
         try {
             const versionFile = await this.loadVersionFile(filePath);
             
@@ -878,12 +878,17 @@ export default class VersionControlPlugin extends Plugin {
                         const result = Diff.applyPatch(normalizedBase, version.diff);
                         
                         if (result === false) {
-                             console.error(`版本 ${vId} 还原失败: Diff Patch 不匹配`);
-                             if (!suppressNotice) new Notice("⚠️ 增量还原失败：补丁不匹配");
+                             if (strictMode) {
+                                 throw new Error("增量补丁应用失败 (Patch Mismatch)");
+                             }
+                             
+                             console.warn(`[VersionControl] 版本 ${vId} 增量还原失败: Diff Patch 不匹配。返回基础内容。`);
                              return normalizedBase; 
                         }
                         return this.normalizeText(result);
                     } catch (error) {
+                        if (error.message.includes("Patch Mismatch")) throw error;
+                        
                         console.error(`应用补丁失败 (Version: ${vId}):`, error);
                         throw new Error(`还原版本 ${vId} 失败: 补丁应用错误`);
                     }
@@ -896,6 +901,11 @@ export default class VersionControlPlugin extends Plugin {
 
         } catch (error) {
             console.error('读取版本内容失败:', error);
+            if (!suppressNotice || strictMode) {
+                // 严格模式或未抑制通知时，错误向上传递，由调用方处理
+            } else {
+                 // 普通读取时，如果已经抑制了通知，则不在此处弹窗
+            }
             throw new Error(`无法读取版本内容: ${error.message}`);
         }
     }
@@ -911,12 +921,11 @@ export default class VersionControlPlugin extends Plugin {
         const versionPath = this.getVersionFilePath(filePath);
         
         if (!await this.app.vault.adapter.exists(versionPath)) {
-            return []; // 文件不存在不是错误，只是没版本
+            return []; 
         }
 
         let versionFile: VersionFile;
         try {
-            // 1. 尝试加载和解析
             let content: string;
             if (this.settings.enableCompression) {
                 try {
@@ -964,17 +973,18 @@ export default class VersionControlPlugin extends Plugin {
                 errors.push(`版本 ${version.id.substring(0,8)}: 既无 content 也无 diff，数据丢失`);
             }
 
-            // 3. 尝试还原内容并校验 Hash
-            if (version.hash) {
-                try {
-                    const content = await this.getVersionContent(filePath, version.id, true);
+            // 3. 深度内容还原检查 (强制触发 Patch 计算)
+            try {
+                const content = await this.getVersionContent(filePath, version.id, true, true);
+                
+                if (version.hash) {
                     const currentHash = this.hashContent(content);
                     if (currentHash !== version.hash) {
-                        errors.push(`版本 ${version.id.substring(0,8)}: 哈希校验失败 (数据可能被篡改)`);
+                        errors.push(`版本 ${version.id.substring(0,8)}: 哈希校验失败 (内容不匹配)`);
                     }
-                } catch (e) {
-                    errors.push(`版本 ${version.id.substring(0,8)}: 无法还原内容 - ${e.message}`);
                 }
+            } catch (e) {
+                errors.push(`版本 ${version.id.substring(0,8)}: 内容还原失败 - ${e.message}`);
             }
         }
 
