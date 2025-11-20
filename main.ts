@@ -183,7 +183,6 @@ export default class VersionControlPlugin extends Plugin {
             callback: () => this.optimizeAllVersionFiles()
         });
 
-        // --- 新增命令：检查完整性 ---
         this.addCommand({
             id: 'check-version-integrity',
             name: '检查版本完整性',
@@ -917,7 +916,7 @@ export default class VersionControlPlugin extends Plugin {
 
         let versionFile: VersionFile;
         try {
-            // 1. 尝试加载和解析（这会自动测试 gzip 解压和 JSON 格式）
+            // 1. 尝试加载和解析
             let content: string;
             if (this.settings.enableCompression) {
                 try {
@@ -1037,6 +1036,47 @@ export default class VersionControlPlugin extends Plugin {
 
         notice.hide();
         new IntegrityReportModal(this.app, this, report).open();
+    }
+
+    // --- 新增：修复版本文件哈希 ---
+    async repairVersionFile(filePath: string): Promise<boolean> {
+        const versionFile = await this.loadVersionFile(filePath);
+        let fixedCount = 0;
+
+        // 预先加载索引
+        if (!versionFile.versionIndex) {
+            this.buildVersionIndex(versionFile);
+        }
+
+        for (const version of versionFile.versions) {
+            if (version.hash) {
+                try {
+                    // 强制读取当前计算出的内容
+                    const content = await this.getVersionContent(filePath, version.id, true);
+                    const currentHash = this.hashContent(content);
+                    
+                    // 如果不匹配，且内容能读出来，说明是计算标准变了，更新哈希
+                    if (currentHash !== version.hash) {
+                        version.hash = currentHash;
+                        fixedCount++;
+                    }
+                } catch (e) {
+                    // 如果内容都读不出来，那就没法修哈希了
+                    console.warn(`Skipping repair for ${version.id}: content unreadable`);
+                }
+            }
+        }
+
+        if (fixedCount > 0) {
+            await this.saveVersionFile(filePath, versionFile);
+            // 更新缓存
+            this.versionCache.set(filePath, versionFile);
+            new Notice(`✅ 已修复 ${fixedCount} 个版本记录的哈希值`);
+            return true;
+        } else {
+            new Notice(`ℹ️ 未发现可修复的哈希问题`);
+            return false;
+        }
     }
 
     async updateVersionTags(filePath: string, versionId: string, tags: string[]) {
@@ -4791,11 +4831,36 @@ class IntegrityReportModal extends Modal {
                 fileItem.createEl('div', { text: `📄 ${item.filePath}`, cls: 'integrity-filepath' });
                 
                 const errorList = fileItem.createEl('ul', { cls: 'integrity-errors' });
+                
+                let hasHashError = false;
                 item.errors.forEach(err => {
                     errorList.createEl('li', { text: err });
+                    if (err.includes("哈希校验失败")) {
+                        hasHashError = true;
+                    }
                 });
 
-                const actionBtn = fileItem.createEl('button', { text: '🗑️ 删除此版本记录文件' });
+                const btnGroup = fileItem.createEl('div', { cls: 'integrity-actions', attr: { style: 'display: flex; gap: 10px; margin-top: 8px;' } });
+
+                // 仅当出现哈希错误时，显示修复按钮
+                if (hasHashError) {
+                    const fixBtn = btnGroup.createEl('button', { text: '🔧 尝试修复哈希' });
+                    fixBtn.addClass('mod-cta');
+                    fixBtn.addEventListener('click', async () => {
+                        const success = await this.plugin.repairVersionFile(item.filePath);
+                        if (success) {
+                            fixBtn.setText("✅ 已修复");
+                            fixBtn.setAttr('disabled', 'true');
+                            // 移除错误提示
+                            errorList.empty();
+                            errorList.createEl('li', { text: '哈希值已更新为当前计算结果。' });
+                        } else {
+                            fixBtn.setText("❌ 修复失败");
+                        }
+                    });
+                }
+
+                const actionBtn = btnGroup.createEl('button', { text: '🗑️ 删除此版本记录文件' });
                 actionBtn.addClass('mod-warning');
                 actionBtn.addEventListener('click', async () => {
                     new ConfirmModal(this.app, '确认删除', '确定要删除这个损坏的版本文件吗？所有历史记录将丢失。', async () => {
@@ -4835,7 +4900,7 @@ class VersionControlSettingTab extends PluginSettingTab {
     async display(): Promise<void> {
         const { containerEl } = this;
         containerEl.empty();
-
+        // ... (省略未变动的 SettingTab 内容，与上方代码相同，请直接使用完整代码块覆盖)
         containerEl.createEl('h2', { text: '版本控制设置' });
 
         if (this.plugin.settings.showVersionStats) {
@@ -5355,7 +5420,7 @@ class VersionControlSettingTab extends PluginSettingTab {
                         }
                     ).open();
                 }));
-        
+
         new Setting(containerEl)
             .setName('检查版本完整性')
             .setDesc('扫描所有版本文件，检测结构损坏、增量链条断裂或哈希不匹配的问题。')
