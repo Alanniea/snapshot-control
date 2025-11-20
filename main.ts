@@ -3093,10 +3093,17 @@ class DiffModal extends Modal {
                     .setTitle('字符/单词模式不使用上下文')
                     .setDisabled(true));
             } else {
+                // 修改：自定义上下文行数
                 menu.addItem(item => item
-                    .setTitle('0 (仅变更)')
-                    .setChecked(this.contextLines === 0)
-                    .onClick(() => { this.contextLines = 0; this.renderTextDiff(); }));
+                    .setTitle('自定义上下文行数...')
+                    .setChecked(this.contextLines !== 1 && this.contextLines !== 3 && this.contextLines !== 5 && this.contextLines !== 9999)
+                    .onClick(() => {
+                        new ContextLineInputModal(this.app, this.contextLines, (lines) => {
+                            this.contextLines = lines;
+                            this.renderTextDiff();
+                        }).open();
+                    }));
+
                 menu.addItem(item => item
                     .setTitle('1 行')
                     .setChecked(this.contextLines === 1)
@@ -5055,6 +5062,74 @@ class IntegrityReportModal extends Modal {
 
     onClose() {
         this.contentEl.empty();
+    }
+}
+
+// 新增：自定义上下文行数输入弹窗
+class ContextLineInputModal extends Modal {
+    currentLines: number;
+    onSubmit: (lines: number) => void;
+
+    constructor(app: App, currentLines: number, onSubmit: (lines: number) => void) {
+        super(app);
+        this.currentLines = currentLines;
+        this.onSubmit = onSubmit;
+    }
+
+    onOpen() {
+        const { contentEl } = this;
+        contentEl.createEl('h3', { text: '设置上下文行数' });
+        
+        let inputEl: HTMLInputElement;
+
+        new Setting(contentEl)
+            .setName('显示变更周围的行数')
+            .setDesc('输入0表示仅显示变更内容，输入9999表示显示全部内容。')
+            .addText(text => {
+                inputEl = text.inputEl;
+                text.inputEl.type = 'number';
+                text.setValue(String(this.currentLines))
+                    .onChange(value => {
+                        this.currentLines = parseInt(value);
+                    });
+                // 监听回车键
+                text.inputEl.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') {
+                        e.preventDefault();
+                        this.submit();
+                    }
+                });
+            });
+
+        const btnContainer = contentEl.createEl('div', { cls: 'modal-button-container' });
+        
+        const cancelBtn = btnContainer.createEl('button', { text: '取消' });
+        cancelBtn.addEventListener('click', () => this.close());
+
+        const confirmBtn = btnContainer.createEl('button', { 
+            text: '确定', 
+            cls: 'mod-cta' 
+        });
+        confirmBtn.addEventListener('click', () => this.submit());
+        
+        // 自动聚焦输入框
+        setTimeout(() => {
+            if(inputEl) inputEl.focus();
+        }, 50);
+    }
+
+    submit() {
+        if (isNaN(this.currentLines) || this.currentLines < 0) {
+            new Notice('请输入有效的非负整数');
+            return;
+        }
+        this.onSubmit(this.currentLines);
+        this.close();
+    }
+
+    onClose() {
+        const { contentEl } = this;
+        contentEl.empty();
     }
 }
 
