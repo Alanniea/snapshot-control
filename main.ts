@@ -183,6 +183,13 @@ export default class VersionControlPlugin extends Plugin {
             callback: () => this.optimizeAllVersionFiles()
         });
 
+        // --- 新增命令：检查完整性 ---
+        this.addCommand({
+            id: 'check-version-integrity',
+            name: '检查版本完整性',
+            callback: () => this.checkAllVersionsIntegrity()
+        });
+
         this.addCommand({
             id: 'quick-preview-version',
             name: '快速预览上一版本',
@@ -521,18 +528,15 @@ export default class VersionControlPlugin extends Plugin {
         }).open();
     }
 
-    // --- 核心修复：标准化换行符 ---
     normalizeText(text: string): string {
         if (!text) return "";
-        // 将 CRLF 或 CR 统一转换为 LF
         return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
     }
 
-    // --- 核心修复：增强版创建版本逻辑（包含自检和容错） ---
     async createVersion(file: TFile, message: string, showNotification: boolean = false, tags: string[] = [], isManual: boolean = false) {
         try {
             const rawContent = await this.app.vault.read(file);
-            const content = this.normalizeText(rawContent); // 标准化
+            const content = this.normalizeText(rawContent);
             
             const timestamp = Date.now();
             const id = `${timestamp}-${Math.random().toString(36).substring(2, 9)}`;
@@ -540,7 +544,6 @@ export default class VersionControlPlugin extends Plugin {
             
             const versionFile = await this.loadVersionFile(file.path);
             
-            // 去重逻辑
             if (this.settings.enableDeduplication) {
                 const latestVersion = versionFile.versions[0];
                 if (latestVersion && latestVersion.hash === hash) {
@@ -571,7 +574,6 @@ export default class VersionControlPlugin extends Plugin {
             let addedLines = 0;
             let removedLines = 0;
 
-            // 计算统计信息
             if (versionFile.versions.length > 0) {
                 try {
                     const previousContentRaw = await this.getVersionContent(file.path, versionFile.versions[0].id);
@@ -588,7 +590,6 @@ export default class VersionControlPlugin extends Plugin {
                 addedLines = content.split('\n').length;
             }
 
-            // 核心增量逻辑
             let useIncremental = false;
             let diffStr = "";
             let baseVersionId = "";
@@ -604,7 +605,6 @@ export default class VersionControlPlugin extends Plugin {
 
                         const tempDiff = this.createDiff(baseContent, content);
                         
-                        // --- 自检机制：验证 Diff 能否正确还原 ---
                         const testApply = Diff.applyPatch(baseContent, tempDiff);
                         
                         if (testApply !== false && this.normalizeText(testApply) === content) {
@@ -633,7 +633,7 @@ export default class VersionControlPlugin extends Plugin {
             } else {
                 newVersion = {
                     id, timestamp, message, 
-                    content: content, // 存储标准化内容
+                    content: content,
                     size: content.length, hash,
                     tags: tags.length > 0 ? tags : undefined,
                     starred: false, addedLines, removedLines
@@ -844,7 +844,6 @@ export default class VersionControlPlugin extends Plugin {
         }
     }
 
-    // --- 核心修复：获取内容时强制标准化和校验 ---
     async getVersionContent(filePath: string, versionId: string, suppressNotice: boolean = false): Promise<string> {
         try {
             const versionFile = await this.loadVersionFile(filePath);
@@ -882,7 +881,6 @@ export default class VersionControlPlugin extends Plugin {
                         if (result === false) {
                              console.error(`版本 ${vId} 还原失败: Diff Patch 不匹配`);
                              if (!suppressNotice) new Notice("⚠️ 增量还原失败：补丁不匹配");
-                             // 失败时返回基准，避免 crash，但内容可能是错的
                              return normalizedBase; 
                         }
                         return this.normalizeText(result);
@@ -904,40 +902,141 @@ export default class VersionControlPlugin extends Plugin {
     }
 
     async verifyVersionFileIntegrity(filePath: string): Promise<boolean> {
-        try {
-            const versionFile = await this.loadVersionFile(filePath);
-            
-            if (!versionFile.versions || !Array.isArray(versionFile.versions)) {
-                console.error('版本文件结构无效');
-                return false;
-            }
-            
-            if (this.settings.enableIncrementalStorage) {
-                let hasFullVersion = false;
-                
-                for (const version of versionFile.versions) {
-                    if (version.content !== undefined) {
-                        hasFullVersion = true;
-                    }
-                    
-                    if (version.diff && !version.content) {
-                        if (!version.baseVersionId && !versionFile.baseVersion) {
-                            console.error(`版本 ${version.id} 缺少基准引用`);
-                            return false;
-                        }
-                    }
-                }
-                
-                if (!hasFullVersion && versionFile.versions.length > 0) {
-                    console.warn('警告：没有找到完整版本，可能导致恢复失败');
-                }
-            }
-            
-            return true;
-        } catch (error) {
-            console.error('验证版本文件完整性失败:', error);
-            return false;
+        const errors = await this.verifyFileVersion(filePath);
+        return errors.length === 0;
+    }
+
+    // --- 新增：检查单个文件的完整性 ---
+    async verifyFileVersion(filePath: string): Promise<string[]> {
+        const errors: string[] = [];
+        const versionPath = this.getVersionFilePath(filePath);
+        
+        if (!await this.app.vault.adapter.exists(versionPath)) {
+            return []; // 文件不存在不是错误，只是没版本
         }
+
+        let versionFile: VersionFile;
+        try {
+            // 1. 尝试加载和解析（这会自动测试 gzip 解压和 JSON 格式）
+            let content: string;
+            if (this.settings.enableCompression) {
+                try {
+                    const rawData = await this.app.vault.adapter.readBinary(versionPath);
+                    content = pako.ungzip(new Uint8Array(rawData), { to: 'string' });
+                } catch (e) {
+                    try {
+                        content = await this.app.vault.adapter.read(versionPath);
+                        JSON.parse(content);
+                    } catch (e2) {
+                        throw new Error("文件损坏：无法解压且不是有效的 JSON");
+                    }
+                }
+            } else {
+                content = await this.app.vault.adapter.read(versionPath);
+            }
+            versionFile = JSON.parse(content) as VersionFile;
+        } catch (error) {
+            errors.push(`文件读取失败: ${error.message}`);
+            return errors;
+        }
+
+        if (!versionFile.versions || !Array.isArray(versionFile.versions)) {
+            errors.push("文件结构错误: versions 字段丢失或无效");
+            return errors;
+        }
+
+        const versionMap = new Map<string, VersionData>();
+        versionFile.versions.forEach(v => versionMap.set(v.id, v));
+        
+        // 2. 检查每个版本的完整性
+        for (const version of versionFile.versions) {
+            if (!version.id || !version.timestamp) {
+                errors.push(`版本记录损坏: 缺少 ID 或时间戳`);
+                continue;
+            }
+
+            if (version.diff) {
+                if (!version.baseVersionId && !versionFile.baseVersion) {
+                    errors.push(`版本 ${version.id.substring(0,8)}: 是增量版本但缺少 baseVersionId`);
+                } else if (version.baseVersionId && !versionMap.has(version.baseVersionId)) {
+                    errors.push(`版本 ${version.id.substring(0,8)}: 依赖的基准版本 (${version.baseVersionId.substring(0,8)}) 丢失 (链条断裂)`);
+                }
+            } else if (version.content === undefined) {
+                errors.push(`版本 ${version.id.substring(0,8)}: 既无 content 也无 diff，数据丢失`);
+            }
+
+            // 3. 尝试还原内容并校验 Hash
+            if (version.hash) {
+                try {
+                    const content = await this.getVersionContent(filePath, version.id, true);
+                    const currentHash = this.hashContent(content);
+                    if (currentHash !== version.hash) {
+                        errors.push(`版本 ${version.id.substring(0,8)}: 哈希校验失败 (数据可能被篡改)`);
+                    }
+                } catch (e) {
+                    errors.push(`版本 ${version.id.substring(0,8)}: 无法还原内容 - ${e.message}`);
+                }
+            }
+        }
+
+        return errors;
+    }
+
+    // --- 新增：执行全库检查 ---
+    async checkAllVersionsIntegrity() {
+        const adapter = this.app.vault.adapter;
+        const folderPath = this.settings.versionFolder;
+
+        if (!await adapter.exists(folderPath)) {
+            new Notice("版本文件夹不存在，无需检查。");
+            return;
+        }
+
+        const files = await adapter.list(folderPath);
+        const jsonFiles = files.files.filter(f => f.endsWith('.json'));
+        const total = jsonFiles.length;
+        
+        const notice = new Notice(`正在检查完整性... 0/${total}`, 0);
+        const report: { filePath: string; errors: string[] }[] = [];
+
+        for (let i = 0; i < total; i++) {
+            const file = jsonFiles[i];
+            const rawFileName = file.replace(folderPath + '/', '').replace('.json', '');
+            
+            let originalFilePath = rawFileName; 
+            try {
+                let contentStr = "";
+                try {
+                    contentStr = await adapter.read(file);
+                    if (!contentStr.startsWith('{')) {
+                         const bin = await adapter.readBinary(file);
+                         contentStr = pako.ungzip(new Uint8Array(bin), { to: 'string' });
+                    }
+                } catch(e) { /* ignore */ }
+                
+                if (contentStr) {
+                    const vData = JSON.parse(contentStr) as VersionFile;
+                    if (vData.filePath) originalFilePath = vData.filePath;
+                }
+            } catch (e) {
+                report.push({ filePath: rawFileName, errors: ["文件完全无法读取/解压"] });
+                continue; 
+            }
+
+            const errors = await this.verifyFileVersion(originalFilePath);
+            
+            if (errors.length > 0) {
+                report.push({ filePath: originalFilePath, errors });
+            }
+
+            if (i % 10 === 0) {
+                notice.setMessage(`正在检查完整性... ${i + 1}/${total}`);
+                await new Promise(resolve => setTimeout(resolve, 5)); 
+            }
+        }
+
+        notice.hide();
+        new IntegrityReportModal(this.app, this, report).open();
     }
 
     async updateVersionTags(filePath: string, versionId: string, tags: string[]) {
@@ -1129,13 +1228,11 @@ export default class VersionControlPlugin extends Plugin {
 
         const progressNotice = new Notice(`正在准备全库快照... (0/${total})`, 0);
         
-        // 辅助函数：简单的睡眠，让出主线程防止卡死
         const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
         for (let i = 0; i < total; i++) {
             const file = files[i];
             
-            // 每处理 10 个文件暂停 10ms，防止界面卡死
             if (i % 10 === 0) {
                 progressNotice.setMessage(`正在创建全库快照... (${i + 1}/${total})`);
                 await sleep(10); 
@@ -1147,7 +1244,6 @@ export default class VersionControlPlugin extends Plugin {
             }
 
             try {
-                // 传递 isManual: true 以允许在内容未变化时，将上一条自动保存记录升级为快照记录
                 await this.createVersion(file, '[Full Snapshot]', false, [], true);
                 count++;
             } catch (error) {
@@ -1594,7 +1690,6 @@ class VersionHistoryView extends ItemView {
             version.removedLines = removed;
     
         } catch (error) {
-            // console.error(`计算版本 ${version.id} 的差异统计失败:`, error);
             version.addedLines = 0;
             version.removedLines = 0;
         }
@@ -3901,7 +3996,6 @@ class DiffModal extends Modal {
                             const rightFrag = createHighlightedFragment(lineDiff.filter(p => !p.removed), false);
                             renderLine(rightFrag, 'added', null, rightLineNum++, undefined, oldLine);
                         } else {
-                            // 修复：将这里的 false 改为 true，以显示删除的内容
                             const combinedFrag = createHighlightedFragment(lineDiff, true);
                             renderLine(combinedFrag, 'modified', leftLineNum++, rightLineNum++, undefined, oldLine);
                         }
@@ -4666,6 +4760,70 @@ class VersionSelectModal extends Modal {
     }
 }
 
+class IntegrityReportModal extends Modal {
+    report: { filePath: string; errors: string[] }[];
+    plugin: VersionControlPlugin;
+
+    constructor(app: App, plugin: VersionControlPlugin, report: { filePath: string; errors: string[] }[]) {
+        super(app);
+        this.plugin = plugin;
+        this.report = report;
+    }
+
+    onOpen() {
+        const { contentEl } = this;
+        contentEl.addClass('integrity-report-modal');
+        contentEl.createEl('h2', { text: '🛡️ 版本完整性检查报告' });
+
+        if (this.report.length === 0) {
+            const successDiv = contentEl.createEl('div', { cls: 'integrity-success' });
+            successDiv.createEl('span', { text: '✅', cls: 'integrity-icon' });
+            successDiv.createEl('h3', { text: '所有版本文件完好无损！' });
+            successDiv.createEl('p', { text: '检测了所有版本记录，未发现结构错误、链条断裂或哈希不匹配。' });
+        } else {
+            const warningDiv = contentEl.createEl('div', { cls: 'integrity-warning' });
+            warningDiv.createEl('p', { text: `⚠️ 发现 ${this.report.length} 个文件存在问题。` });
+
+            const listContainer = contentEl.createEl('div', { cls: 'integrity-list' });
+
+            this.report.forEach(item => {
+                const fileItem = listContainer.createEl('div', { cls: 'integrity-item' });
+                fileItem.createEl('div', { text: `📄 ${item.filePath}`, cls: 'integrity-filepath' });
+                
+                const errorList = fileItem.createEl('ul', { cls: 'integrity-errors' });
+                item.errors.forEach(err => {
+                    errorList.createEl('li', { text: err });
+                });
+
+                const actionBtn = fileItem.createEl('button', { text: '🗑️ 删除此版本记录文件' });
+                actionBtn.addClass('mod-warning');
+                actionBtn.addEventListener('click', async () => {
+                    new ConfirmModal(this.app, '确认删除', '确定要删除这个损坏的版本文件吗？所有历史记录将丢失。', async () => {
+                        try {
+                            const versionPath = this.plugin.getVersionFilePath(item.filePath);
+                            if (await this.app.vault.adapter.exists(versionPath)) {
+                                await this.app.vault.adapter.remove(versionPath);
+                                this.plugin.versionCache.delete(item.filePath);
+                                new Notice('已删除损坏的文件');
+                                fileItem.remove();
+                            }
+                        } catch (e) {
+                            new Notice('删除失败');
+                        }
+                    }).open();
+                });
+            });
+        }
+        
+        const btnContainer = contentEl.createEl('div', { cls: 'modal-button-container' });
+        btnContainer.createEl('button', { text: '关闭' }).addEventListener('click', () => this.close());
+    }
+
+    onClose() {
+        this.contentEl.empty();
+    }
+}
+
 class VersionControlSettingTab extends PluginSettingTab {
     plugin: VersionControlPlugin;
 
@@ -5196,6 +5354,15 @@ class VersionControlSettingTab extends PluginSettingTab {
                             await this.clearAllVersions();
                         }
                     ).open();
+                }));
+        
+        new Setting(containerEl)
+            .setName('检查版本完整性')
+            .setDesc('扫描所有版本文件，检测结构损坏、增量链条断裂或哈希不匹配的问题。')
+            .addButton(button => button
+                .setButtonText('开始检查')
+                .onClick(async () => {
+                    await this.plugin.checkAllVersionsIntegrity();
                 }));
 
         new Setting(containerEl)
