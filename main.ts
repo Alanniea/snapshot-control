@@ -416,7 +416,8 @@ export default class VersionControlPlugin extends Plugin {
         }
 
         try {
-            const content = await this.app.vault.read(file);
+            const rawContent = await this.app.vault.read(file);
+            const content = this.normalizeText(rawContent);
             
             const versions = await this.getAllVersions(file.path);
             let lastContent = '';
@@ -520,15 +521,26 @@ export default class VersionControlPlugin extends Plugin {
         }).open();
     }
 
+    // --- 核心修复：标准化换行符 ---
+    normalizeText(text: string): string {
+        if (!text) return "";
+        // 将 CRLF 或 CR 统一转换为 LF
+        return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    }
+
+    // --- 核心修复：增强版创建版本逻辑（包含自检和容错） ---
     async createVersion(file: TFile, message: string, showNotification: boolean = false, tags: string[] = [], isManual: boolean = false) {
         try {
-            const content = await this.app.vault.read(file);
+            const rawContent = await this.app.vault.read(file);
+            const content = this.normalizeText(rawContent); // 标准化
+            
             const timestamp = Date.now();
             const id = `${timestamp}-${Math.random().toString(36).substring(2, 9)}`;
             const hash = this.hashContent(content);
             
             const versionFile = await this.loadVersionFile(file.path);
             
+            // 去重逻辑
             if (this.settings.enableDeduplication) {
                 const latestVersion = versionFile.versions[0];
                 if (latestVersion && latestVersion.hash === hash) {
@@ -556,53 +568,78 @@ export default class VersionControlPlugin extends Plugin {
             }
 
             let newVersion: VersionData;
-
             let addedLines = 0;
             let removedLines = 0;
+
+            // 计算统计信息
             if (versionFile.versions.length > 0) {
-                const previousContent = await this.getVersionContent(file.path, versionFile.versions[0].id);
-                const diffResult = Diff.diffLines(previousContent, content);
-                diffResult.forEach(part => {
-                    if (part.added) addedLines += part.count || 0;
-                    if (part.removed) removedLines += part.count || 0;
-                });
+                try {
+                    const previousContentRaw = await this.getVersionContent(file.path, versionFile.versions[0].id);
+                    const previousContent = this.normalizeText(previousContentRaw);
+                    const diffResult = Diff.diffLines(previousContent, content);
+                    diffResult.forEach(part => {
+                        if (part.added) addedLines += part.count || 0;
+                        if (part.removed) removedLines += part.count || 0;
+                    });
+                } catch (e) {
+                    console.warn("无法计算 Diff 统计", e);
+                }
             } else {
                 addedLines = content.split('\n').length;
             }
 
+            // 核心增量逻辑
+            let useIncremental = false;
+            let diffStr = "";
+            let baseVersionId = "";
+
             if (this.settings.enableIncrementalStorage && versionFile.versions.length > 0) {
                 const shouldRebuildBase = (versionFile.versions.length % this.settings.rebuildBaseInterval === 0);
                 
-                if (shouldRebuildBase) {
-                    newVersion = {
-                        id, timestamp, message, 
-                        content: content, 
-                        size: content.length, hash,
-                        tags: tags.length > 0 ? tags : undefined,
-                        starred: false, addedLines, removedLines
-                    };
-                } else {
-                    const prevVersionId = versionFile.versions[0].id;
-                    const baseContent = await this.getVersionContent(file.path, prevVersionId);
-                    const diff = this.createDiff(baseContent, content);
-                    
-                    newVersion = {
-                        id, timestamp, message, 
-                        diff: diff, 
-                        baseVersionId: prevVersionId, 
-                        size: diff.length, hash,
-                        tags: tags.length > 0 ? tags : undefined,
-                        starred: false, addedLines, removedLines
-                    };
+                if (!shouldRebuildBase) {
+                    try {
+                        const prevVersionId = versionFile.versions[0].id;
+                        const baseContentRaw = await this.getVersionContent(file.path, prevVersionId);
+                        const baseContent = this.normalizeText(baseContentRaw);
+
+                        const tempDiff = this.createDiff(baseContent, content);
+                        
+                        // --- 自检机制：验证 Diff 能否正确还原 ---
+                        const testApply = Diff.applyPatch(baseContent, tempDiff);
+                        
+                        if (testApply !== false && this.normalizeText(testApply) === content) {
+                            useIncremental = true;
+                            diffStr = tempDiff;
+                            baseVersionId = prevVersionId;
+                        } else {
+                            console.warn(`[VersionControl] 增量补丁验证失败，降级为完整快照。File: ${file.path}`);
+                        }
+                    } catch (err) {
+                        console.error("生成增量版本时出错，降级为完整快照", err);
+                        useIncremental = false;
+                    }
                 }
+            }
+
+            if (useIncremental) {
+                newVersion = {
+                    id, timestamp, message, 
+                    diff: diffStr, 
+                    baseVersionId: baseVersionId, 
+                    size: diffStr.length, hash,
+                    tags: tags.length > 0 ? tags : undefined,
+                    starred: false, addedLines, removedLines
+                };
             } else {
                 newVersion = {
-                    id, timestamp, message, content, size: content.length, hash,
+                    id, timestamp, message, 
+                    content: content, // 存储标准化内容
+                    size: content.length, hash,
                     tags: tags.length > 0 ? tags : undefined,
                     starred: false, addedLines, removedLines
                 };
                 
-                if (!versionFile.baseVersion) {
+                if (!versionFile.baseVersion && versionFile.versions.length === 0) {
                     versionFile.baseVersion = content;
                 }
             }
@@ -807,6 +844,7 @@ export default class VersionControlPlugin extends Plugin {
         }
     }
 
+    // --- 核心修复：获取内容时强制标准化和校验 ---
     async getVersionContent(filePath: string, versionId: string, suppressNotice: boolean = false): Promise<string> {
         try {
             const versionFile = await this.loadVersionFile(filePath);
@@ -823,7 +861,7 @@ export default class VersionControlPlugin extends Plugin {
                 }
         
                 if (version.content !== undefined && version.content !== null) {
-                    return version.content;
+                    return this.normalizeText(version.content);
                 }
         
                 if (version.diff) {
@@ -832,13 +870,22 @@ export default class VersionControlPlugin extends Plugin {
                     if (version.baseVersionId) {
                         baseContent = await resolveContent(version.baseVersionId, depth + 1);
                     } else if (versionFile.baseVersion !== undefined && versionFile.baseVersion !== null) {
-                        baseContent = versionFile.baseVersion;
+                        baseContent = this.normalizeText(versionFile.baseVersion);
                     } else {
                          throw new Error(`版本 ${vId} 既无内容也无有效基准引用`);
                     }
 
                     try {
-                        return this.applyDiff(baseContent, version.diff, suppressNotice);
+                        const normalizedBase = this.normalizeText(baseContent);
+                        const result = Diff.applyPatch(normalizedBase, version.diff);
+                        
+                        if (result === false) {
+                             console.error(`版本 ${vId} 还原失败: Diff Patch 不匹配`);
+                             if (!suppressNotice) new Notice("⚠️ 增量还原失败：补丁不匹配");
+                             // 失败时返回基准，避免 crash，但内容可能是错的
+                             return normalizedBase; 
+                        }
+                        return this.normalizeText(result);
                     } catch (error) {
                         console.error(`应用补丁失败 (Version: ${vId}):`, error);
                         throw new Error(`还原版本 ${vId} 失败: 补丁应用错误`);
@@ -1693,7 +1740,8 @@ class VersionHistoryView extends ItemView {
 
         if (allVersions.length > 0) {
             try {
-                const currentContent = await this.app.vault.read(file);
+                const rawCurrentContent = await this.app.vault.read(file);
+                const currentContent = this.plugin.normalizeText(rawCurrentContent);
                 const lastVersion = allVersions[0];
                 const lastContent = await this.plugin.getVersionContent(file.path, lastVersion.id);
                 
