@@ -1,4 +1,3 @@
-
 import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, Modal, ItemView, WorkspaceLeaf, Menu, TextComponent, MarkdownRenderer, Platform } from 'obsidian';
 import * as Diff from 'diff';
 import * as pako from 'pako';
@@ -1602,8 +1601,8 @@ class QuickPreviewModal extends Modal {
     private versionContent: string;
     private toggleButton: HTMLButtonElement;
 
-    constructor(app: App, plugin: VersionControlPlugin, file: TFile, versionId: string) {
-        super(app);
+    constructor(App: App, plugin: VersionControlPlugin, file: TFile, versionId: string) {
+        super(App);
         this.plugin = plugin;
         this.file = file;
         this.versionId = versionId;
@@ -3093,36 +3092,17 @@ class DiffModal extends Modal {
                     .setTitle('字符/单词模式不使用上下文')
                     .setDisabled(true));
             } else {
-                // 修改：自定义上下文行数
                 menu.addItem(item => item
-                    .setTitle('自定义上下文行数...')
-                    .setChecked(this.contextLines !== 1 && this.contextLines !== 3 && this.contextLines !== 5 && this.contextLines !== 9999)
+                    .setTitle(`自定义上下文行数... (当前: ${this.contextLines >= 9999 ? '全部' : this.contextLines})`)
+                    .setDisabled(isSentenceSemantic)
                     .onClick(() => {
-                        new ContextLineInputModal(this.app, this.contextLines, (lines) => {
-                            this.contextLines = lines;
-                            this.renderTextDiff();
-                        }).open();
+                        if (!isSentenceSemantic) {
+                            new ContextLineInputModal(this.app, this.contextLines, (lines) => {
+                                this.contextLines = lines;
+                                this.renderTextDiff();
+                            }).open();
+                        }
                     }));
-
-                menu.addItem(item => item
-                    .setTitle('1 行')
-                    .setChecked(this.contextLines === 1)
-                    .setDisabled(isSentenceSemantic)
-                    .onClick(() => { if (!isSentenceSemantic) { this.contextLines = 1; this.renderTextDiff(); } }));
-                menu.addItem(item => item
-                    .setTitle('3 行')
-                    .setChecked(this.contextLines === 3)
-                    .setDisabled(isSentenceSemantic)
-                    .onClick(() => { if (!isSentenceSemantic) { this.contextLines = 3; this.renderTextDiff(); } }));
-                menu.addItem(item => item
-                    .setTitle('5 行')
-                    .setChecked(this.contextLines === 5)
-                    .setDisabled(isSentenceSemantic)
-                    .onClick(() => { if (!isSentenceSemantic) { this.contextLines = 5; this.renderTextDiff(); } }));
-                menu.addItem(item => item
-                    .setTitle(isSentenceSemantic ? '显示全部' : '全部')
-                    .setChecked(this.contextLines >= 9999)
-                    .onClick(() => { this.contextLines = 9999; this.renderTextDiff(); }));
             }
 
             menu.addSeparator();
@@ -5598,21 +5578,17 @@ class VersionControlSettingTab extends PluginSettingTab {
         
         new Setting(containerEl)
             .setName('差异上下文行数')
-            .setDesc('差异对比时，在变更内容周围显示的上下文行数。')
-            .addDropdown(dropdown => {
-                dropdown
-                    .addOption('0', '0 行 (仅变更)')
-                    .addOption('1', '1 行')
-                    .addOption('3', '3 行 (默认)')
-                    .addOption('5', '5 行')
-                    .addOption('9999', '全部 (显示所有)')
-                    .setValue(String(this.plugin.settings.diffContextLines))
-                    .onChange(async (value) => {
-                        this.plugin.settings.diffContextLines = Number(value);
-                        if (this.plugin.settings.diffContextLines > 9000) this.plugin.settings.diffContextLines = 9999;
+            .setDesc('差异对比时，在变更内容周围显示的上下文行数 (0=仅变更, 9999=显示全部)。')
+            .addText(text => text
+                .setPlaceholder('3')
+                .setValue(String(this.plugin.settings.diffContextLines))
+                .onChange(async (value) => {
+                    const num = parseInt(value);
+                    if (!isNaN(num) && num >= 0) {
+                        this.plugin.settings.diffContextLines = num;
                         await this.plugin.saveSettings();
-                    });
-            });
+                    }
+                }));
 
         new Setting(containerEl)
             .setName('启用智能单词对比')
