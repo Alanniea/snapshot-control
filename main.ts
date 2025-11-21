@@ -1,3 +1,4 @@
+
 import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, Modal, ItemView, WorkspaceLeaf, Menu, TextComponent, MarkdownRenderer, Platform } from 'obsidian';
 import * as Diff from 'diff';
 import * as pako from 'pako';
@@ -2924,7 +2925,7 @@ class DiffModal extends Modal {
 
             if (content.startsWith('#')) type = 'heading';
             else if (content.startsWith('```')) type = 'code';
-            else if (content.startsWith('>')) type = 'quote';
+            else if (content.startsWith(' >')) type = 'quote';
             else if (content.match(/^(\*|-|\+)\s/) || content.match(/^\d+\.\s/)) type = 'list';
             else if (content.match(/^(---|___|\*\*\*)$/)) type = 'thematicBreak';
             
@@ -4101,14 +4102,15 @@ class DiffModal extends Modal {
                 const leftLines = part.value.replace(/\n$/, '').split('\n');
                 const rightLines = nextPart.value.replace(/\n$/, '').split('\n');
                 
-                if (leftLines.length === rightLines.length) {
-                    for (let j = 0; j < leftLines.length; j++) {
+                if (useCompactView || leftLines.length === rightLines.length) {
+                    const minLen = Math.min(leftLines.length, rightLines.length);
+                    
+                    for (let j = 0; j < minLen; j++) {
                         const oldLine = leftLines[j];
                         const newLine = rightLines[j];
                         const lineDiff = secondaryDiffFn(oldLine, newLine);
                         
                         if (!useCompactView) {
-                            
                             const leftFrag = createHighlightedFragment(lineDiff.filter(p => !p.added), false);
                             renderLine(leftFrag, 'removed', leftLineNum++, null);
                             
@@ -4119,11 +4121,20 @@ class DiffModal extends Modal {
                             renderLine(combinedFrag, 'modified', leftLineNum++, rightLineNum++, undefined, oldLine);
                         }
                     }
+
+                    for (let j = minLen; j < leftLines.length; j++) {
+                        renderLine(leftLines[j], 'removed', leftLineNum++, null);
+                    }
+
+                    for (let j = minLen; j < rightLines.length; j++) {
+                        renderLine(rightLines[j], 'added', null, rightLineNum++, undefined, null);
+                    }
+
                 } else {
-                    part.value.replace(/\n$/, '').split('\n').forEach(line => {
+                    leftLines.forEach(line => {
                         renderLine(line, 'removed', leftLineNum++, null);
                     });
-                    nextPart.value.replace(/\n$/, '').split('\n').forEach(line => {
+                    rightLines.forEach(line => {
                         renderLine(line, 'added', null, rightLineNum++, undefined, null);
                     });
                 }
