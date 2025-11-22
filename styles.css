@@ -824,6 +824,8 @@
     border-radius: 5px;
     margin-bottom: 10px;
     transition: all 0.2s ease-in-out;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+    background-color: var(--background-primary);
 }
 
 .structured-section summary {
@@ -833,6 +835,11 @@
     align-items: center;
     gap: 8px;
     background-color: var(--background-secondary);
+}
+
+.structured-section[open] {
+    box-shadow: 0 4px 8px rgba(0,0,0,0.06);
+    border-color: var(--interactive-accent);
 }
 
 .structured-section[open] > summary {
@@ -1176,43 +1183,9 @@
     border: 1px solid var(--background-modifier-border);
 }
 
-.diff-toolbar button,
-.diff-toolbar select,
-.diff-toolbar input[type="number"] {
-    padding: 6px 12px;
-    background: var(--interactive-normal);
-    color: var(--text-normal);
-    border: 1px solid var(--background-modifier-border);
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 12px;
-    transition: all 0.2s ease;
-}
-
 .diff-toolbar input[type="number"] {
     text-align: center;
     padding: 4px 8px;
-}
-
-.diff-toolbar button:hover {
-    background: var(--interactive-hover);
-    transform: translateY(-1px);
-}
-
-.diff-toolbar button:active {
-    transform: translateY(0);
-}
-
-.diff-toolbar button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-    transform: none;
-}
-
-.diff-toolbar button.active {
-    background: var(--interactive-accent);
-    color: var(--text-on-accent);
-    border-color: var(--interactive-accent);
 }
 
 .diff-context-toggle.active,
@@ -1240,23 +1213,100 @@
     text-align: center;
 }
 
-.diff-container {
-    flex: 1;
-    overflow: auto;
-    background: var(--background-primary);
-    border: 1px solid var(--background-modifier-border);
-    border-radius: 6px;
-    padding: 15px;
-    font-family: var(--font-monospace);
-    font-size: 13px;
-    line-height: 1.6;
-    position: relative;
+/* ======================================================================= */
+/* =================== [增强] 行内差异视觉优化 ========================== */
+/* ======================================================================= */
+
+/* 整行背景色 - GitHub/GitLab 风格 */
+.diff-line-bg-added,
+.diff-line.diff-added {
+    background: rgba(46, 160, 67, 0.15);
+    color: var(--text-normal);
+    border-left: 3px solid #2ea043;
 }
 
-.diff-container.diff-wrap-lines .line-content {
-    white-space: pre-wrap;
-    word-break: break-word;
+.diff-line-bg-removed,
+.diff-line.diff-removed {
+    background: rgba(248, 81, 73, 0.15);
+    color: var(--text-normal);
+    border-left: 3px solid #f85149;
 }
+
+.diff-line-bg-modified,
+.diff-line.diff-modified {
+    background: rgba(219, 174, 14, 0.15);
+    color: var(--text-normal);
+    border-left: 3px solid #d29922;
+}
+
+/* 具体差异文字背景色 - 强调变化部分 */
+.diff-word-added {
+    background-color: rgba(46, 160, 67, 0.4) !important;
+    color: var(--text-normal);
+    border-radius: 2px;
+    padding: 0 3px;
+    font-weight: 600;
+    box-shadow: 0 0 0 1px rgba(46, 160, 67, 0.3);
+}
+
+.diff-word-removed {
+    background-color: rgba(248, 81, 73, 0.4) !important;
+    color: var(--text-muted);
+    border-bottom: 1px solid rgba(244, 67, 54, 0.4);
+    border-radius: 2px;
+    opacity: 0.85;
+    padding: 0 3px;
+    font-weight: 600;
+    box-shadow: 0 0 0 1px rgba(248, 81, 73, 0.3);
+}
+
+.diff-char-added {
+    background: rgba(46, 160, 67, 0.6) !important;
+    padding: 1px 3px;
+    border-radius: 3px;
+    font-weight: 600;
+    box-shadow: 0 0 0 1px rgba(46, 160, 67, 0.3);
+}
+
+.diff-char-removed {
+    background: rgba(248, 81, 73, 0.6) !important;
+    padding: 1px 3px;
+    border-radius: 3px;
+    opacity: 0.85;
+    font-weight: 600;
+    box-shadow: 0 0 0 1px rgba(248, 81, 73, 0.3);
+}
+
+/* ======================================================================= */
+/* =================== [修复] 移动文本检测样式 ========================== */
+/* ======================================================================= */
+
+/* 为移动的行提供独特的蓝色视觉样式 */
+.diff-line.diff-moved-from,
+.diff-line.diff-moved-to {
+    background-color: rgba(58, 112, 165, 0.15);
+    border-left: 3px solid #3a70a5;
+}
+
+.diff-line.diff-moved-from:hover,
+.diff-line.diff-moved-to:hover {
+    background-color: rgba(58, 112, 165, 0.25) !important;
+}
+
+.diff-line.diff-moved-from .diff-marker,
+.diff-line.diff-moved-to .diff-marker {
+    color: #6c95bd;
+    font-weight: bold;
+}
+
+/* 悬停时关联高亮的效果 */
+.diff-line.diff-move-highlight {
+    outline: 2px solid #3a70a5;
+    box-shadow: 0 0 10px rgba(58, 112, 165, 0.5);
+    z-index: 20;
+}
+
+/* ======================================================================= */
 
 .diff-line {
     display: flex;
@@ -1298,24 +1348,12 @@
     overflow-x: auto;
 }
 
-.diff-added {
-    background: rgba(46, 160, 67, 0.15);
-    color: var(--text-normal);
-    border-left: 3px solid #2ea043;
-}
-
 .diff-added .diff-marker {
     color: #2ea043;
 }
 
 .diff-added:hover {
     background: rgba(46, 160, 67, 0.25) !important;
-}
-
-.diff-removed {
-    background: rgba(248, 81, 73, 0.15);
-    color: var(--text-normal);
-    border-left: 3px solid #f85149;
 }
 
 .diff-removed .diff-marker {
@@ -1330,21 +1368,22 @@
     opacity: 0.7;
 }
 
-/* === [修复] 紧凑视图下修改行的背景色 === */
-.diff-modified {
-    background: rgba(255, 193, 7, 0.15);
-    color: var(--text-normal);
-    border-left: 3px solid #d29922;
-}
-
 .diff-modified .diff-marker {
     color: #d29922;
 }
 
 .diff-modified:hover {
-    background: rgba(255, 193, 7, 0.25) !important;
+    background: rgba(219, 174, 14, 0.25) !important;
 }
-/* === [修复结束] === */
+
+.diff-modified .line-content span {
+    display: inline;
+}
+
+.diff-modified .diff-char-added,
+.diff-modified .diff-char-removed {
+    padding: 1px 2px;
+}
 
 .diff-context {
     background: transparent;
@@ -1372,7 +1411,13 @@
 }
 
 .diff-placeholder {
-    background: var(--background-secondary);
+    background: repeating-linear-gradient(
+        45deg,
+        transparent,
+        transparent 10px,
+        var(--background-modifier-border) 10px,
+        var(--background-modifier-border) 11px
+    );
     opacity: 0.3;
     min-height: 20px;
 }
@@ -1449,28 +1494,26 @@
     background: var(--background-secondary);
 }
 
-.diff-char-added {
-    background: rgba(46, 160, 67, 0.4);
-    padding: 0 3px;
-    border-radius: 3px;
-    font-weight: 600;
-    box-shadow: 0 0 0 1px rgba(46, 160, 67, 0.3);
-}
-
-.diff-char-removed {
-    background: rgba(248, 81, 73, 0.4);
-    padding: 0 3px;
-    border-radius: 3px;
-    opacity: 0.7;
-    font-weight: 600;
-    box-shadow: 0 0 0 1px rgba(248, 81, 73, 0.3);
-}
+/* ======================================================================= */
+/* =================== [优化] 分栏视图 =================================== */
+/* ======================================================================= */
 
 .diff-split {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 15px;
     height: 100%;
+}
+
+.diff-split .diff-line {
+    display: flex;
+    align-items: stretch;
+}
+
+.diff-split .line-content {
+    white-space: pre-wrap;
+    word-break: break-all;
+    flex: 1;
 }
 
 .diff-panel {
@@ -1545,22 +1588,23 @@
 }
 
 /* 深色模式适配 */
-.theme-dark .diff-added {
+.theme-dark .diff-added,
+.theme-dark .diff-line-bg-added {
     background: rgba(46, 160, 67, 0.2);
     border-left-color: #3fb950;
 }
 
-.theme-dark .diff-removed {
+.theme-dark .diff-removed,
+.theme-dark .diff-line-bg-removed {
     background: rgba(248, 81, 73, 0.2);
     border-left-color: #f85149;
 }
 
-/* === [修复] 深色模式下修改行 === */
-.theme-dark .diff-modified {
+.theme-dark .diff-modified,
+.theme-dark .diff-line-bg-modified {
     background: rgba(210, 153, 34, 0.15);
     border-left-color: #d29922;
 }
-/* === [修复结束] === */
 
 .theme-dark .diff-char-added {
     background: rgba(46, 160, 67, 0.5);
@@ -1576,51 +1620,384 @@
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 
-@media (max-width: 1024px) {
-    .diff-toolbar {
-        gap: 6px;
+.theme-dark .diff-line.diff-moved-from,
+.theme-dark .diff-line.diff-moved-to {
+    background: rgba(58, 112, 165, 0.2);
+    border-left-color: #58a6ff;
+}
+
+.theme-dark .diff-line.diff-moved-from .diff-marker,
+.theme-dark .diff-line.diff-moved-to .diff-marker {
+    color: #58a6ff;
+}
+
+.theme-dark .version-item {
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.theme-dark .version-item:hover {
+    background: rgba(255, 255, 255, 0.08);
+}
+
+.diff-container.show-whitespace-active .line-content {
+    color: var(--text-faint);
+}
+
+.diff-container.show-whitespace-active .diff-char-added,
+.diff-container.show-whitespace-active .diff-char-removed,
+.diff-container.show-whitespace-active .diff-word-added,
+.diff-container.show-whitespace-active .diff-word-removed {
+    color: var(--text-normal);
+}
+
+.diff-toolbar-redesigned {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px;
+    background: var(--background-secondary);
+    border-radius: 6px;
+    margin-bottom: 15px;
+    flex-wrap: wrap;
+}
+
+.diff-toolbar-group {
+    display: flex;
+    align-items: center;
+    background: var(--background-primary);
+    border-radius: 4px;
+    border: 1px solid var(--background-modifier-border);
+}
+
+.diff-toolbar-redesigned button {
+    padding: 6px 12px;
+    background: transparent;
+    color: var(--text-normal);
+    border: none;
+    border-right: 1px solid var(--background-modifier-border);
+    cursor: pointer;
+    font-size: 13px;
+    transition: all 0.2s ease;
+}
+
+.diff-toolbar-redesigned button:last-child {
+    border-right: none;
+}
+
+.diff-toolbar-redesigned button:hover {
+    background: var(--interactive-hover);
+}
+
+.diff-toolbar-redesigned button:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    background: transparent;
+}
+
+.diff-toolbar-redesigned .diff-stats {
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-accent);
+    min-width: 70px;
+    text-align: center;
+    border-right: 1px solid var(--background-modifier-border);
+}
+
+.line-number-container {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    width: 80px;
+    text-align: right;
+    margin-right: 15px;
+    color: var(--text-faint);
+    user-select: none;
+    flex-shrink: 0;
+}
+
+.line-number-container .line-number {
+    flex-grow: 1;
+}
+
+.diff-line-action-btn,
+.diff-line-history-btn {
+    display: none;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: bold;
+    margin-left: 8px;
+    padding: 0 4px;
+    border-radius: 3px;
+    line-height: 1;
+}
+
+.diff-line:hover .diff-line-action-btn,
+.diff-line:hover .diff-line-history-btn {
+    display: inline-block;
+}
+
+.diff-line.line-active .diff-line-action-btn,
+.diff-line.line-active .diff-line-history-btn {
+    display: inline-block;
+}
+
+.diff-line-action-btn:hover {
+    color: white;
+}
+
+.diff-line-action-btn[aria-label*="应用"] {
+    background-color: var(--color-green);
+}
+.diff-line-action-btn[aria-label*="撤销"] {
+    background-color: var(--color-red);
+}
+
+.diff-line-history-btn:hover {
+    background-color: var(--background-modifier-hover);
+}
+
+.line-history-modal pre {
+    padding: 10px;
+    background-color: var(--background-secondary);
+    border-radius: 4px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    margin: 10px 0;
+}
+
+.diff-settings-group-label {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--background-modifier-border);
+}
+
+/* Mobile-specific styles */
+.diff-modal.is-mobile .diff-line .diff-line-action-btn,
+.diff-modal.is-mobile .diff-line .diff-line-history-btn {
+    visibility: hidden;
+    opacity: 0;
+    transition: opacity 0.2s ease-in-out;
+}
+
+.diff-modal.is-mobile .diff-line:hover .diff-line-action-btn,
+.diff-modal.is-mobile .diff-line:hover .diff-line-history-btn {
+    visibility: hidden;
+    opacity: 0;
+}
+
+.diff-modal.is-mobile .diff-line.actions-visible .diff-line-action-btn,
+.diff-modal.is-mobile .diff-line.actions-visible .diff-line-history-btn {
+    visibility: visible;
+    opacity: 1;
+}
+
+/* ======================================================================= */
+/* ================= [新增] 版本完整性检查报告样式 ===================== */
+/* ======================================================================= */
+.integrity-report-modal {
+    max-width: 800px;
+}
+
+.integrity-success {
+    text-align: center;
+    padding: 20px;
+    color: var(--text-success);
+}
+
+.integrity-icon {
+    font-size: 48px;
+    display: block;
+    margin-bottom: 10px;
+}
+
+.integrity-warning {
+    color: var(--text-error);
+    font-weight: bold;
+    margin-bottom: 15px;
+}
+
+.integrity-list {
+    max-height: 400px;
+    overflow-y: auto;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    padding: 10px;
+    background-color: var(--background-primary);
+}
+
+.integrity-item {
+    border-bottom: 1px solid var(--background-modifier-border);
+    padding: 10px 0;
+}
+
+.integrity-item:last-child {
+    border-bottom: none;
+}
+
+.integrity-filepath {
+    font-weight: bold;
+    margin-bottom: 5px;
+    color: var(--text-normal);
+}
+
+.integrity-errors {
+    margin: 0;
+    padding-left: 20px;
+    color: var(--text-error);
+    font-size: 0.9em;
+}
+
+.integrity-errors li {
+    margin-bottom: 2px;
+}
+
+.integrity-item button.mod-warning {
+    margin-top: 8px;
+    font-size: 0.8em;
+    height: 24px;
+}
+
+.integrity-item button.mod-warning:hover {
+    background-color: var(--color-red);
+}
+
+/* ======================================================================= */
+/* =================== [增强包] UI/UX 深度优化 =========================== */
+/* ======================================================================= */
+
+/* 1. 字体与排版优化 */
+.diff-container, 
+.diff-content, 
+.preview-content pre,
+.structured-diff-container {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Source Code Pro', 'Menlo', 'Consolas', 'Roboto Mono', monospace;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+    font-variant-ligatures: normal;
+}
+
+/* 2. 粘性标题 */
+.diff-panel h3, 
+.rendered-diff-panel h3 {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    background-color: var(--background-secondary);
+    opacity: 0.98;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+    border-bottom: 1px solid var(--background-modifier-border);
+    margin-top: 0;
+}
+
+/* 3. 斑马纹背景 */
+.diff-line.diff-context:nth-child(even) {
+    background-color: rgba(var(--mono-rgb-100), 0.015);
+}
+.theme-dark .diff-line.diff-context:nth-child(even) {
+    background-color: rgba(255, 255, 255, 0.015);
+}
+
+/* 4. 优化行号栏 */
+.line-number-container, 
+.diff-line-numbers {
+    background-color: var(--background-primary-alt);
+    border-right: 1px solid var(--background-modifier-border);
+    margin-right: 8px;
+    padding-right: 10px;
+    opacity: 0.8;
+}
+
+.diff-container:not(.diff-split) .line-number-container {
+    background-color: transparent;
+    border-right: 1px solid var(--background-modifier-border);
+}
+
+/* 6. 滚动条美化 */
+.diff-container::-webkit-scrollbar,
+.diff-content::-webkit-scrollbar,
+.rendered-diff-content::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+.diff-container::-webkit-scrollbar-thumb,
+.diff-content::-webkit-scrollbar-thumb,
+.rendered-diff-content::-webkit-scrollbar-thumb {
+    background-color: transparent;
+    border: none;
+    border-radius: 3px;
+}
+
+.diff-container:hover::-webkit-scrollbar-thumb,
+.diff-content:hover::-webkit-scrollbar-thumb,
+.rendered-diff-content:hover::-webkit-scrollbar-thumb {
+    background-color: var(--scrollbar-thumb-bg);
+}
+
+/* 7. 模态框进入动画 */
+.diff-modal .modal-content,
+.quick-preview-modal .modal-content,
+.integrity-report-modal .modal-content {
+    animation: modal-pop-in 0.25s cubic-bezier(0.2, 0.9, 0.4, 1.1);
+    transform-origin: center center;
+}
+
+@keyframes modal-pop-in {
+    0% {
+        opacity: 0;
+        transform: scale(0.96) translateY(10px);
     }
-    
-    .diff-nav-group,
-    .diff-view-group,
-    .diff-action-group {
-        gap: 4px;
-        padding: 3px 6px;
-    }
-    
-    .diff-toolbar button,
-    .diff-toolbar select {
-        padding: 5px 10px;
-        font-size: 11px;
+    100% {
+        opacity: 1;
+        transform: scale(1) translateY(0);
     }
 }
 
-@media (max-width: 768px) {
-    .diff-split {
-        grid-template-columns: 1fr;
-        gap: 10px;
-    }
-    
-    .diff-toolbar {
-        flex-direction: column;
-        align-items: stretch;
-    }
-    
-    .diff-nav-group,
-    .diff-view-group,
-    .diff-action-group {
-        justify-content: center;
-    }
-    
-    .diff-info-banner {
-        flex-direction: column;
-        align-items: flex-start;
-    }
-    
-    .diff-info-percent {
-        margin-left: 0;
-    }
+/* 8. 搜索框悬浮美化 */
+.diff-search-container {
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+    border: 1px solid var(--background-modifier-border-hover);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    background-color: rgba(var(--background-secondary-rgb), 0.85);
+    border-radius: 8px;
+    z-index: 20;
 }
+
+.diff-search-input {
+    background-color: rgba(var(--background-primary-rgb), 0.6);
+    border-radius: 6px;
+    transition: all 0.2s;
+}
+
+.diff-search-input:focus {
+    background-color: var(--background-primary);
+    box-shadow: 0 0 0 2px rgba(var(--interactive-accent-rgb), 0.3);
+}
+
+/* 9. 按钮触感优化 */
+.diff-toolbar-redesigned button,
+.version-btn,
+.modal-button-container button {
+    transition: all 0.15s ease-out;
+}
+
+.diff-toolbar-redesigned button:active,
+.version-btn:active,
+.modal-button-container button:active {
+    transform: scale(0.96);
+}
+
+/* 10. 结构化对比视图优化 */
+.structured-section[open] {
+    box-shadow: 0 4px 8px rgba(0,0,0,0.06);
+    border-color: var(--interactive-accent);
+}
+
+/* ======================================================================= */
+/* =================== [END OF 增强包] =================================== */
+/* ======================================================================= */
 
 .tag-edit-container {
     margin-top: 15px;
@@ -1885,22 +2262,6 @@
     background: var(--text-muted);
 }
 
-.theme-dark .version-item {
-    background: rgba(255, 255, 255, 0.05);
-}
-
-.theme-dark .version-item:hover {
-    background: rgba(255, 255, 255, 0.08);
-}
-
-.theme-dark .diff-added {
-    background: rgba(46, 160, 67, 0.2);
-}
-
-.theme-dark .diff-removed {
-    background: rgba(248, 81, 73, 0.2);
-}
-
 .version-info-section {
     padding: 15px;
     background: var(--background-secondary);
@@ -1928,463 +2289,3 @@
     margin: 5px 0;
     color: var(--text-muted);
 }
-
-.diff-word-added {
-    background-color: rgba(46, 160, 67, 0.3);
-    border-radius: 3px;
-}
-.diff-word-removed {
-    background-color: rgba(248, 81, 73, 0.3);
-    border-radius: 3px;
-    opacity: 0.7;
-}
-
-.diff-char-added {
-    background-color: rgba(46, 160, 67, 0.6) !important;
-    font-weight: bold;
-    border-radius: 2px;
-}
-.diff-char-removed {
-    background-color: rgba(248, 81, 73, 0.6) !important;
-    font-weight: bold;
-    border-radius: 2px;
-    opacity: 0.7;
-}
-
-.diff-modified .line-content span {
-    display: inline;
-}
-
-.diff-modified .diff-char-added {
-    padding: 1px 2px;
-}
-
-.diff-modified .diff-char-removed {
-    padding: 1px 2px;
-}
-
-/* ======================================================================= */
-/* =================== [修正] 移动文本检测样式 ======================= */
-/* ======================================================================= */
-
-/* 为移动的行提供独特的、中性的蓝色视觉样式 */
-.diff-line.diff-moved-from,
-.diff-line.diff-moved-to {
-  background-color: rgba(58, 112, 165, 0.15); /* 使用蓝色调作为移动的背景 */
-  border-left: 3px solid #3a70a5;
-}
-
-.diff-line.diff-moved-from:hover,
-.diff-line.diff-moved-to:hover {
-  background-color: rgba(58, 112, 165, 0.25) !important;
-}
-
-/* 统一视图下，为移动的行设置标记颜色 */
-.diff-line.diff-moved-from .diff-marker,
-.diff-line.diff-moved-to .diff-marker {
-  color: #6c95bd;
-  font-weight: bold;
-}
-
-/* 悬停时关联高亮的效果 */
-.diff-line.diff-move-highlight {
-  outline: 2px solid #3a70a5;
-  box-shadow: 0 0 10px rgba(58, 112, 165, 0.5);
-  z-index: 20; /* 确保高亮在最上层 */
-}
-
-/* 深色模式下的移动文本样式 */
-.theme-dark .diff-line.diff-moved-from,
-.theme-dark .diff-line.diff-moved-to {
-    background: rgba(58, 112, 165, 0.2);
-    border-left-color: #58a6ff;
-}
-
-.theme-dark .diff-line.diff-moved-from .diff-marker,
-.theme-dark .diff-line.diff-moved-to .diff-marker {
-    color: #58a6ff;
-}
-
-/* ======================================================================= */
-/* ======================= END OF 修正 =================================== */
-/* ======================================================================= */
-
-
-.diff-container.show-whitespace-active .line-content {
-    color: var(--text-faint);
-}
-
-.diff-container.show-whitespace-active .diff-char-added,
-.diff-container.show-whitespace-active .diff-char-removed,
-.diff-container.show-whitespace-active .diff-word-added,
-.diff-container.show-whitespace-active .diff-word-removed {
-    color: var(--text-normal);
-}
-
-.diff-toolbar-redesigned {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px;
-    background: var(--background-secondary);
-    border-radius: 6px;
-    margin-bottom: 15px;
-    flex-wrap: wrap;
-}
-
-.diff-toolbar-group {
-    display: flex;
-    align-items: center;
-    background: var(--background-primary);
-    border-radius: 4px;
-    border: 1px solid var(--background-modifier-border);
-}
-
-.diff-toolbar-redesigned button {
-    padding: 6px 12px;
-    background: transparent;
-    color: var(--text-normal);
-    border: none;
-    border-right: 1px solid var(--background-modifier-border);
-    cursor: pointer;
-    font-size: 13px;
-    transition: all 0.2s ease;
-}
-
-.diff-toolbar-redesigned button:last-child {
-    border-right: none;
-}
-
-.diff-toolbar-redesigned button:hover {
-    background: var(--interactive-hover);
-}
-
-.diff-toolbar-redesigned button:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-    background: transparent;
-}
-
-.diff-toolbar-redesigned .diff-stats {
-    padding: 6px 12px;
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text-accent);
-    min-width: 70px;
-    text-align: center;
-    border-right: 1px solid var(--background-modifier-border);
-}
-
-.line-number-container {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    width: 80px;
-    text-align: right;
-    margin-right: 15px;
-    color: var(--text-faint);
-    user-select: none;
-    flex-shrink: 0;
-}
-
-.line-number-container .line-number {
-    flex-grow: 1;
-}
-
-.diff-line-action-btn,
-.diff-line-history-btn {
-    display: none;
-    cursor: pointer;
-    font-size: 14px;
-    font-weight: bold;
-    margin-left: 8px;
-    padding: 0 4px;
-    border-radius: 3px;
-    line-height: 1;
-}
-
-.diff-line:hover .diff-line-action-btn,
-.diff-line:hover .diff-line-history-btn {
-    display: inline-block;
-}
-
-.diff-line.line-active .diff-line-action-btn,
-.diff-line.line-active .diff-line-history-btn {
-    display: inline-block;
-}
-
-.diff-line-action-btn:hover {
-    color: white;
-}
-
-.diff-line-action-btn[aria-label*="应用"] {
-    background-color: var(--color-green);
-}
-.diff-line-action-btn[aria-label*="撤销"] {
-    background-color: var(--color-red);
-}
-
-.diff-line-history-btn:hover {
-    background-color: var(--background-modifier-hover);
-}
-
-.line-history-modal pre {
-    padding: 10px;
-    background-color: var(--background-secondary);
-    border-radius: 4px;
-    white-space: pre-wrap;
-    word-break: break-all;
-    margin: 10px 0;
-}
-
-/* [新增] 为Diff Modal设置菜单中的分组添加上边距，使其更清晰 */
-.diff-settings-group-label {
-    margin-top: 10px;
-    padding-top: 10px;
-    border-top: 1px solid var(--background-modifier-border);
-}
-
-/* Mobile-specific styles for diff view action buttons */
-.diff-modal.is-mobile .diff-line .diff-line-action-btn,
-.diff-modal.is-mobile .diff-line .diff-line-history-btn {
-    visibility: hidden;
-    opacity: 0;
-    transition: opacity 0.2s ease-in-out;
-}
-
-/* Disable default hover behavior on mobile */
-.diff-modal.is-mobile .diff-line:hover .diff-line-action-btn,
-.diff-modal.is-mobile .diff-line:hover .diff-line-history-btn {
-    visibility: hidden;
-    opacity: 0;
-}
-
-/* Show buttons when the line has the 'actions-visible' class */
-.diff-modal.is-mobile .diff-line.actions-visible .diff-line-action-btn,
-.diff-modal.is-mobile .diff-line.actions-visible .diff-line-history-btn {
-    visibility: visible;
-    opacity: 1;
-}
-
-/* ======================================================================= */
-/* ================= [新增] 版本完整性检查报告样式 ===================== */
-/* ======================================================================= */
-.integrity-report-modal {
-    max-width: 800px;
-}
-
-.integrity-success {
-    text-align: center;
-    padding: 20px;
-    color: var(--text-success);
-}
-
-.integrity-icon {
-    font-size: 48px;
-    display: block;
-    margin-bottom: 10px;
-}
-
-.integrity-warning {
-    color: var(--text-error);
-    font-weight: bold;
-    margin-bottom: 15px;
-}
-
-.integrity-list {
-    max-height: 400px;
-    overflow-y: auto;
-    border: 1px solid var(--background-modifier-border);
-    border-radius: 4px;
-    padding: 10px;
-    background-color: var(--background-primary);
-}
-
-.integrity-item {
-    border-bottom: 1px solid var(--background-modifier-border);
-    padding: 10px 0;
-}
-
-.integrity-item:last-child {
-    border-bottom: none;
-}
-
-.integrity-filepath {
-    font-weight: bold;
-    margin-bottom: 5px;
-    color: var(--text-normal);
-}
-
-.integrity-errors {
-    margin: 0;
-    padding-left: 20px;
-    color: var(--text-error);
-    font-size: 0.9em;
-}
-
-.integrity-errors li {
-    margin-bottom: 2px;
-}
-
-.integrity-item button.mod-warning {
-    margin-top: 8px;
-    font-size: 0.8em;
-    height: 24px;
-}
-
-.integrity-item button.mod-warning:hover {
-    background-color: var(--color-red);
-}
-
-/* ======================================================================= */
-/* =================== [增强包] UI/UX 深度优化 =========================== */
-/* ======================================================================= */
-
-/* 1. 字体与排版优化：使用更专业的等宽字体，优化行高 */
-.diff-container, 
-.diff-content, 
-.preview-content pre,
-.structured-diff-container {
-    /* 优先使用流行的编程连字字体，最后回退到系统等宽 */
-    font-family: 'JetBrains Mono', 'Fira Code', 'Source Code Pro', 'Menlo', 'Consolas', 'Roboto Mono', monospace;
-    line-height: 1.65; /* 增加行间距，提升密集代码可读性 */
-    -webkit-font-smoothing: antialiased;
-    font-variant-ligatures: normal; /* 启用连字 (如果字体支持) */
-}
-
-/* 2. 粘性标题 (Sticky Headers)：滚动时锁定版本标题 */
-.diff-panel h3, 
-.rendered-diff-panel h3 {
-    position: sticky;
-    top: 0;
-    z-index: 5; /* 确保在代码之上，但在搜索框/蒙层之下 */
-    background-color: var(--background-secondary);
-    opacity: 0.98; /* 轻微透视，保留质感 */
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05); /* 增加底部投影，产生悬浮感 */
-    border-bottom: 1px solid var(--background-modifier-border);
-    margin-top: 0; /* 修正可能存在的 margin 导致的跳动 */
-}
-
-/* 3. 斑马纹背景 (Zebra Striping)：提升长文阅读体验 */
-/* 仅针对未变动(Context)的行应用，避免干扰新增/删除的背景色 */
-.diff-line.diff-context:nth-child(even) {
-    background-color: rgba(var(--mono-rgb-100), 0.015); /* 极淡的背景色 */
-}
-.theme-dark .diff-line.diff-context:nth-child(even) {
-    background-color: rgba(255, 255, 255, 0.015);
-}
-
-/* 4. 优化行号栏 (Gutter Styling)：IDE 风格 */
-.line-number-container, 
-.diff-line-numbers {
-    background-color: var(--background-primary-alt); /* 与代码区区分开 */
-    border-right: 1px solid var(--background-modifier-border); /* 分割线 */
-    margin-right: 8px;
-    padding-right: 10px;
-    opacity: 0.8;
-}
-
-/* 统一视图下的行号栏特殊处理 */
-.diff-container:not(.diff-split) .line-number-container {
-    background-color: transparent; /* 统一视图不需要背景块 */
-    border-right: 1px solid var(--background-modifier-border);
-}
-
-/* 5. 优化删除线 (Better Readability)：拒绝遮挡文字 */
-.diff-word-removed, 
-.diff-char-removed {
-    text-decoration: none !important; /* 去掉穿透文字的横线 */
-    border-bottom: 1px solid rgba(244, 67, 54, 0.4); /* 改为底部红线 */
-    opacity: 0.85; /* 稍微降低透明度让它不那么刺眼 */
-}
-
-/* 6. 滚动条美化 (Minimal Scrollbars) */
-.diff-container::-webkit-scrollbar,
-.diff-content::-webkit-scrollbar,
-.rendered-diff-content::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
-}
-
-.diff-container::-webkit-scrollbar-thumb,
-.diff-content::-webkit-scrollbar-thumb,
-.rendered-diff-content::-webkit-scrollbar-thumb {
-    background-color: transparent; /* 默认隐藏 */
-    border: none;
-    border-radius: 3px;
-}
-
-/* 仅在悬停时显示滚动条 */
-.diff-container:hover::-webkit-scrollbar-thumb,
-.diff-content:hover::-webkit-scrollbar-thumb,
-.rendered-diff-content:hover::-webkit-scrollbar-thumb {
-    background-color: var(--scrollbar-thumb-bg);
-}
-
-/* 7. 模态框进入动画 (Pop-in Animation) */
-.diff-modal .modal-content,
-.quick-preview-modal .modal-content,
-.integrity-report-modal .modal-content {
-    animation: modal-pop-in 0.25s cubic-bezier(0.2, 0.9, 0.4, 1.1);
-    transform-origin: center center;
-}
-
-@keyframes modal-pop-in {
-    0% {
-        opacity: 0;
-        transform: scale(0.96) translateY(10px);
-    }
-    100% {
-        opacity: 1;
-        transform: scale(1) translateY(0);
-    }
-}
-
-/* 8. 搜索框悬浮美化 (Glassmorphism) */
-.diff-search-container {
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15); /* 更深的投影 */
-    border: 1px solid var(--background-modifier-border-hover);
-    backdrop-filter: blur(12px); /* 磨砂玻璃效果 */
-    -webkit-backdrop-filter: blur(12px);
-    background-color: rgba(var(--background-secondary-rgb), 0.85); /* 半透明背景 */
-    border-radius: 8px;
-    z-index: 20;
-}
-
-.diff-search-input {
-    background-color: rgba(var(--background-primary-rgb), 0.6);
-    border-radius: 6px;
-    transition: all 0.2s;
-}
-
-.diff-search-input:focus {
-    background-color: var(--background-primary);
-    box-shadow: 0 0 0 2px rgba(var(--interactive-accent-rgb), 0.3);
-}
-
-/* 9. 按钮触感优化 */
-.diff-toolbar-redesigned button,
-.version-btn,
-.modal-button-container button {
-    transition: all 0.15s ease-out;
-}
-
-.diff-toolbar-redesigned button:active,
-.version-btn:active,
-.modal-button-container button:active {
-    transform: scale(0.96); /* 点击时的微缩反馈 */
-}
-
-/* 10. 结构化对比视图优化 */
-.structured-section {
-    box-shadow: 0 1px 2px rgba(0,0,0,0.03);
-    background-color: var(--background-primary);
-}
-.structured-section[open] {
-    box-shadow: 0 4px 8px rgba(0,0,0,0.06); /* 展开时增加层级感 */
-    border-color: var(--interactive-accent); /* 展开时边框变色 */
-}
-
-/* ======================================================================= */
-/* =================== [END OF 增强包] =================================== */
-/* ======================================================================= */
