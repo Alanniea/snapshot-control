@@ -3904,14 +3904,14 @@ class DiffModal extends Modal {
         searchInput.focus();
     }
 
-    async exportDiffReport() {
+    exportDiffReport() {
         try {
             const diffResult = Diff.diffLines(this.leftContent, this.rightContent, { ignoreWhitespace: this.ignoreWhitespace });
             let report = `# 版本差异报告\n\n`;
             report += `**文件**: ${this.file.path}\n`;
             report += `**生成时间**: ${new Date().toLocaleString('zh-CN')}\n\n`;
             
-            const versions = await this.plugin.getAllVersions(this.file.path);
+            const versions = this.allVersions; // Access cached versions
             const leftVersion = versions.find(v => v.id === this.versionId);
             
             if (leftVersion) {
@@ -3960,7 +3960,7 @@ class DiffModal extends Modal {
             report += `\`\`\`\n`;
             
             const fileName = `diff_report_${Date.now()}.md`;
-            await this.app.vault.create(fileName, report);
+            this.app.vault.create(fileName, report);
             new Notice(`✅ 差异报告已导出: ${fileName}`);
         } catch (error) {
             console.error('导出差异报告失败:', error);
@@ -4022,14 +4022,23 @@ class DiffModal extends Modal {
                 const className = part.added ? 'diff-word-added' : (part.removed ? 'diff-word-removed' : '');
                 const processedText = this.showWhitespace ? this.visualizeWhitespace(part.value) : part.value;
                 
-                if (className) {
-                    if (part.removed && !includeRemoved) {
-                        return;
-                    }
-                    fragment.append(createEl('span', { text: processedText, cls: className }));
-                } else {
-                    fragment.append(document.createTextNode(processedText));
+                if (part.removed && !includeRemoved) {
+                    return;
                 }
+
+                const lines = processedText.split('\n');
+                lines.forEach((line, index) => {
+                    if (index > 0) {
+                        fragment.appendChild(createEl('br'));
+                    }
+                    if (line.length > 0) {
+                        if (className) {
+                            fragment.append(createEl('span', { text: line, cls: className }));
+                        } else {
+                            fragment.append(document.createTextNode(line));
+                        }
+                    }
+                });
             });
             return fragment;
         };
@@ -4101,8 +4110,28 @@ class DiffModal extends Modal {
             if (part.removed && nextPart && nextPart.added) {
                 const leftLines = part.value.replace(/\n$/, '').split('\n');
                 const rightLines = nextPart.value.replace(/\n$/, '').split('\n');
-                
-                if (useCompactView || leftLines.length === rightLines.length) {
+
+                if (useCompactView) {
+                    // === 修复：逐行处理紧凑视图，而不是合并成一行 ===
+                    const maxLines = Math.max(leftLines.length, rightLines.length);
+
+                    for (let j = 0; j < maxLines; j++) {
+                        const leftLine = leftLines[j];
+                        const rightLine = rightLines[j];
+
+                        if (leftLine !== undefined && rightLine !== undefined) {
+                            const lineDiff = secondaryDiffFn(leftLine, rightLine);
+                            const combinedFrag = createHighlightedFragment(lineDiff, true);
+                            renderLine(combinedFrag, 'modified', leftLineNum++, rightLineNum++, undefined, leftLine);
+                        } else if (leftLine !== undefined) {
+                            renderLine(leftLine, 'removed', leftLineNum++, null);
+                        } else if (rightLine !== undefined) {
+                            renderLine(rightLine, 'added', null, rightLineNum++, undefined, null);
+                        }
+                    }
+                    // === 修复结束 ===
+                }
+                else if (leftLines.length === rightLines.length) {
                     const minLen = Math.min(leftLines.length, rightLines.length);
                     
                     for (let j = 0; j < minLen; j++) {
@@ -4121,15 +4150,6 @@ class DiffModal extends Modal {
                             renderLine(combinedFrag, 'modified', leftLineNum++, rightLineNum++, undefined, oldLine);
                         }
                     }
-
-                    for (let j = minLen; j < leftLines.length; j++) {
-                        renderLine(leftLines[j], 'removed', leftLineNum++, null);
-                    }
-
-                    for (let j = minLen; j < rightLines.length; j++) {
-                        renderLine(rightLines[j], 'added', null, rightLineNum++, undefined, null);
-                    }
-
                 } else {
                     leftLines.forEach(line => {
                         renderLine(line, 'removed', leftLineNum++, null);
@@ -4248,11 +4268,19 @@ class DiffModal extends Modal {
                 const className = part.added ? 'diff-word-added' : part.removed ? 'diff-word-removed' : '';
                 const processedText = this.showWhitespace ? this.visualizeWhitespace(part.value) : part.value;
                 
-                if (className) {
-                    fragment.append(createEl('span', { text: processedText, cls: className }));
-                } else {
-                    fragment.append(document.createTextNode(processedText));
-                }
+                const lines = processedText.split('\n');
+                lines.forEach((line, index) => {
+                    if (index > 0) {
+                        fragment.appendChild(createEl('br'));
+                    }
+                    if (line.length > 0) {
+                        if (className) {
+                            fragment.append(createEl('span', { text: line, cls: className }));
+                        } else {
+                            fragment.append(document.createTextNode(line));
+                        }
+                    }
+                });
             });
             return fragment;
         };
