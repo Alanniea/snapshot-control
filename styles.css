@@ -14,11 +14,11 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background-color: rgba(var(--background-primary-rgb), 0.6); /* 使用主题背景色，并增加透明度 */
+  background-color: rgba(var(--background-primary-rgb), 0.6);
   -webkit-backdrop-filter: blur(3px);
-  backdrop-filter: blur(3px); /* 增加模糊效果，更美观 */
-  z-index: 10; /* 确保在最上层 */
-  display: flex; /* 使用 flex 布局来居中 */
+  backdrop-filter: blur(3px);
+  z-index: 10;
+  display: flex;
   align-items: center;
   justify-content: center;
   color: var(--text-normal);
@@ -26,7 +26,6 @@
   transition: opacity 0.2s ease-in-out;
 }
 
-/* 加载消息文本的样式 */
 .diff-loading-message {
   font-size: 1.2em;
   padding: 12px 24px;
@@ -36,15 +35,9 @@
 }
 
 /* ======================================================================= */
-/* ===================== [END OF 新增加载蒙层样式] ======================= */
-/* ======================================================================= */
-
-
-/* ======================================================================= */
 /* ================= [新增] 双击跳转高亮 & 统一视图行号对齐 ================= */
 /* ======================================================================= */
 
-/* 用于双击跳转到源码位置后的高亮动画 */
 .diff-line-highlight {
   animation: highlight-fade 2s ease-out;
 }
@@ -58,12 +51,12 @@
   }
 }
 
-/* 改进统一视图下的行号显示，使其正确对齐 */
 .diff-modal .diff-container:not(.diff-split) .line-number-container {
     display: flex;
     justify-content: flex-end;
-    min-width: 80px; /* 给予足够空间 */
+    min-width: 80px;
 }
+
 .diff-modal .diff-container:not(.diff-split) .line-number {
     display: inline-block;
     width: 35px;
@@ -73,11 +66,9 @@
 }
 
 /* ======================================================================= */
-/* ======================= END OF 新增样式 =============================== */
+/* ======================== 版本历史样式 ================================= */
 /* ======================================================================= */
 
-
-/* [新增] 版本历史日期分组标题样式 */
 .version-group-header {
     font-size: 1.1em;
     font-weight: bold;
@@ -87,12 +78,10 @@
     margin-top: 10px;
 }
 
-/* 第一个分组标题不需要上边距 */
 .version-list .version-group-header:first-child {
     margin-top: 0;
 }
 
-/* 状态栏可点击样式 */
 .version-control-statusbar-clickable {
     cursor: pointer;
     transition: all 0.2s ease;
@@ -109,7 +98,6 @@
     transform: scale(0.95);
 }
 
-/* 版本历史视图 */
 .version-history-view {
     padding: 20px;
     overflow-y: auto;
@@ -131,7 +119,6 @@
     margin-top: 15px;
 }
 
-/* 标题和文件信息 */
 .version-header {
     margin-bottom: 20px;
     padding-bottom: 15px;
@@ -160,7 +147,6 @@
     color: var(--text-muted);
 }
 
-/* 头部操作栏 */
 .version-header-actions {
     display: flex;
     gap: 10px;
@@ -209,7 +195,6 @@
     background: var(--interactive-accent-hover);
 }
 
-/* 差异横幅 */
 .version-diff-banner {
     display: flex;
     align-items: center;
@@ -247,7 +232,6 @@
     color: var(--text-on-accent);
 }
 
-/* 工具栏 */
 .version-toolbar {
     display: flex;
     justify-content: space-between;
@@ -278,7 +262,6 @@
     border-color: var(--color-red);
 }
 
-/* 版本列表 */
 .version-list {
     display: flex;
     flex-direction: column;
@@ -460,7 +443,6 @@
     font-weight: 600;
 }
 
-/* 版本操作按钮 */
 .version-actions {
     display: flex;
     gap: 6px;
@@ -484,7 +466,6 @@
     border-color: var(--interactive-accent);
 }
 
-/* 分页 */
 .version-pagination {
     display: flex;
     justify-content: center;
@@ -518,7 +499,6 @@
     color: var(--text-muted);
 }
 
-/* 页脚统计 */
 .version-footer {
     margin-top: 20px;
     padding-top: 15px;
@@ -528,7 +508,6 @@
     text-align: center;
 }
 
-/* 统计信息 */
 .version-stats {
     padding: 15px;
     background: var(--background-secondary);
@@ -560,7 +539,10 @@
     margin-top: 10px;
 }
 
-/* 快速预览模态框 */
+/* ======================================================================= */
+/* ======================== 快速预览模态框 =============================== */
+/* ======================================================================= */
+
 .quick-preview-modal {
     width: 80vw;
     max-width: 1000px;
@@ -682,7 +664,10 @@
     color: var(--text-muted);
 }
 
-/* Diff Modal 整体布局 */
+/* ======================================================================= */
+/* ======================== Diff Modal 布局 ============================== */
+/* ======================================================================= */
+
 .diff-modal .modal-content {
     display: flex;
     flex-direction: column;
@@ -696,7 +681,6 @@
     display: flex;
 }
 
-/* Diff Modal 版本快速切换器样式 */
 .diff-version-selector-container {
     display: flex;
     justify-content: space-between;
@@ -749,7 +733,6 @@
     color: var(--interactive-accent);
 }
 
-/* 视图切换器 */
 .diff-view-switcher {
     display: flex;
     padding: 2px;
@@ -774,7 +757,10 @@
     box-shadow: 0 1px 3px rgba(0,0,0,0.1);
 }
 
-/* 渲染预览容器 */
+/* ======================================================================= */
+/* ======================== 渲染预览容器 ================================= */
+/* ======================================================================= */
+
 .rendered-diff-container {
     flex: 1;
     display: grid;
@@ -809,7 +795,10 @@
     padding: 15px 20px;
 }
 
-/* Markdown 结构化对比视图样式 */
+/* ======================================================================= */
+/* ==================== Markdown 结构化对比视图 ========================== */
+/* ======================================================================= */
+
 .structured-diff-container {
     padding: 10px;
     font-family: var(--font-monospace);
@@ -878,10 +867,19 @@
 .section-content .diff-line {
     padding: 2px 5px;
 }
-.section-content .diff-added { background-color: var(--background-modifier-success-hover); }
-.section-content .diff-removed { background-color: var(--background-modifier-error-hover); }
 
-/* 差异信息横幅 - 精简版 */
+.section-content .diff-added { 
+    background-color: var(--background-modifier-success-hover); 
+}
+
+.section-content .diff-removed { 
+    background-color: var(--background-modifier-error-hover); 
+}
+
+/* ======================================================================= */
+/* ==================== 差异信息横幅 ===================================== */
+/* ======================================================================= */
+
 .diff-info-banner-compact {
     display: flex;
     align-items: center;
@@ -939,6 +937,33 @@
     margin-left: auto;
 }
 
+/* ======================================================================= */
+/* ======================== Diff 工具栏 ================================== */
+/* ======================================================================= */
+
+.diff-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px;
+    background: var(--background-secondary);
+    border-radius: 6px;
+    margin-bottom: 15px;
+    flex-wrap: wrap;
+}
+
+.diff-nav-group,
+.diff-view-group,
+.diff-action-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    background: var(--background-primary);
+    border-radius: 4px;
+    border: 1px solid var(--background-modifier-border);
+}
+
 .diff-toolbar button,
 .diff-toolbar select,
 .diff-toolbar input[type="number"] {
@@ -983,6 +1008,11 @@
     }
 }
 
+.diff-toolbar input[type="number"] {
+    text-align: center;
+    padding: 4px 8px;
+}
+
 .diff-toolbar button:hover {
     background: var(--interactive-hover);
     transform: translateY(-1px);
@@ -1008,86 +1038,34 @@
     border-color: var(--interactive-accent);
 }
 
-.diff-container {
-    flex: 1;
-    overflow: auto;
+.diff-context-toggle.active,
+.diff-toolbar button.active {
+    box-shadow: 0 0 0 2px var(--interactive-accent-hover);
+}
+
+.diff-select {
     background: var(--background-primary);
-    border: 1px solid var(--background-modifier-border);
-    border-radius: 6px;
-    padding: 15px;
-    font-family: var(--font-monospace);
-    font-size: 13px;
-    line-height: 1.6;
-    position: relative;
+    font-size: 12px;
 }
 
-.diff-container.diff-wrap-lines .line-content {
-    white-space: pre-wrap;
-    word-break: break-word;
+.diff-select:hover {
+    border-color: var(--interactive-accent);
 }
 
-.diff-container:not(.diff-wrap-lines) .line-content {
-    white-space: pre;
-    overflow-x: auto;
+.diff-stats {
+    padding: 6px 12px;
+    background: var(--background-primary);
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-accent);
+    min-width: 80px;
+    text-align: center;
 }
 
-@media (max-width: 1024px) {
-    .diff-toolbar {
-        gap: 6px;
-    }
-    
-    .diff-nav-group,
-    .diff-view-group,
-    .diff-action-group {
-        gap: 4px;
-        padding: 3px 6px;
-    }
-    
-    .diff-toolbar button,
-    .diff-toolbar select {
-        padding: 5px 10px;
-        font-size: 11px;
-    }
-    
-    .diff-info-banner-compact {
-        font-size: 10px;
-        padding: 5px 10px;
-        gap: 8px;
-    }
-}
-
-@media (max-width: 768px) {
-    .diff-split {
-        grid-template-columns: 1fr;
-        gap: 10px;
-    }
-    
-    .diff-toolbar {
-        flex-direction: column;
-        align-items: stretch;
-    }
-    
-    .diff-nav-group,
-    .diff-view-group,
-    .diff-action-group {
-        justify-content: center;
-    }
-    
-    .diff-info-banner-compact {
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 5px;
-    }
-    
-    .diff-info-percent {
-        margin-left: 0;
-    }
-    
-    .diff-toolbar button:hover::after,
-    .diff-toolbar select:hover::after {
-        display: none;
-    }
-}
+/* ======================================================================= */
+/* ======================== Diff 搜索 ==================================== */
+/* ======================================================================= */
 
 .diff-search-container {
     display: flex;
@@ -1098,6 +1076,13 @@
     border-radius: 6px;
     margin-bottom: 15px;
     animation: slideDown 0.2s ease;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+    border: 1px solid var(--background-modifier-border-hover);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    background-color: rgba(var(--background-secondary-rgb), 0.85);
+    border-radius: 8px;
+    z-index: 20;
 }
 
 @keyframes slideDown {
@@ -1119,11 +1104,16 @@
     border: 1px solid var(--background-modifier-border);
     border-radius: 4px;
     font-size: 13px;
+    background-color: rgba(var(--background-primary-rgb), 0.6);
+    border-radius: 6px;
+    transition: all 0.2s;
 }
 
 .diff-search-input:focus {
     outline: none;
     border-color: var(--interactive-accent);
+    background-color: var(--background-primary);
+    box-shadow: 0 0 0 2px rgba(var(--interactive-accent-rgb), 0.3);
 }
 
 .diff-search-results {
@@ -1160,153 +1150,32 @@
     outline: 2px solid orange;
 }
 
-.diff-toolbar {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 10px;
-    background: var(--background-secondary);
-    border-radius: 6px;
-    margin-bottom: 15px;
-    flex-wrap: wrap;
-}
+/* ======================================================================= */
+/* =================== Diff 容器与行样式 ================================= */
+/* ======================================================================= */
 
-.diff-nav-group,
-.diff-view-group,
-.diff-action-group {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 8px;
+.diff-container {
+    flex: 1;
+    overflow: auto;
     background: var(--background-primary);
-    border-radius: 4px;
     border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    padding: 15px;
+    font-family: var(--font-monospace);
+    font-size: 13px;
+    line-height: 1.6;
+    position: relative;
 }
 
-.diff-toolbar input[type="number"] {
-    text-align: center;
-    padding: 4px 8px;
+.diff-container.diff-wrap-lines .line-content {
+    white-space: pre-wrap;
+    word-break: break-word;
 }
 
-.diff-context-toggle.active,
-.diff-toolbar button.active {
-    box-shadow: 0 0 0 2px var(--interactive-accent-hover);
+.diff-container:not(.diff-wrap-lines) .line-content {
+    white-space: pre;
+    overflow-x: auto;
 }
-
-.diff-select {
-    background: var(--background-primary);
-    font-size: 12px;
-}
-
-.diff-select:hover {
-    border-color: var(--interactive-accent);
-}
-
-.diff-stats {
-    padding: 6px 12px;
-    background: var(--background-primary);
-    border-radius: 4px;
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text-accent);
-    min-width: 80px;
-    text-align: center;
-}
-
-/* ======================================================================= */
-/* =================== [增强] 行内差异视觉优化 ========================== */
-/* ======================================================================= */
-
-/* 整行背景色 - GitHub/GitLab 风格 */
-.diff-line-bg-added,
-.diff-line.diff-added {
-    background: rgba(46, 160, 67, 0.15);
-    color: var(--text-normal);
-    border-left: 3px solid #2ea043;
-}
-
-.diff-line-bg-removed,
-.diff-line.diff-removed {
-    background: rgba(248, 81, 73, 0.15);
-    color: var(--text-normal);
-    border-left: 3px solid #f85149;
-}
-
-.diff-line-bg-modified,
-.diff-line.diff-modified {
-    background: rgba(219, 174, 14, 0.15);
-    color: var(--text-normal);
-    border-left: 3px solid #d29922;
-}
-
-/* 具体差异文字背景色 - 强调变化部分 */
-.diff-word-added {
-    background-color: rgba(46, 160, 67, 0.4) !important;
-    color: var(--text-normal);
-    border-radius: 2px;
-    padding: 0 3px;
-    font-weight: 600;
-    box-shadow: 0 0 0 1px rgba(46, 160, 67, 0.3);
-}
-
-.diff-word-removed {
-    background-color: rgba(248, 81, 73, 0.4) !important;
-    color: var(--text-muted);
-    border-bottom: 1px solid rgba(244, 67, 54, 0.4);
-    border-radius: 2px;
-    opacity: 0.85;
-    padding: 0 3px;
-    font-weight: 600;
-    box-shadow: 0 0 0 1px rgba(248, 81, 73, 0.3);
-}
-
-.diff-char-added {
-    background: rgba(46, 160, 67, 0.6) !important;
-    padding: 1px 3px;
-    border-radius: 3px;
-    font-weight: 600;
-    box-shadow: 0 0 0 1px rgba(46, 160, 67, 0.3);
-}
-
-.diff-char-removed {
-    background: rgba(248, 81, 73, 0.6) !important;
-    padding: 1px 3px;
-    border-radius: 3px;
-    opacity: 0.85;
-    font-weight: 600;
-    box-shadow: 0 0 0 1px rgba(248, 81, 73, 0.3);
-}
-
-/* ======================================================================= */
-/* =================== [修复] 移动文本检测样式 ========================== */
-/* ======================================================================= */
-
-/* 为移动的行提供独特的蓝色视觉样式 */
-.diff-line.diff-moved-from,
-.diff-line.diff-moved-to {
-    background-color: rgba(58, 112, 165, 0.15);
-    border-left: 3px solid #3a70a5;
-}
-
-.diff-line.diff-moved-from:hover,
-.diff-line.diff-moved-to:hover {
-    background-color: rgba(58, 112, 165, 0.25) !important;
-}
-
-.diff-line.diff-moved-from .diff-marker,
-.diff-line.diff-moved-to .diff-marker {
-    color: #6c95bd;
-    font-weight: bold;
-}
-
-/* 悬停时关联高亮的效果 */
-.diff-line.diff-move-highlight {
-    outline: 2px solid #3a70a5;
-    box-shadow: 0 0 10px rgba(58, 112, 165, 0.5);
-    z-index: 20;
-}
-
-/* ======================================================================= */
 
 .diff-line {
     display: flex;
@@ -1348,6 +1217,32 @@
     overflow-x: auto;
 }
 
+/* ======================================================================= */
+/* =================== [增强] 行内差异视觉优化 =========================== */
+/* ======================================================================= */
+
+/* 整行背景 - GitHub/GitLab 风格 */
+.diff-line-bg-added,
+.diff-added {
+    background: rgba(46, 160, 67, 0.15);
+    color: var(--text-normal);
+    border-left: 3px solid #2ea043;
+}
+
+.diff-line-bg-removed,
+.diff-removed {
+    background: rgba(248, 81, 73, 0.15);
+    color: var(--text-normal);
+    border-left: 3px solid #f85149;
+}
+
+.diff-line-bg-modified,
+.diff-modified {
+    background: rgba(219, 174, 14, 0.15);
+    color: var(--text-normal);
+    border-left: 3px solid #d29922;
+}
+
 .diff-added .diff-marker {
     color: #2ea043;
 }
@@ -1384,6 +1279,76 @@
 .diff-modified .diff-char-removed {
     padding: 1px 2px;
 }
+
+/* 具体差异文字高亮 */
+.diff-word-added {
+    background-color: rgba(46, 160, 67, 0.4) !important;
+    color: var(--text-normal);
+    border-radius: 2px;
+    padding: 0 3px;
+    font-weight: 600;
+    box-shadow: 0 0 0 1px rgba(46, 160, 67, 0.3);
+}
+
+.diff-word-removed {
+    background-color: rgba(248, 81, 73, 0.4) !important;
+    color: var(--text-muted);
+    border-bottom: 1px solid rgba(244, 67, 54, 0.4);
+    text-decoration: none !important;
+    border-radius: 2px;
+    opacity: 0.85;
+    padding: 0 3px;
+    font-weight: 600;
+    box-shadow: 0 0 0 1px rgba(248, 81, 73, 0.3);
+}
+
+.diff-char-added {
+    background: rgba(46, 160, 67, 0.6) !important;
+    padding: 1px 3px;
+    border-radius: 3px;
+    font-weight: 600;
+    box-shadow: 0 0 0 1px rgba(46, 160, 67, 0.3);
+}
+
+.diff-char-removed {
+    background: rgba(248, 81, 73, 0.6) !important;
+    padding: 1px 3px;
+    border-radius: 3px;
+    opacity: 0.85;
+    font-weight: 600;
+    box-shadow: 0 0 0 1px rgba(248, 81, 73, 0.3);
+}
+
+/* ======================================================================= */
+/* =================== [修复] 移动文本检测样式 ========================== */
+/* ======================================================================= */
+
+.diff-line.diff-moved-from,
+.diff-line.diff-moved-to {
+    background-color: rgba(58, 112, 165, 0.15);
+    border-left: 3px solid #3a70a5;
+}
+
+.diff-line.diff-moved-from:hover,
+.diff-line.diff-moved-to:hover {
+    background-color: rgba(58, 112, 165, 0.25) !important;
+}
+
+.diff-line.diff-moved-from .diff-marker,
+.diff-line.diff-moved-to .diff-marker {
+    color: #6c95bd;
+    font-weight: bold;
+}
+
+.diff-line.diff-move-highlight {
+    outline: 2px solid #3a70a5;
+    box-shadow: 0 0 10px rgba(58, 112, 165, 0.5);
+    z-index: 20;
+}
+
+/* ======================================================================= */
+/* =================== 其他行状态 ======================================== */
+/* ======================================================================= */
 
 .diff-context {
     background: transparent;
@@ -1447,6 +1412,10 @@
     transform: scaleY(0.95);
 }
 
+/* ======================================================================= */
+/* =================== 内联视图与行号 ==================================== */
+/* ======================================================================= */
+
 .diff-inline-with-lines {
     display: flex;
     border: 1px solid var(--background-modifier-border);
@@ -1495,7 +1464,7 @@
 }
 
 /* ======================================================================= */
-/* =================== [优化] 分栏视图 =================================== */
+/* =================== 分栏视图 ========================================== */
 /* ======================================================================= */
 
 .diff-split {
@@ -1536,6 +1505,11 @@
     display: flex;
     align-items: center;
     gap: 8px;
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    opacity: 0.98;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
 }
 
 .diff-panel h3::before {
@@ -1549,6 +1523,10 @@
     padding: 10px;
     background: var(--background-primary);
 }
+
+/* ======================================================================= */
+/* =================== 滚动条样式 ======================================== */
+/* ======================================================================= */
 
 .diff-container::-webkit-scrollbar,
 .diff-content::-webkit-scrollbar,
@@ -1587,7 +1565,32 @@
     background: var(--background-secondary);
 }
 
-/* 深色模式适配 */
+/* 优化滚动条 - 悬停显示 */
+.diff-container::-webkit-scrollbar,
+.diff-content::-webkit-scrollbar,
+.rendered-diff-content::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+.diff-container::-webkit-scrollbar-thumb,
+.diff-content::-webkit-scrollbar-thumb,
+.rendered-diff-content::-webkit-scrollbar-thumb {
+    background-color: transparent;
+    border: none;
+    border-radius: 3px;
+}
+
+.diff-container:hover::-webkit-scrollbar-thumb,
+.diff-content:hover::-webkit-scrollbar-thumb,
+.rendered-diff-content:hover::-webkit-scrollbar-thumb {
+    background-color: var(--scrollbar-thumb-bg);
+}
+
+/* ======================================================================= */
+/* =================== 深色模式适配 ====================================== */
+/* ======================================================================= */
+
 .theme-dark .diff-added,
 .theme-dark .diff-line-bg-added {
     background: rgba(46, 160, 67, 0.2);
@@ -1639,6 +1642,14 @@
     background: rgba(255, 255, 255, 0.08);
 }
 
+.theme-dark .diff-line.diff-context:nth-child(even) {
+    background-color: rgba(255, 255, 255, 0.015);
+}
+
+/* ======================================================================= */
+/* =================== 空白字符显示 ====================================== */
+/* ======================================================================= */
+
 .diff-container.show-whitespace-active .line-content {
     color: var(--text-faint);
 }
@@ -1649,6 +1660,10 @@
 .diff-container.show-whitespace-active .diff-word-removed {
     color: var(--text-normal);
 }
+
+/* ======================================================================= */
+/* =================== 工具栏重新设计 ==================================== */
+/* ======================================================================= */
 
 .diff-toolbar-redesigned {
     display: flex;
@@ -1704,6 +1719,10 @@
     border-right: 1px solid var(--background-modifier-border);
 }
 
+/* ======================================================================= */
+/* =================== 行号容器与操作按钮 ================================ */
+/* ======================================================================= */
+
 .line-number-container {
     display: flex;
     align-items: center;
@@ -1714,6 +1733,16 @@
     color: var(--text-faint);
     user-select: none;
     flex-shrink: 0;
+    background-color: var(--background-primary-alt);
+    border-right: 1px solid var(--background-modifier-border);
+    margin-right: 8px;
+    padding-right: 10px;
+    opacity: 0.8;
+}
+
+.diff-container:not(.diff-split) .line-number-container {
+    background-color: transparent;
+    border-right: 1px solid var(--background-modifier-border);
 }
 
 .line-number-container .line-number {
@@ -1749,6 +1778,7 @@
 .diff-line-action-btn[aria-label*="应用"] {
     background-color: var(--color-green);
 }
+
 .diff-line-action-btn[aria-label*="撤销"] {
     background-color: var(--color-red);
 }
@@ -1772,7 +1802,10 @@
     border-top: 1px solid var(--background-modifier-border);
 }
 
-/* Mobile-specific styles */
+/* ======================================================================= */
+/* =================== 移动端样式 ======================================== */
+/* ======================================================================= */
+
 .diff-modal.is-mobile .diff-line .diff-line-action-btn,
 .diff-modal.is-mobile .diff-line .diff-line-history-btn {
     visibility: hidden;
@@ -1793,8 +1826,9 @@
 }
 
 /* ======================================================================= */
-/* ================= [新增] 版本完整性检查报告样式 ===================== */
+/* ================= 版本完整性检查报告样式 ============================== */
 /* ======================================================================= */
+
 .integrity-report-modal {
     max-width: 800px;
 }
@@ -1878,7 +1912,6 @@
 }
 
 /* 2. 粘性标题 */
-.diff-panel h3, 
 .rendered-diff-panel h3 {
     position: sticky;
     top: 0;
@@ -1893,46 +1926,6 @@
 /* 3. 斑马纹背景 */
 .diff-line.diff-context:nth-child(even) {
     background-color: rgba(var(--mono-rgb-100), 0.015);
-}
-.theme-dark .diff-line.diff-context:nth-child(even) {
-    background-color: rgba(255, 255, 255, 0.015);
-}
-
-/* 4. 优化行号栏 */
-.line-number-container, 
-.diff-line-numbers {
-    background-color: var(--background-primary-alt);
-    border-right: 1px solid var(--background-modifier-border);
-    margin-right: 8px;
-    padding-right: 10px;
-    opacity: 0.8;
-}
-
-.diff-container:not(.diff-split) .line-number-container {
-    background-color: transparent;
-    border-right: 1px solid var(--background-modifier-border);
-}
-
-/* 6. 滚动条美化 */
-.diff-container::-webkit-scrollbar,
-.diff-content::-webkit-scrollbar,
-.rendered-diff-content::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
-}
-
-.diff-container::-webkit-scrollbar-thumb,
-.diff-content::-webkit-scrollbar-thumb,
-.rendered-diff-content::-webkit-scrollbar-thumb {
-    background-color: transparent;
-    border: none;
-    border-radius: 3px;
-}
-
-.diff-container:hover::-webkit-scrollbar-thumb,
-.diff-content:hover::-webkit-scrollbar-thumb,
-.rendered-diff-content:hover::-webkit-scrollbar-thumb {
-    background-color: var(--scrollbar-thumb-bg);
 }
 
 /* 7. 模态框进入动画 */
@@ -1954,28 +1947,6 @@
     }
 }
 
-/* 8. 搜索框悬浮美化 */
-.diff-search-container {
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
-    border: 1px solid var(--background-modifier-border-hover);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    background-color: rgba(var(--background-secondary-rgb), 0.85);
-    border-radius: 8px;
-    z-index: 20;
-}
-
-.diff-search-input {
-    background-color: rgba(var(--background-primary-rgb), 0.6);
-    border-radius: 6px;
-    transition: all 0.2s;
-}
-
-.diff-search-input:focus {
-    background-color: var(--background-primary);
-    box-shadow: 0 0 0 2px rgba(var(--interactive-accent-rgb), 0.3);
-}
-
 /* 9. 按钮触感优化 */
 .diff-toolbar-redesigned button,
 .version-btn,
@@ -1989,14 +1960,8 @@
     transform: scale(0.96);
 }
 
-/* 10. 结构化对比视图优化 */
-.structured-section[open] {
-    box-shadow: 0 4px 8px rgba(0,0,0,0.06);
-    border-color: var(--interactive-accent);
-}
-
 /* ======================================================================= */
-/* =================== [END OF 增强包] =================================== */
+/* =================== 标签编辑 ========================================== */
 /* ======================================================================= */
 
 .tag-edit-container {
@@ -2076,6 +2041,10 @@
     border-radius: 4px;
 }
 
+/* ======================================================================= */
+/* =================== 版本选择模态框 ==================================== */
+/* ======================================================================= */
+
 .version-select-modal .version-select-list {
     max-height: 400px;
     overflow-y: auto;
@@ -2140,6 +2109,10 @@
     border-radius: 4px;
 }
 
+/* ======================================================================= */
+/* =================== 确认对话框 ======================================== */
+/* ======================================================================= */
+
 .confirm-message {
     color: var(--text-normal);
     line-height: 1.6;
@@ -2189,6 +2162,35 @@
     opacity: 0.9;
 }
 
+/* ======================================================================= */
+/* =================== 响应式设计 ======================================== */
+/* ======================================================================= */
+
+@media (max-width: 1024px) {
+    .diff-toolbar {
+        gap: 6px;
+    }
+    
+    .diff-nav-group,
+    .diff-view-group,
+    .diff-action-group {
+        gap: 4px;
+        padding: 3px 6px;
+    }
+    
+    .diff-toolbar button,
+    .diff-toolbar select {
+        padding: 5px 10px;
+        font-size: 11px;
+    }
+    
+    .diff-info-banner-compact {
+        font-size: 10px;
+        padding: 5px 10px;
+        gap: 8px;
+    }
+}
+
 @media (max-width: 768px) {
     .version-item {
         flex-direction: column;
@@ -2202,6 +2204,33 @@
 
     .diff-split {
         grid-template-columns: 1fr;
+        gap: 10px;
+    }
+
+    .diff-toolbar {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    
+    .diff-nav-group,
+    .diff-view-group,
+    .diff-action-group {
+        justify-content: center;
+    }
+    
+    .diff-info-banner-compact {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 5px;
+    }
+    
+    .diff-info-percent {
+        margin-left: 0;
+    }
+    
+    .diff-toolbar button:hover::after,
+    .diff-toolbar select:hover::after {
+        display: none;
     }
 
     .diff-modal {
@@ -2223,44 +2252,40 @@
     }
 }
 
+/* ======================================================================= */
+/* =================== 统一滚动条样式 ==================================== */
+/* ======================================================================= */
+
 .version-history-view::-webkit-scrollbar,
-.diff-container::-webkit-scrollbar,
-.diff-content::-webkit-scrollbar,
 .preview-content pre::-webkit-scrollbar,
-.version-select-list::-webkit-scrollbar,
-.rendered-diff-content::-webkit-scrollbar {
+.version-select-list::-webkit-scrollbar {
     width: 8px;
     height: 8px;
 }
 
 .version-history-view::-webkit-scrollbar-track,
-.diff-container::-webkit-scrollbar-track,
-.diff-content::-webkit-scrollbar-track,
 .preview-content pre::-webkit-scrollbar-track,
-.version-select-list::-webkit-scrollbar-track,
-.rendered-diff-content::-webkit-scrollbar-track {
+.version-select-list::-webkit-scrollbar-track {
     background: var(--background-secondary);
     border-radius: 4px;
 }
 
 .version-history-view::-webkit-scrollbar-thumb,
-.diff-container::-webkit-scrollbar-thumb,
-.diff-content::-webkit-scrollbar-thumb,
 .preview-content pre::-webkit-scrollbar-thumb,
-.version-select-list::-webkit-scrollbar-thumb,
-.rendered-diff-content::-webkit-scrollbar-thumb {
+.version-select-list::-webkit-scrollbar-thumb {
     background: var(--background-modifier-border-hover);
     border-radius: 4px;
 }
 
 .version-history-view::-webkit-scrollbar-thumb:hover,
-.diff-container::-webkit-scrollbar-thumb:hover,
-.diff-content::-webkit-scrollbar-thumb:hover,
 .preview-content pre::-webkit-scrollbar-thumb:hover,
-.version-select-list::-webkit-scrollbar-thumb:hover,
-.rendered-diff-content::-webkit-scrollbar-thumb:hover {
+.version-select-list::-webkit-scrollbar-thumb:hover {
     background: var(--text-muted);
 }
+
+/* ======================================================================= */
+/* =================== 版本信息部分 ====================================== */
+/* ======================================================================= */
 
 .version-info-section {
     padding: 15px;
