@@ -2820,6 +2820,7 @@ class DiffModal extends Modal {
     private allVersions: VersionData[] = [];
     private infoBannerContainer: HTMLElement;
     private loadingOverlay: HTMLElement;
+    private resizeHandler: () => void;
 
     constructor(app: App, plugin: VersionControlPlugin, file: TFile, versionId: string, secondVersionId?: string) {
         super(app);
@@ -2829,48 +2830,99 @@ class DiffModal extends Modal {
         this.secondVersionId = secondVersionId || 'current';
         this.currentGranularity = this.plugin.settings.diffGranularity;
         this.contextLines = this.plugin.settings.diffContextLines;
+        this.resizeHandler = () => {
+             if (this.currentView === 'text' && this.textDiffContainer && this.textDiffContainer.hasClass('diff-split')) {
+                this.alignSplitViewLines();
+            }
+        };
     }
 
     processDiffForMoves(diffResult: Diff.Change[]): ProcessedDiff[] {
-        const processed: ProcessedDiff[] = diffResult.map(part => ({ ...part, type: part.added ? 'added' : part.removed ? 'removed' : 'context' }));
+        const processed: ProcessedDiff[] = diffResult.map(part => ({ 
+            ...part, 
+            type: part.added ? 'added' : part.removed ? 'removed' : 'context' 
+        }));
 
-        const removed = new Map<string, number[]>();
-        const added = new Map<string, number[]>();
+        // 1. 精确匹配
+        const removedMap = new Map<string, number[]>();
+        const addedMap = new Map<string, number[]>();
 
         processed.forEach((part, index) => {
+            if (!part.value.trim()) return;
+
             if (part.removed) {
                 const key = part.value.trim();
-                if (!removed.has(key)) removed.set(key, []);
-                removed.get(key)!.push(index);
+                if (!removedMap.has(key)) removedMap.set(key, []);
+                removedMap.get(key)!.push(index);
             } else if (part.added) {
                 const key = part.value.trim();
-                if (!added.has(key)) added.set(key, []);
-                added.get(key)!.push(index);
+                if (!addedMap.has(key)) addedMap.set(key, []);
+                addedMap.get(key)!.push(index);
             }
         });
 
         let moveIdCounter = 0;
-        for (const [key, removedIndices] of removed.entries()) {
-            if (added.has(key)) {
-                const addedIndices = added.get(key)!;
+        
+        for (const [key, removedIndices] of removedMap.entries()) {
+            if (addedMap.has(key)) {
+                const addedIndices = addedMap.get(key)!;
                 const pairs = Math.min(removedIndices.length, addedIndices.length);
 
                 for (let i = 0; i < pairs; i++) {
-                    const removedIndex = removedIndices.shift()!;
-                    const addedIndex = addedIndices.shift()!;
-                    
-                    processed[removedIndex].type = 'moved-from';
-                    processed[removedIndex].moveId = moveIdCounter;
-                    
-                    processed[addedIndex].type = 'moved-to';
-                    processed[addedIndex].moveId = moveIdCounter;
-                    
-                    moveIdCounter++;
+                    const rIdx = removedIndices.shift()!;
+                    const aIdx = addedIndices.shift()!;
+                    this.markAsMoved(processed, rIdx, aIdx, moveIdCounter++);
                 }
             }
         }
 
+        // 2. 模糊匹配
+        const unmatchedRemovedIndices: number[] = [];
+        const unmatchedAddedIndices: number[] = [];
+
+        processed.forEach((part, index) => {
+            if (part.type === 'removed' && part.moveId === undefined && part.value.trim().length > 10) {
+                unmatchedRemovedIndices.push(index);
+            } else if (part.type === 'added' && part.moveId === undefined && part.value.trim().length > 10) {
+                unmatchedAddedIndices.push(index);
+            }
+        });
+
+        for (const rIdx of unmatchedRemovedIndices) {
+            let bestMatchIdx = -1;
+            let bestScore = 0;
+
+            const removedText = processed[rIdx].value;
+
+            for (let i = 0; i < unmatchedAddedIndices.length; i++) {
+                const aIdx = unmatchedAddedIndices[i];
+                const addedText = processed[aIdx].value;
+
+                if (Math.abs(removedText.length - addedText.length) / removedText.length > 0.4) continue;
+
+                const score = this.calculateSimilarity(removedText, addedText);
+                
+                if (score > 65 && score > bestScore) {
+                    bestScore = score;
+                    bestMatchIdx = i;
+                }
+            }
+
+            if (bestMatchIdx !== -1) {
+                const aIdx = unmatchedAddedIndices[bestMatchIdx];
+                this.markAsMoved(processed, rIdx, aIdx, moveIdCounter++);
+                unmatchedAddedIndices.splice(bestMatchIdx, 1);
+            }
+        }
+
         return processed;
+    }
+
+    markAsMoved(processed: ProcessedDiff[], rIdx: number, aIdx: number, id: number) {
+        processed[rIdx].type = 'moved-from';
+        processed[rIdx].moveId = id;
+        processed[aIdx].type = 'moved-to';
+        processed[aIdx].moveId = id;
     }
 
     visualizeWhitespace(text: string): string {
@@ -2945,6 +2997,8 @@ class DiffModal extends Modal {
         if (Platform.isMobile) {
             contentEl.addClass('is-mobile');
         }
+
+        window.addEventListener('resize', this.resizeHandler);
 
         contentEl.createEl('h2', { text: '📊 版本差异对比' });
 
@@ -3639,6 +3693,38 @@ class DiffModal extends Modal {
         leftContentEl.addEventListener('scroll', () => syncScroll(leftContentEl, rightContentEl));
         rightContentEl.addEventListener('scroll', () => syncScroll(rightContentEl, leftContentEl));
     }
+    
+    // 新增方法：对齐左右分栏的行高
+    alignSplitViewLines() {
+        setTimeout(() => {
+            const leftPanel = this.textDiffContainer.querySelector('.diff-panel:first-child');
+            const rightPanel = this.textDiffContainer.querySelector('.diff-panel:last-child');
+            
+            if (!leftPanel || !rightPanel) return;
+
+            const leftLines = Array.from(leftPanel.querySelectorAll('.diff-line')) as HTMLElement[];
+            const rightLines = Array.from(rightPanel.querySelectorAll('.diff-line')) as HTMLElement[];
+
+            const count = Math.min(leftLines.length, rightLines.length);
+
+            for (let i = 0; i < count; i++) {
+                const left = leftLines[i];
+                const right = rightLines[i];
+                
+                left.style.height = '';
+                right.style.height = '';
+
+                const lHeight = left.offsetHeight;
+                const rHeight = right.offsetHeight;
+
+                if (lHeight !== rHeight) {
+                    const maxHeight = Math.max(lHeight, rHeight);
+                    left.style.height = `${maxHeight}px`;
+                    right.style.height = `${maxHeight}px`;
+                }
+            }
+        }, 50);
+    }
 
     renderTextDiff() {
         const container = this.textDiffContainer;
@@ -3680,6 +3766,9 @@ class DiffModal extends Modal {
                 const leftLabelEl = this.containerEl.querySelector('#diff-left-version-btn') as HTMLElement;
                 const rightLabelEl = this.containerEl.querySelector('#diff-right-version-btn') as HTMLElement;
                 this.renderSplitDiff(container, leftProcessed, rightProcessed, leftLabelEl.textContent || '版本 A', rightLabelEl.textContent || '版本 B');
+                
+                // [新增] 调用对齐
+                this.alignSplitViewLines();
             }
         }
 
@@ -4045,6 +4134,12 @@ class DiffModal extends Modal {
 
         const renderLine = (content: string | DocumentFragment, type: ProcessedDiff['type'], lineNumLeft: number | null, lineNumRight: number | null, moveId?: number, oldContentForRevert: string | null = null) => {
             const lineEl = container.createEl('div', { cls: `diff-line diff-${type}` });
+            
+            // [新增] 确保有用于背景色的类
+            if (type === 'added') lineEl.addClass('diff-line-bg-added');
+            else if (type === 'removed') lineEl.addClass('diff-line-bg-removed');
+            else if (type === 'modified') lineEl.addClass('diff-line-bg-modified');
+
             if (type !== 'context') {
                 lineEl.dataset.diffIndex = String(diffIdx++);
                 this.diffElements.push(lineEl);
@@ -4287,6 +4382,12 @@ class DiffModal extends Modal {
     
         const renderLine = (panel: HTMLElement, content: string | DocumentFragment, type: string, lineNum: number | null, moveId?: number, oldContentForRevert: string | null = null) => {
             const lineEl = panel.createEl('div', { cls: `diff-line diff-${type}` });
+
+            // [新增] 确保有用于背景色的类
+            if (type === 'added') lineEl.addClass('diff-line-bg-added');
+            else if (type === 'removed') lineEl.addClass('diff-line-bg-removed');
+            else if (type === 'modified') lineEl.addClass('diff-line-bg-modified');
+
             if (type !== 'context' && type !== 'placeholder') {
                 lineEl.dataset.diffIndex = String(diffIdx++);
                 this.diffElements.push(lineEl);
@@ -4767,6 +4868,7 @@ class DiffModal extends Modal {
     }
 
     onClose() {
+        window.removeEventListener('resize', this.resizeHandler);
         const { contentEl } = this;
         contentEl.empty();
     }
