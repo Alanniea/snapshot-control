@@ -2235,3 +2235,156 @@
 .integrity-item button.mod-warning:hover {
     background-color: var(--color-red);
 }
+
+/* ======================================================================= */
+/* =================== [增强包] UI/UX 深度优化 =========================== */
+/* ======================================================================= */
+
+/* 1. 字体与排版优化：使用更专业的等宽字体，优化行高 */
+.diff-container, 
+.diff-content, 
+.preview-content pre,
+.structured-diff-container {
+    /* 优先使用流行的编程连字字体，最后回退到系统等宽 */
+    font-family: 'JetBrains Mono', 'Fira Code', 'Source Code Pro', 'Menlo', 'Consolas', 'Roboto Mono', monospace;
+    line-height: 1.65; /* 增加行间距，提升密集代码可读性 */
+    -webkit-font-smoothing: antialiased;
+    font-variant-ligatures: normal; /* 启用连字 (如果字体支持) */
+}
+
+/* 2. 粘性标题 (Sticky Headers)：滚动时锁定版本标题 */
+.diff-panel h3, 
+.rendered-diff-panel h3 {
+    position: sticky;
+    top: 0;
+    z-index: 5; /* 确保在代码之上，但在搜索框/蒙层之下 */
+    background-color: var(--background-secondary);
+    opacity: 0.98; /* 轻微透视，保留质感 */
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05); /* 增加底部投影，产生悬浮感 */
+    border-bottom: 1px solid var(--background-modifier-border);
+    margin-top: 0; /* 修正可能存在的 margin 导致的跳动 */
+}
+
+/* 3. 斑马纹背景 (Zebra Striping)：提升长文阅读体验 */
+/* 仅针对未变动(Context)的行应用，避免干扰新增/删除的背景色 */
+.diff-line.diff-context:nth-child(even) {
+    background-color: rgba(var(--mono-rgb-100), 0.015); /* 极淡的背景色 */
+}
+.theme-dark .diff-line.diff-context:nth-child(even) {
+    background-color: rgba(255, 255, 255, 0.015);
+}
+
+/* 4. 优化行号栏 (Gutter Styling)：IDE 风格 */
+.line-number-container, 
+.diff-line-numbers {
+    background-color: var(--background-primary-alt); /* 与代码区区分开 */
+    border-right: 1px solid var(--background-modifier-border); /* 分割线 */
+    margin-right: 8px;
+    padding-right: 10px;
+    opacity: 0.8;
+}
+
+/* 统一视图下的行号栏特殊处理 */
+.diff-container:not(.diff-split) .line-number-container {
+    background-color: transparent; /* 统一视图不需要背景块 */
+    border-right: 1px solid var(--background-modifier-border);
+}
+
+/* 5. 优化删除线 (Better Readability)：拒绝遮挡文字 */
+.diff-word-removed, 
+.diff-char-removed {
+    text-decoration: none !important; /* 去掉穿透文字的横线 */
+    border-bottom: 1px solid rgba(244, 67, 54, 0.4); /* 改为底部红线 */
+    opacity: 0.85; /* 稍微降低透明度让它不那么刺眼 */
+}
+
+/* 6. 滚动条美化 (Minimal Scrollbars) */
+.diff-container::-webkit-scrollbar,
+.diff-content::-webkit-scrollbar,
+.rendered-diff-content::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+.diff-container::-webkit-scrollbar-thumb,
+.diff-content::-webkit-scrollbar-thumb,
+.rendered-diff-content::-webkit-scrollbar-thumb {
+    background-color: transparent; /* 默认隐藏 */
+    border: none;
+    border-radius: 3px;
+}
+
+/* 仅在悬停时显示滚动条 */
+.diff-container:hover::-webkit-scrollbar-thumb,
+.diff-content:hover::-webkit-scrollbar-thumb,
+.rendered-diff-content:hover::-webkit-scrollbar-thumb {
+    background-color: var(--scrollbar-thumb-bg);
+}
+
+/* 7. 模态框进入动画 (Pop-in Animation) */
+.diff-modal .modal-content,
+.quick-preview-modal .modal-content,
+.integrity-report-modal .modal-content {
+    animation: modal-pop-in 0.25s cubic-bezier(0.2, 0.9, 0.4, 1.1);
+    transform-origin: center center;
+}
+
+@keyframes modal-pop-in {
+    0% {
+        opacity: 0;
+        transform: scale(0.96) translateY(10px);
+    }
+    100% {
+        opacity: 1;
+        transform: scale(1) translateY(0);
+    }
+}
+
+/* 8. 搜索框悬浮美化 (Glassmorphism) */
+.diff-search-container {
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15); /* 更深的投影 */
+    border: 1px solid var(--background-modifier-border-hover);
+    backdrop-filter: blur(12px); /* 磨砂玻璃效果 */
+    -webkit-backdrop-filter: blur(12px);
+    background-color: rgba(var(--background-secondary-rgb), 0.85); /* 半透明背景 */
+    border-radius: 8px;
+    z-index: 20;
+}
+
+.diff-search-input {
+    background-color: rgba(var(--background-primary-rgb), 0.6);
+    border-radius: 6px;
+    transition: all 0.2s;
+}
+
+.diff-search-input:focus {
+    background-color: var(--background-primary);
+    box-shadow: 0 0 0 2px rgba(var(--interactive-accent-rgb), 0.3);
+}
+
+/* 9. 按钮触感优化 */
+.diff-toolbar-redesigned button,
+.version-btn,
+.modal-button-container button {
+    transition: all 0.15s ease-out;
+}
+
+.diff-toolbar-redesigned button:active,
+.version-btn:active,
+.modal-button-container button:active {
+    transform: scale(0.96); /* 点击时的微缩反馈 */
+}
+
+/* 10. 结构化对比视图优化 */
+.structured-section {
+    box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+    background-color: var(--background-primary);
+}
+.structured-section[open] {
+    box-shadow: 0 4px 8px rgba(0,0,0,0.06); /* 展开时增加层级感 */
+    border-color: var(--interactive-accent); /* 展开时边框变色 */
+}
+
+/* ======================================================================= */
+/* =================== [END OF 增强包] =================================== */
+/* ======================================================================= */
