@@ -3971,12 +3971,10 @@ class DiffModal extends Modal {
     }
 
     calculateSimilarity(text1: string, text2: string): number {
-        // 使用 Diff 库按字符比较，这样可以自动处理插入/删除带来的位置偏移
         const diff = Diff.diffChars(text1, text2);
         let commonLength = 0;
         
         diff.forEach(part => {
-            // 累加没有变动的内容长度
             if (!part.added && !part.removed) {
                 commonLength += part.value.length;
             }
@@ -3985,7 +3983,6 @@ class DiffModal extends Modal {
         const maxLen = Math.max(text1.length, text2.length);
         if (maxLen === 0) return 100;
         
-        // 计算相同内容占最大长度的比例
         return (commonLength / maxLen) * 100;
     }
 
@@ -4291,50 +4288,23 @@ class DiffModal extends Modal {
                 const rightLines = nextPart.value.replace(/\n$/, '').split('\n');
 
                 if (useCompactView) {
-                    const matchThreshold = 40; 
-                    const matches = new Map<number, number>(); 
-                    const usedLeftIndices = new Set<number>(); 
+                    // 强制合并修改为一行
+                    const maxLines = Math.max(leftLines.length, rightLines.length);
 
-                    rightLines.forEach((rLine, rIdx) => {
-                        let bestScore = 0;
-                        let bestLIdx = -1;
+                    for (let j = 0; j < maxLines; j++) {
+                        const lLine = leftLines[j];
+                        const rLine = rightLines[j];
 
-                        leftLines.forEach((lLine, lIdx) => {
-                            if (usedLeftIndices.has(lIdx)) return; 
-                            
-                            const score = this.calculateSimilarity(lLine, rLine);
-                            
-                            if (score > matchThreshold && score > bestScore) {
-                                bestScore = score;
-                                bestLIdx = lIdx;
-                            }
-                        });
-
-                        if (bestLIdx !== -1) {
-                            matches.set(rIdx, bestLIdx);
-                            usedLeftIndices.add(bestLIdx);
-                        }
-                    });
-
-                    leftLines.forEach((lLine, lIdx) => {
-                        if (!usedLeftIndices.has(lIdx)) {
-                            renderLine(lLine, 'removed', leftLineNum++, null);
-                        }
-                    });
-
-                    rightLines.forEach((rLine, rIdx) => {
-                        if (matches.has(rIdx)) {
-                            const lIdx = matches.get(rIdx)!;
-                            const lLine = leftLines[lIdx];
-                            
+                        if (lLine !== undefined && rLine !== undefined) {
                             const lineDiff = secondaryDiffFn(lLine, rLine);
                             const combinedFrag = createHighlightedFragment(lineDiff, true);
-                            
                             renderLine(combinedFrag, 'modified', leftLineNum++, rightLineNum++, undefined, lLine);
-                        } else {
+                        } else if (lLine !== undefined) {
+                            renderLine(lLine, 'removed', leftLineNum++, null);
+                        } else if (rLine !== undefined) {
                             renderLine(rLine, 'added', null, rightLineNum++, undefined, null);
                         }
-                    });
+                    }
                 }
                 else if (leftLines.length === rightLines.length) {
                     const minLen = Math.min(leftLines.length, rightLines.length);
@@ -4998,379 +4968,6 @@ class DiffModal extends Modal {
     }
 }
 
-class LineHistoryModal extends Modal {
-    plugin: VersionControlPlugin;
-    file: TFile;
-    lineText: string;
-    versions: VersionData[];
-
-    constructor(app: App, plugin: VersionControlPlugin, file: TFile, lineText: string, versions: VersionData[]) {
-        super(app);
-        this.plugin = plugin;
-        this.file = file;
-        this.lineText = lineText;
-        this.versions = versions;
-    }
-
-    onOpen() {
-        const { contentEl } = this;
-        contentEl.addClass('line-history-modal');
-
-        contentEl.createEl('h2', { text: '行历史' });
-        contentEl.createEl('p', { text: '以下版本中包含了这行内容:' });
-        contentEl.createEl('pre', { text: this.lineText });
-
-        const listContainer = contentEl.createEl('div', { cls: 'version-select-list' });
-
-        if (this.versions.length === 0) {
-            listContainer.createEl('div', { text: '没有找到匹配的历史版本。', cls: 'version-select-empty' });
-            return;
-        }
-
-        for (const version of this.versions) {
-            const item = listContainer.createEl('div', { cls: 'version-select-item' });
-            
-            const info = item.createEl('div', { cls: 'version-info' });
-            info.createEl('div', { text: this.plugin.formatTime(version.timestamp), cls: 'version-time' });
-            info.createEl('div', { text: version.message, cls: 'version-message' });
-
-            const compareBtn = item.createEl('button', { text: '对比' });
-            compareBtn.addEventListener('click', () => {
-                this.close();
-                new DiffModal(this.app, this.plugin, this.file, version.id).open();
-            });
-        }
-    }
-
-    onClose() {
-        this.contentEl.empty();
-    }
-}
-
-class VersionSelectModal extends Modal {
-    plugin: VersionControlPlugin;
-    file: TFile;
-    firstVersionId: string;
-    onSelect: (versionId: string) => void;
-    searchQuery: string = '';
-
-    constructor(app: App, plugin: VersionControlPlugin, file: TFile, firstVersionId: string, onSelect: (versionId: string) => void) {
-        super(app);
-        this.plugin = plugin;
-        this.file = file;
-        this.firstVersionId = firstVersionId;
-        this.onSelect = onSelect;
-    }
-
-    async onOpen() {
-        const { contentEl } = this;
-        contentEl.addClass('version-select-modal');
-
-        contentEl.createEl('h2', { text: '选择对比版本' });
-        
-        contentEl.createEl('p', { 
-            text: '选择要与之对比的版本', 
-            cls: 'version-select-hint' 
-        });
-
-        const searchContainer = contentEl.createEl('div', { cls: 'version-search-container' });
-        const searchInput = searchContainer.createEl('input', {
-            type: 'text',
-            placeholder: '搜索版本...',
-            cls: 'version-search-input'
-        });
-        searchInput.addEventListener('input', (e) => {
-            this.searchQuery = (e.target as HTMLInputElement).value;
-            this.renderVersionList();
-        });
-
-        const listContainer = contentEl.createEl('div', { cls: 'version-select-list' });
-        this.renderVersionList();
-    }
-
-    async renderVersionList() {
-        const listContainer = this.containerEl.querySelector('.version-select-list') as HTMLElement;
-        if (!listContainer) return;
-
-        listContainer.empty();
-
-        const versions = await this.plugin.getAllVersions(this.file.path);
-        
-        const filteredVersions = versions.filter(v => {
-            if (v.id === this.firstVersionId) return false;
-            if (!this.searchQuery) return true;
-            
-            const query = this.searchQuery.toLowerCase();
-            return v.message.toLowerCase().includes(query) ||
-                   this.plugin.formatTime(v.timestamp).toLowerCase().includes(query);
-        });
-
-        if (filteredVersions.length === 0) {
-            listContainer.createEl('div', { 
-                text: this.searchQuery ? `未找到匹配 "${this.searchQuery}" 的版本` : '没有其他版本',
-                cls: 'version-select-empty'
-            });
-            return;
-        }
-
-        for (const version of filteredVersions) {
-            const item = listContainer.createEl('div', { cls: 'version-select-item' });
-            
-            const info = item.createEl('div', { cls: 'version-info' });
-            info.createEl('div', { 
-                text: this.plugin.formatTime(version.timestamp),
-                cls: 'version-time'
-            });
-            info.createEl('div', { 
-                text: version.message,
-                cls: 'version-message'
-            });
-            info.createEl('div', { 
-                text: this.plugin.formatFileSize(version.size),
-                cls: 'version-size'
-            });
-
-            const selectBtn = item.createEl('button', { text: '选择' });
-            selectBtn.addEventListener('click', () => {
-                this.close();
-                this.onSelect(version.id);
-            });
-        }
-    }
-
-    onClose() {
-        const { contentEl } = this;
-        contentEl.empty();
-    }
-}
-
-class IntegrityReportModal extends Modal {
-    report: { filePath: string; errors: string[] }[];
-    plugin: VersionControlPlugin;
-
-    constructor(app: App, plugin: VersionControlPlugin, report: { filePath: string; errors: string[] }[]) {
-        super(app);
-        this.plugin = plugin;
-        this.report = report;
-    }
-
-    onOpen() {
-        const { contentEl } = this;
-        contentEl.addClass('integrity-report-modal');
-        contentEl.createEl('h2', { text: '🛡️ 版本完整性检查报告' });
-
-        if (this.report.length === 0) {
-            const successDiv = contentEl.createEl('div', { cls: 'integrity-success' });
-            successDiv.createEl('span', { text: '✅', cls: 'integrity-icon' });
-            successDiv.createEl('h3', { text: '所有版本文件完好无损！' });
-            successDiv.createEl('p', { text: '检测了所有版本记录，未发现结构错误、链条断裂或哈希不匹配。' });
-        } else {
-            const warningDiv = contentEl.createEl('div', { cls: 'integrity-warning' });
-            warningDiv.createEl('p', { text: `⚠️ 发现 ${this.report.length} 个文件存在问题。` });
-
-            const batchContainer = contentEl.createEl('div', { cls: 'integrity-batch-actions' });
-            batchContainer.style.display = 'flex';
-            batchContainer.style.gap = '10px';
-            batchContainer.style.marginBottom = '15px';
-            batchContainer.style.padding = '10px';
-            batchContainer.style.backgroundColor = 'var(--background-secondary)';
-            batchContainer.style.borderRadius = '5px';
-            batchContainer.style.border = '1px solid var(--background-modifier-border)';
-
-            const repairAllBtn = batchContainer.createEl('button', { text: '🔧 一键修复所有哈希错误' });
-            repairAllBtn.addClass('mod-cta');
-            const hashErrorCount = this.report.filter(i => i.errors.some(e => e.includes("哈希校验失败"))).length;
-            if (hashErrorCount === 0) {
-                repairAllBtn.setAttr('disabled', 'true');
-                repairAllBtn.setText('无哈希错误可修复');
-            } else {
-                repairAllBtn.addEventListener('click', async () => {
-                    repairAllBtn.setText(`正在修复... (0/${hashErrorCount})`);
-                    repairAllBtn.setAttr('disabled', 'true');
-                    
-                    let fixedCount = 0;
-                    const itemsToRepair = this.report.filter(i => i.errors.some(e => e.includes("哈希校验失败")));
-                    
-                    for (let i = 0; i < itemsToRepair.length; i++) {
-                        const item = itemsToRepair[i];
-                        const success = await this.plugin.repairVersionFile(item.filePath);
-                        if (success) fixedCount++;
-                        repairAllBtn.setText(`正在修复... (${i + 1}/${hashErrorCount})`);
-                    }
-
-                    new Notice(`✅ 批量操作完成：修复了 ${fixedCount} 个文件`);
-                    repairAllBtn.setText(`已修复 ${fixedCount} 个文件`);
-                    
-                    deleteAllBtn.setText('🗑️ 一键删除剩余问题文件'); 
-                });
-            }
-
-            const deleteAllBtn = batchContainer.createEl('button', { text: '🗑️ 一键删除所有问题文件' });
-            deleteAllBtn.addClass('mod-warning');
-            deleteAllBtn.addEventListener('click', () => {
-                new ConfirmModal(
-                    this.app, 
-                    '⚠️ 危险：批量删除', 
-                    `确定要删除列表中的全部 ${this.report.length} 个版本记录文件吗？\n此操作将永久丢失这些文件的历史版本！`, 
-                    async () => {
-                        let deletedCount = 0;
-                        const notice = new Notice('正在批量删除...', 0);
-                        
-                        for (const item of this.report) {
-                            try {
-                                const versionPath = this.plugin.getVersionFilePath(item.filePath);
-                                if (await this.app.vault.adapter.exists(versionPath)) {
-                                    await this.app.vault.adapter.remove(versionPath);
-                                    this.plugin.versionCache.delete(item.filePath);
-                                    deletedCount++;
-                                }
-                            } catch (e) {
-                                console.error(`删除失败: ${item.filePath}`, e);
-                            }
-                        }
-                        
-                        notice.hide();
-                        new Notice(`已删除 ${deletedCount} 个损坏的版本文件`);
-                        this.close(); 
-                    }
-                ).open();
-            });
-
-            const listContainer = contentEl.createEl('div', { cls: 'integrity-list' });
-
-            this.report.forEach(item => {
-                const fileItem = listContainer.createEl('div', { cls: 'integrity-item' });
-                fileItem.dataset.filePath = item.filePath;
-
-                fileItem.createEl('div', { text: `📄 ${item.filePath}`, cls: 'integrity-filepath' });
-                
-                const errorList = fileItem.createEl('ul', { cls: 'integrity-errors' });
-                
-                let hasHashError = false;
-                item.errors.forEach(err => {
-                    errorList.createEl('li', { text: err });
-                    if (err.includes("哈希校验失败")) {
-                        hasHashError = true;
-                    }
-                });
-
-                const btnGroup = fileItem.createEl('div', { cls: 'integrity-actions', attr: { style: 'display: flex; gap: 10px; margin-top: 8px;' } });
-
-                if (hasHashError) {
-                    const fixBtn = btnGroup.createEl('button', { text: '🔧 尝试修复哈希' });
-                    fixBtn.addEventListener('click', async () => {
-                        const success = await this.plugin.repairVersionFile(item.filePath);
-                        if (success) {
-                            fixBtn.setText("✅ 已修复");
-                            fixBtn.setAttr('disabled', 'true');
-                            errorList.empty();
-                            errorList.createEl('li', { text: '哈希值已更新为当前计算结果。', attr: { style: 'color: var(--text-success);' } });
-                        } else {
-                            fixBtn.setText("❌ 修复失败");
-                        }
-                    });
-                }
-
-                const actionBtn = btnGroup.createEl('button', { text: '🗑️ 删除此记录' });
-                actionBtn.addClass('mod-warning');
-                actionBtn.addEventListener('click', async () => {
-                    new ConfirmModal(this.app, '确认删除', '确定要删除这个损坏的版本文件吗？所有历史记录将丢失。', async () => {
-                        try {
-                            const versionPath = this.plugin.getVersionFilePath(item.filePath);
-                            if (await this.app.vault.adapter.exists(versionPath)) {
-                                await this.app.vault.adapter.remove(versionPath);
-                                this.plugin.versionCache.delete(item.filePath);
-                                new Notice('已删除损坏的文件');
-                                fileItem.remove(); 
-                                
-                                const remaining = listContainer.querySelectorAll('.integrity-item').length;
-                                if (remaining === 0) {
-                                    this.close();
-                                    new Notice("所有问题文件已处理完毕");
-                                }
-                            }
-                        } catch (e) {
-                            new Notice('删除失败');
-                        }
-                    }).open();
-                });
-            });
-        }
-        
-        const btnContainer = contentEl.createEl('div', { cls: 'modal-button-container' });
-        btnContainer.createEl('button', { text: '关闭' }).addEventListener('click', () => this.close());
-    }
-
-    onClose() {
-        this.contentEl.empty();
-    }
-}
-
-class ContextLineInputModal extends Modal {
-    currentLines: number;
-    onSubmit: (lines: number) => void;
-
-    constructor(app: App, currentLines: number, onSubmit: (lines: number) => void) {
-        super(app);
-        this.currentLines = currentLines;
-        this.onSubmit = onSubmit;
-    }
-
-    onOpen() {
-        const { contentEl } = this;
-        contentEl.createEl('h3', { text: '设置上下文行数' });
-        
-        let inputEl: HTMLInputElement;
-
-        new Setting(contentEl)
-            .setName('显示变更周围的行数')
-            .setDesc('输入0表示仅显示变更内容，输入9999表示显示全部内容。')
-            .addText(text => {
-                inputEl = text.inputEl;
-                text.inputEl.type = 'number';
-                text.setValue(String(this.currentLines))
-                    .onChange(value => {
-                        this.currentLines = parseInt(value);
-                    });
-                text.inputEl.addEventListener('keydown', (e) => {
-                    if (e.key === 'Enter') {
-                        e.preventDefault();
-                        this.submit();
-                    }
-                });
-            });
-
-        const btnContainer = contentEl.createEl('div', { cls: 'modal-button-container' });
-        
-        const cancelBtn = btnContainer.createEl('button', { text: '取消' });
-        cancelBtn.addEventListener('click', () => this.close());
-
-        const confirmBtn = btnContainer.createEl('button', { 
-            text: '确定', 
-            cls: 'mod-cta' 
-        });
-        confirmBtn.addEventListener('click', () => this.submit());
-        
-        setTimeout(() => {
-            if(inputEl) inputEl.focus();
-        }, 50);
-    }
-
-    submit() {
-        if (isNaN(this.currentLines) || this.currentLines < 0) {
-            new Notice('请输入有效的非负整数');
-            return;
-        }
-        this.onSubmit(this.currentLines);
-        this.close();
-    }
-
-    onClose() {
-        const { contentEl } = this;
-        contentEl.empty();
-    }
-}
-
 class VersionControlSettingTab extends PluginSettingTab {
     plugin: VersionControlPlugin;
 
@@ -5959,5 +5556,237 @@ class VersionControlSettingTab extends PluginSettingTab {
             console.error('清空版本失败:', error);
             new Notice('❌ 清空失败,请查看控制台');
         }
+    }
+}
+
+// =========================================================
+// 缺失的 Modal 类补充 (已修复 createEl 参数问题)
+// =========================================================
+
+class IntegrityReportModal extends Modal {
+    plugin: VersionControlPlugin;
+    report: { filePath: string; errors: string[] }[];
+
+    constructor(app: App, plugin: VersionControlPlugin, report: { filePath: string; errors: string[] }[]) {
+        super(app);
+        this.plugin = plugin;
+        this.report = report;
+    }
+
+    onOpen() {
+        const { contentEl } = this;
+        contentEl.createEl('h2', { text: '🛡️ 版本完整性检查报告' });
+
+        if (this.report.length === 0) {
+            const successDiv = contentEl.createEl('div', { cls: 'integrity-success' });
+            successDiv.createEl('h3', { text: '✅ 所有检查通过' });
+            successDiv.createEl('p', { text: '未发现损坏的版本记录。' });
+        } else {
+            contentEl.createEl('p', { text: `⚠️ 发现 ${this.report.length} 个文件存在问题:` });
+            
+            const listContainer = contentEl.createEl('div', { cls: 'integrity-report-list' });
+            
+            this.report.forEach(item => {
+                const fileContainer = listContainer.createEl('div', { cls: 'integrity-item' });
+                fileContainer.createEl('h4', { text: item.filePath });
+                
+                const errorList = fileContainer.createEl('ul');
+                item.errors.forEach(err => {
+                    errorList.createEl('li', { text: err, attr: { style: 'color: var(--text-error);' } });
+                });
+
+                const repairBtn = fileContainer.createEl('button', { text: '尝试修复哈希' });
+                repairBtn.addEventListener('click', async () => {
+                    const repaired = await this.plugin.repairVersionFile(item.filePath);
+                    if (repaired) {
+                        repairBtn.setText('修复成功');
+                        repairBtn.disabled = true;
+                    } else {
+                        new Notice('无法自动修复，请手动检查文件。');
+                    }
+                });
+            });
+        }
+
+        const btnContainer = contentEl.createEl('div', { cls: 'modal-button-container', attr: { style: 'margin-top: 20px;' } });
+        btnContainer.createEl('button', { text: '关闭' }).addEventListener('click', () => this.close());
+    }
+
+    onClose() {
+        this.contentEl.empty();
+    }
+}
+
+class VersionSelectModal extends Modal {
+    plugin: VersionControlPlugin;
+    file: TFile;
+    currentVersionId: string;
+    onSelect: (versionId: string) => void;
+    versions: VersionData[] = [];
+
+    constructor(app: App, plugin: VersionControlPlugin, file: TFile, currentVersionId: string, onSelect: (versionId: string) => void) {
+        super(app);
+        this.plugin = plugin;
+        this.file = file;
+        this.currentVersionId = currentVersionId;
+        this.onSelect = onSelect;
+    }
+
+    async onOpen() {
+        const { contentEl } = this;
+        contentEl.createEl('h2', { text: '选择对比版本' });
+        contentEl.createEl('p', { text: '选择一个版本与当前选中的版本进行对比:' });
+
+        this.versions = await this.plugin.getAllVersions(this.file.path);
+
+        const listContainer = contentEl.createEl('div', { cls: 'version-select-list', attr: { style: 'max-height: 400px; overflow-y: auto;' } });
+
+        // 选项：当前文件
+        if (this.currentVersionId !== 'current') {
+            this.renderItem(listContainer, {
+                id: 'current',
+                timestamp: Date.now(),
+                message: '📄 当前编辑器中的内容',
+                size: 0
+            } as any, true);
+        }
+
+        this.versions.forEach(v => {
+            if (v.id !== this.currentVersionId) {
+                this.renderItem(listContainer, v);
+            }
+        });
+
+        const cancelBtn = contentEl.createEl('button', { text: '取消', attr: { style: 'margin-top: 15px;' } });
+        cancelBtn.addEventListener('click', () => this.close());
+    }
+
+    renderItem(container: HTMLElement, version: VersionData, isCurrentFile: boolean = false) {
+        const item = container.createEl('div', { cls: 'version-item', attr: { style: 'padding: 10px; border-bottom: 1px solid var(--background-modifier-border); cursor: pointer;' } });
+        item.addEventListener('mouseenter', () => item.style.backgroundColor = 'var(--background-secondary)');
+        item.addEventListener('mouseleave', () => item.style.backgroundColor = '');
+        
+        const header = item.createEl('div', { cls: 'version-item-header', attr: { style: 'display: flex; justify-content: space-between;' } });
+        
+        if (isCurrentFile) {
+            header.createEl('strong', { text: version.message });
+        } else {
+            header.createEl('span', { text: this.plugin.formatTime(version.timestamp) });
+            header.createEl('span', { text: this.plugin.formatFileSize(version.size), attr: { style: 'color: var(--text-muted); font-size: 0.9em;' } });
+        }
+
+        if (!isCurrentFile) {
+            item.createEl('div', { text: version.message, attr: { style: 'color: var(--text-normal); margin-top: 4px;' } });
+        }
+
+        item.addEventListener('click', () => {
+            this.onSelect(version.id);
+            this.close();
+        });
+    }
+
+    onClose() {
+        this.contentEl.empty();
+    }
+}
+
+class ContextLineInputModal extends Modal {
+    currentValue: number;
+    onSubmit: (lines: number) => void;
+
+    constructor(app: App, currentValue: number, onSubmit: (lines: number) => void) {
+        super(app);
+        this.currentValue = currentValue;
+        this.onSubmit = onSubmit;
+    }
+
+    onOpen() {
+        const { contentEl } = this;
+        contentEl.createEl('h2', { text: '设置上下文行数' });
+        contentEl.createEl('p', { text: '输入在差异行周围显示的未修改行数 (0 表示只显示修改行, 9999 表示显示全部)。' });
+
+        const inputContainer = contentEl.createEl('div', { attr: { style: 'margin: 20px 0;' } });
+        const input = inputContainer.createEl('input', { type: 'number' });
+        input.value = String(this.currentValue);
+        input.focus();
+
+        const btnContainer = contentEl.createEl('div', { cls: 'modal-button-container' });
+        
+        btnContainer.createEl('button', { text: '取消' }).addEventListener('click', () => this.close());
+        
+        const saveBtn = btnContainer.createEl('button', { text: '保存', cls: 'mod-cta' });
+        saveBtn.addEventListener('click', () => {
+            const val = parseInt(input.value);
+            if (!isNaN(val) && val >= 0) {
+                this.onSubmit(val);
+                this.close();
+            } else {
+                new Notice('请输入有效的正整数');
+            }
+        });
+
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') saveBtn.click();
+        });
+    }
+
+    onClose() {
+        this.contentEl.empty();
+    }
+}
+
+class LineHistoryModal extends Modal {
+    plugin: VersionControlPlugin;
+    file: TFile;
+    lineText: string;
+    matchingVersions: VersionData[];
+
+    constructor(app: App, plugin: VersionControlPlugin, file: TFile, lineText: string, matchingVersions: VersionData[]) {
+        super(app);
+        this.plugin = plugin;
+        this.file = file;
+        this.lineText = lineText;
+        this.matchingVersions = matchingVersions;
+    }
+
+    onOpen() {
+        const { contentEl } = this;
+        contentEl.addClass('line-history-modal');
+        contentEl.createEl('h2', { text: '📜 行历史记录' });
+        
+        const textPreview = contentEl.createEl('div', { 
+            cls: 'line-text-preview', 
+            text: this.lineText.length > 100 ? this.lineText.substring(0, 100) + '...' : this.lineText,
+            attr: { style: 'padding: 10px; background: var(--background-secondary); font-family: var(--font-monospace); margin-bottom: 15px; border-radius: 4px;' }
+        });
+
+        contentEl.createEl('p', { text: `共在 ${this.matchingVersions.length} 个版本中找到此行内容:` });
+
+        const listContainer = contentEl.createEl('div', { cls: 'line-history-list', attr: { style: 'max-height: 400px; overflow-y: auto;' } });
+
+        this.matchingVersions.forEach(v => {
+            const item = listContainer.createEl('div', { cls: 'version-item', attr: { style: 'padding: 10px; border-bottom: 1px solid var(--background-modifier-border); display: flex; justify-content: space-between; align-items: center;' } });
+            
+            const info = item.createEl('div');
+            const timeRow = info.createEl('div', { attr: { style: 'font-weight: bold;' } });
+            timeRow.createEl('span', { text: this.plugin.formatTime(v.timestamp) });
+            if (v.starred) timeRow.createEl('span', { text: ' ⭐' });
+            
+            info.createEl('div', { text: v.message, attr: { style: 'color: var(--text-muted); font-size: 0.9em;' } });
+
+            const btn = item.createEl('button', { text: '查看' });
+            btn.addEventListener('click', () => {
+                this.close();
+                // 打开差异对比 Modal，对比该版本
+                new DiffModal(this.app, this.plugin, this.file, v.id).open();
+            });
+        });
+
+        const closeBtn = contentEl.createEl('div', { cls: 'modal-button-container', attr: { style: 'margin-top: 15px;' } });
+        closeBtn.createEl('button', { text: '关闭' }).addEventListener('click', () => this.close());
+    }
+
+    onClose() {
+        this.contentEl.empty();
     }
 }
