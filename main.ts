@@ -4288,21 +4288,56 @@ class DiffModal extends Modal {
                 const rightLines = nextPart.value.replace(/\n$/, '').split('\n');
 
                 if (useCompactView) {
-                    // 强制合并修改为一行
-                    const maxLines = Math.max(leftLines.length, rightLines.length);
+                    let lIndex = 0;
+                    let rIndex = 0;
 
-                    for (let j = 0; j < maxLines; j++) {
-                        const lLine = leftLines[j];
-                        const rLine = rightLines[j];
+                    // 智能对齐循环
+                    while (lIndex < leftLines.length || rIndex < rightLines.length) {
+                        const lLine = leftLines[lIndex];
+                        const rLine = rightLines[rIndex];
 
-                        if (lLine !== undefined && rLine !== undefined) {
+                        // 左侧空，右侧有 -> 新增
+                        if (lLine === undefined) {
+                            renderLine(rLine, 'added', null, rightLineNum++, undefined, null);
+                            rIndex++;
+                            continue;
+                        }
+
+                        // 右侧空，左侧有 -> 删除
+                        if (rLine === undefined) {
+                            renderLine(lLine, 'removed', leftLineNum++, null);
+                            lIndex++;
+                            continue;
+                        }
+
+                        // 智能判断：对比相似度
+                        const currentSim = this.calculateSimilarity(lLine, rLine);
+
+                        // 向后看：右侧下一行是否更匹配左侧当前行？（说明右侧当前行是插入的）
+                        const nextRightLine = rightLines[rIndex + 1];
+                        const insertionSim = nextRightLine ? this.calculateSimilarity(lLine, nextRightLine) : 0;
+
+                        // 向后看：左侧下一行是否更匹配右侧当前行？（说明左侧当前行是删除的）
+                        const nextLeftLine = leftLines[lIndex + 1];
+                        const deletionSim = nextLeftLine ? this.calculateSimilarity(nextLeftLine, rLine) : 0;
+
+                        const threshold = 20; // 相似度差异阈值
+
+                        if (insertionSim > currentSim + threshold) {
+                            // 判定为插入
+                            renderLine(rLine, 'added', null, rightLineNum++, undefined, null);
+                            rIndex++;
+                        } else if (deletionSim > currentSim + threshold) {
+                            // 判定为删除
+                            renderLine(lLine, 'removed', leftLineNum++, null);
+                            lIndex++;
+                        } else {
+                            // 判定为修改（或相似度都很低，强制对齐）
                             const lineDiff = secondaryDiffFn(lLine, rLine);
                             const combinedFrag = createHighlightedFragment(lineDiff, true);
                             renderLine(combinedFrag, 'modified', leftLineNum++, rightLineNum++, undefined, lLine);
-                        } else if (lLine !== undefined) {
-                            renderLine(lLine, 'removed', leftLineNum++, null);
-                        } else if (rLine !== undefined) {
-                            renderLine(rLine, 'added', null, rightLineNum++, undefined, null);
+                            lIndex++;
+                            rIndex++;
                         }
                     }
                 }
@@ -4314,16 +4349,11 @@ class DiffModal extends Modal {
                         const newLine = rightLines[j];
                         const lineDiff = secondaryDiffFn(oldLine, newLine);
                         
-                        if (!useCompactView) {
-                            const leftFrag = createHighlightedFragment(lineDiff.filter(p => !p.added), false);
-                            renderLine(leftFrag, 'removed', leftLineNum++, null);
-                            
-                            const rightFrag = createHighlightedFragment(lineDiff.filter(p => !p.removed), false);
-                            renderLine(rightFrag, 'added', null, rightLineNum++, undefined, oldLine);
-                        } else {
-                            const combinedFrag = createHighlightedFragment(lineDiff, true);
-                            renderLine(combinedFrag, 'modified', leftLineNum++, rightLineNum++, undefined, oldLine);
-                        }
+                        const leftFrag = createHighlightedFragment(lineDiff.filter(p => !p.added), false);
+                        renderLine(leftFrag, 'removed', leftLineNum++, null);
+                        
+                        const rightFrag = createHighlightedFragment(lineDiff.filter(p => !p.removed), false);
+                        renderLine(rightFrag, 'added', null, rightLineNum++, undefined, oldLine);
                     }
                 } else {
                     leftLines.forEach(line => {
@@ -5558,10 +5588,6 @@ class VersionControlSettingTab extends PluginSettingTab {
         }
     }
 }
-
-// =========================================================
-// 缺失的 Modal 类补充 (已修复 createEl 参数问题)
-// =========================================================
 
 class IntegrityReportModal extends Modal {
     plugin: VersionControlPlugin;
