@@ -594,19 +594,14 @@ export default class VersionControlPlugin extends Plugin {
             let baseVersionId = "";
 
             if (this.settings.enableIncrementalStorage && versionFile.versions.length > 0) {
-                // [修复逻辑]
-                // 不再使用 (length % interval) 来判断，因为自动清理会保持 length 不变
-                // 而是计算连续增量版本的数量
                 let continuousIncrementalCount = 0;
                 for (const v of versionFile.versions) {
-                    // 只要找到有 content 且不是仅 diff 的版本，就认为是完整基准
                     if (v.content !== undefined && v.content !== null && !v.diff) {
                         break;
                     }
                     continuousIncrementalCount++;
                 }
 
-                // 如果连续增量版本达到了设定的间隔，下次就应该重建基准
                 const shouldRebuildBase = (continuousIncrementalCount >= this.settings.rebuildBaseInterval);
                 
                 if (!shouldRebuildBase) {
@@ -725,22 +720,18 @@ export default class VersionControlPlugin extends Plugin {
         return hash.toString(36);
     }
 
-    // 在内存中递归解析内容，解决清理时的依赖问题
     resolveContentFromList(versions: VersionData[], versionId: string, depth: number = 0): string {
         if (depth > 100) throw new Error("版本依赖链过深");
         
         const version = versions.find(v => v.id === versionId);
         if (!version) throw new Error(`无法在内存中找到基准版本: ${versionId}`);
 
-        // 如果是完整版本，直接返回内容
         if (version.content !== undefined && version.content !== null) {
             return this.normalizeText(version.content);
         }
 
-        // 如果是增量版本，递归查找
         if (version.diff && version.baseVersionId) {
             const baseContent = this.resolveContentFromList(versions, version.baseVersionId, depth + 1);
-            // 应用补丁
             const result = Diff.applyPatch(baseContent, version.diff);
             if (result === false) {
                 throw new Error(`版本 ${versionId} 补丁应用失败`);
@@ -754,65 +745,47 @@ export default class VersionControlPlugin extends Plugin {
     async cleanupVersionsInMemory(versionFile: VersionFile): Promise<number> {
         const originalCount = versionFile.versions.length;
         
-        // 1. 筛选逻辑
         let versionsToKeep = versionFile.versions;
         const starredVersions = versionsToKeep.filter(v => v.starred);
         let nonStarredVersions = versionsToKeep.filter(v => !v.starred);
 
-        // 按数量筛选
         if (this.settings.enableMaxVersions) {
-            const maxNonStarred = Math.max(this.settings.maxVersions - starredVersions.length, 1); // 至少保留1个
+            const maxNonStarred = Math.max(this.settings.maxVersions - starredVersions.length, 1);
             nonStarredVersions = nonStarredVersions.slice(0, maxNonStarred);
         }
 
-        // 按天数筛选
         if (this.settings.enableMaxDays) {
             const cutoffTime = Date.now() - (this.settings.maxDays * 24 * 60 * 60 * 1000);
             nonStarredVersions = nonStarredVersions.filter(v => v.timestamp >= cutoffTime);
         }
 
-        // 2. 生成保留列表 (保持时间倒序：新 -> 旧)
-        // 这是一个 ID 集合，用于快速查找
         const proposedKeepSet = new Set([...starredVersions, ...nonStarredVersions].map(v => v.id));
         
-        // 过滤出要保留的数组，保持原始顺序
         const proposedList = versionFile.versions.filter(v => proposedKeepSet.has(v.id));
 
-        // 3. 【关键修复】检查依赖链完整性
-        // 我们需要检查 proposedList 中的每一个版本。
-        // 如果某个版本 V 是增量存储 (有 diff)，且它的 baseVersionId 指向了一个 *不在* proposedList 中的版本
-        // 那么 V 将会变成“孤儿”。我们必须在删除基准之前，将 V 转换为完整快照。
-        
-        // 从最旧的开始检查 (从后往前)，因为通常依赖关系是 新->旧
         for (let i = proposedList.length - 1; i >= 0; i--) {
             const v = proposedList[i];
             
-            // 如果是增量版本
             if (v.diff && v.baseVersionId) {
-                // 如果它依赖的基准版本 将被删除 (不在保留列表中)
                 if (!proposedKeepSet.has(v.baseVersionId)) {
                     try {
                         console.log(`[VersionControl] 版本 ${v.id} 的基准将被清理，正在将其转换为完整快照...`);
                         
-                        // 使用原始完整列表来解析内容 (因为基准还在原始列表中)
                         const fullContent = this.resolveContentFromList(versionFile.versions, v.id);
                         
-                        // 转换为完整版本
                         v.content = fullContent;
                         v.diff = undefined;
                         v.baseVersionId = undefined;
                         v.size = fullContent.length;
                         
-                        // 注意：我们不需要修改 proposedKeepSet，因为 v 已经在里面了
                     } catch (error) {
                         console.error(`[VersionControl] 严重错误：无法固化版本 ${v.id}，为防止数据丢失，取消本次清理。`, error);
-                        return 0; // 中止清理，保护数据
+                        return 0;
                     }
                 }
             }
         }
 
-        // 4. 应用清理
         versionFile.versions = proposedList;
         
         return originalCount - versionFile.versions.length;
@@ -997,7 +970,6 @@ export default class VersionControlPlugin extends Plugin {
         return errors.length === 0;
     }
 
-    // --- 新增：检查单个文件的完整性 ---
     async verifyFileVersion(filePath: string): Promise<string[]> {
         const errors: string[] = [];
         const versionPath = this.getVersionFilePath(filePath);
@@ -1038,7 +1010,6 @@ export default class VersionControlPlugin extends Plugin {
         const versionMap = new Map<string, VersionData>();
         versionFile.versions.forEach(v => versionMap.set(v.id, v));
         
-        // 2. 检查每个版本的完整性
         for (const version of versionFile.versions) {
             if (!version.id || !version.timestamp) {
                 errors.push(`版本记录损坏: 缺少 ID 或时间戳`);
@@ -1055,7 +1026,6 @@ export default class VersionControlPlugin extends Plugin {
                 errors.push(`版本 ${version.id.substring(0,8)}: 既无 content 也无 diff，数据丢失`);
             }
 
-            // 3. 深度内容还原检查 (强制触发 Patch 计算)
             try {
                 const content = await this.getVersionContent(filePath, version.id, true, true);
                 
@@ -1073,7 +1043,6 @@ export default class VersionControlPlugin extends Plugin {
         return errors;
     }
 
-    // --- 新增：执行全库检查 ---
     async checkAllVersionsIntegrity() {
         const adapter = this.app.vault.adapter;
         const folderPath = this.settings.versionFolder;
@@ -1130,12 +1099,10 @@ export default class VersionControlPlugin extends Plugin {
         new IntegrityReportModal(this.app, this, report).open();
     }
 
-    // --- 新增：修复版本文件哈希 ---
     async repairVersionFile(filePath: string): Promise<boolean> {
         const versionFile = await this.loadVersionFile(filePath);
         let fixedCount = 0;
 
-        // 预先加载索引
         if (!versionFile.versionIndex) {
             this.buildVersionIndex(versionFile);
         }
@@ -1143,17 +1110,14 @@ export default class VersionControlPlugin extends Plugin {
         for (const version of versionFile.versions) {
             if (version.hash) {
                 try {
-                    // 强制读取当前计算出的内容
                     const content = await this.getVersionContent(filePath, version.id, true);
                     const currentHash = this.hashContent(content);
                     
-                    // 如果不匹配，且内容能读出来，说明是计算标准变了，更新哈希
                     if (currentHash !== version.hash) {
                         version.hash = currentHash;
                         fixedCount++;
                     }
                 } catch (e) {
-                    // 如果内容都读不出来，那就没法修哈希了
                     console.warn(`Skipping repair for ${version.id}: content unreadable`);
                 }
             }
@@ -1161,7 +1125,6 @@ export default class VersionControlPlugin extends Plugin {
 
         if (fixedCount > 0) {
             await this.saveVersionFile(filePath, versionFile);
-            // 更新缓存
             this.versionCache.set(filePath, versionFile);
             new Notice(`✅ 已修复 ${fixedCount} 个版本记录的哈希值`);
             return true;
@@ -2993,9 +2956,117 @@ class DiffModal extends Modal {
     async onOpen() {
         const { contentEl } = this;
         contentEl.addClass('diff-modal');
+
+        // --- 注入自定义样式支持两排显示 ---
+        const style = document.createElement('style');
+        style.textContent = `
+            /* 基础 Diff 行布局调整 */
+            .diff-line {
+                display: flex !important;
+                align-items: stretch !important; /* 让高度拉伸以适应内容 */
+                flex-direction: row !important;
+                padding-left: 0 !important; /* 移除原有 padding，交给 gutter */
+            }
+            
+            /* 新的侧边栏容器 (Gutter) */
+            .diff-gutter-column {
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+                align-items: center;
+                min-width: 48px; /* 调整宽度以容纳两排 */
+                padding: 2px 4px;
+                background-color: var(--background-secondary);
+                border-right: 1px solid var(--background-modifier-border);
+                margin-right: 8px;
+                flex-shrink: 0;
+                user-select: none;
+            }
+
+            /* 第一排：行号 */
+            .diff-gutter-nums {
+                display: flex;
+                justify-content: center;
+                gap: 4px;
+                font-family: var(--font-monospace);
+                font-size: 0.65em;
+                color: var(--text-muted);
+                line-height: 1.2;
+                margin-bottom: 2px;
+                width: 100%;
+            }
+
+            /* 第二排：操作按钮 */
+            .diff-gutter-ops {
+                display: flex;
+                justify-content: center;
+                gap: 6px;
+                line-height: 1;
+                font-size: 0.85em;
+                width: 100%;
+                opacity: 0.6;
+                transition: opacity 0.2s;
+            }
+            .diff-gutter-ops:hover {
+                opacity: 1;
+            }
+
+            /* 按钮样式微调 */
+            .diff-line-action-btn, .diff-line-history-btn { 
+                cursor: pointer; 
+                display: inline-block;
+            }
+            .diff-line-action-btn:hover, .diff-line-history-btn:hover { 
+                color: var(--text-accent); 
+                transform: scale(1.1);
+            }
+
+            /* 内容区域微调，使其垂直居中或顶部对齐 */
+            .diff-line .line-content {
+                padding-top: 4px; 
+                padding-bottom: 4px;
+                flex-grow: 1;
+                word-break: break-all;
+            }
+            
+            /* 标记符号 (+/-) 的位置 */
+            .diff-line .diff-marker {
+                margin-right: 6px;
+                opacity: 0.5;
+                font-family: var(--font-monospace);
+                align-self: center;
+            }
+        `;
+        contentEl.appendChild(style);
         
         if (Platform.isMobile) {
             contentEl.addClass('is-mobile');
+            // 注入针对移动端的行号显示修复样式
+            const style = document.createElement('style');
+            style.textContent = `
+                .is-mobile .diff-line.actions-visible .line-number-container {
+                    width: auto !important;
+                    min-width: 45px !important;
+                    display: flex !important;
+                    flex-direction: row !important;
+                    align-items: center !important;
+                    justify-content: flex-start !important;
+                    background: var(--background-primary);
+                    z-index: 5;
+                }
+                .is-mobile .diff-line.actions-visible .line-number {
+                    display: inline-block !important;
+                    opacity: 1 !important;
+                    margin-right: 4px !important;
+                    font-size: 0.7em !important;
+                }
+                .is-mobile .diff-line.actions-visible .diff-line-action-btn {
+                    position: static !important;
+                    display: inline-flex !important;
+                    margin: 0 2px !important;
+                }
+            `;
+            contentEl.appendChild(style);
         }
 
         window.addEventListener('resize', this.resizeHandler);
@@ -3694,7 +3765,6 @@ class DiffModal extends Modal {
         rightContentEl.addEventListener('scroll', () => syncScroll(rightContentEl, leftContentEl));
     }
     
-    // 新增方法：对齐左右分栏的行高
     alignSplitViewLines() {
         setTimeout(() => {
             const leftPanel = this.textDiffContainer.querySelector('.diff-panel:first-child');
@@ -3767,7 +3837,6 @@ class DiffModal extends Modal {
                 const rightLabelEl = this.containerEl.querySelector('#diff-right-version-btn') as HTMLElement;
                 this.renderSplitDiff(container, leftProcessed, rightProcessed, leftLabelEl.textContent || '版本 A', rightLabelEl.textContent || '版本 B');
                 
-                // [新增] 调用对齐
                 this.alignSplitViewLines();
             }
         }
@@ -3902,20 +3971,22 @@ class DiffModal extends Modal {
     }
 
     calculateSimilarity(text1: string, text2: string): number {
-        const len1 = text1.length;
-        const len2 = text2.length;
-        const maxLen = Math.max(len1, len2);
+        // 使用 Diff 库按字符比较，这样可以自动处理插入/删除带来的位置偏移
+        const diff = Diff.diffChars(text1, text2);
+        let commonLength = 0;
         
+        diff.forEach(part => {
+            // 累加没有变动的内容长度
+            if (!part.added && !part.removed) {
+                commonLength += part.value.length;
+            }
+        });
+        
+        const maxLen = Math.max(text1.length, text2.length);
         if (maxLen === 0) return 100;
         
-        let matches = 0;
-        const minLen = Math.min(len1, len2);
-        
-        for (let i = 0; i < minLen; i++) {
-            if (text1[i] === text2[i]) matches++;
-        }
-        
-        return (matches / maxLen) * 100;
+        // 计算相同内容占最大长度的比例
+        return (commonLength / maxLen) * 100;
     }
 
     showSearchBox() {
@@ -4135,7 +4206,6 @@ class DiffModal extends Modal {
         const renderLine = (content: string | DocumentFragment, type: ProcessedDiff['type'], lineNumLeft: number | null, lineNumRight: number | null, moveId?: number, oldContentForRevert: string | null = null) => {
             const lineEl = container.createEl('div', { cls: `diff-line diff-${type}` });
             
-            // [新增] 确保有用于背景色的类
             if (type === 'added') lineEl.addClass('diff-line-bg-added');
             else if (type === 'removed') lineEl.addClass('diff-line-bg-removed');
             else if (type === 'modified') lineEl.addClass('diff-line-bg-modified');
@@ -4148,24 +4218,38 @@ class DiffModal extends Modal {
             if (lineNumLeft) lineEl.dataset.lineNumberLeft = String(lineNumLeft);
             if (lineNumRight) lineEl.dataset.lineNumberRight = String(lineNumRight);
             
-            const lineNumContainer = lineEl.createEl('div', { cls: 'line-number-container' });
+            const gutterCol = lineEl.createEl('div', { cls: 'diff-gutter-column' });
+
+            const numsRow = gutterCol.createEl('div', { cls: 'diff-gutter-nums' });
             if (this.showLineNumbers) {
-                lineNumContainer.createEl('span', { cls: 'line-number line-number-left', text: lineNumLeft ? String(lineNumLeft) : '' });
-                lineNumContainer.createEl('span', { cls: 'line-number line-number-right', text: lineNumRight ? String(lineNumRight) : '' });
+                if (lineNumLeft) numsRow.createEl('span', { text: String(lineNumLeft) });
+                if (lineNumLeft && lineNumRight) numsRow.createEl('span', { text: '|', attr: {style: 'opacity:0.3'} });
+                if (lineNumRight) numsRow.createEl('span', { text: String(lineNumRight) });
             }
+
+            const opsRow = gutterCol.createEl('div', { cls: 'diff-gutter-ops' });
             
-            const historyBtn = lineNumContainer.createEl('span', { text: '📜', cls: 'diff-line-history-btn', attr: { 'aria-label': '查看行历史' } });
-            historyBtn.addEventListener('click', () => this.showLineHistory(typeof content === 'string' ? content : content.textContent || ''));
+            const historyBtn = opsRow.createEl('span', { text: '📜', cls: 'diff-line-history-btn', attr: { 'aria-label': '查看行历史', 'title': '查看行历史' } });
+            historyBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.showLineHistory(typeof content === 'string' ? content : content.textContent || '');
+            });
     
             if (this.secondVersionId === 'current') {
                 if (type === 'added' || (type === 'modified' && lineNumRight)) {
-                    const revertBtn = lineNumContainer.createEl('span', { text: '-', cls: 'diff-line-action-btn', attr: { 'aria-label': '撤销此更改' } });
+                    const revertBtn = opsRow.createEl('span', { text: '↩️', cls: 'diff-line-action-btn', attr: { 'aria-label': '撤销此更改', 'title': '撤销更改' } });
                     const newContent = typeof content === 'string' ? content : content.textContent || '';
-                    revertBtn.addEventListener('click', () => this.revertChanges(newContent, lineNumRight!, oldContentForRevert));
+                    revertBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        this.revertChanges(newContent, lineNumRight!, oldContentForRevert);
+                    });
                 }
                 if (type === 'removed' || (type === 'modified' && lineNumLeft)) {
-                    const applyBtn = lineNumContainer.createEl('span', { text: '+', cls: 'diff-line-action-btn', attr: { 'aria-label': '应用此更改' } });
-                    applyBtn.addEventListener('click', () => this.applyChanges(typeof content === 'string' ? content : content.textContent || '', lineNumRight || rightLineNum));
+                    const applyBtn = opsRow.createEl('span', { text: '📥', cls: 'diff-line-action-btn', attr: { 'aria-label': '应用此更改', 'title': '恢复内容' } });
+                    applyBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        this.applyChanges(typeof content === 'string' ? content : content.textContent || '', lineNumRight || rightLineNum);
+                    });
                 }
             }
     
@@ -4207,67 +4291,50 @@ class DiffModal extends Modal {
                 const rightLines = nextPart.value.replace(/\n$/, '').split('\n');
 
                 if (useCompactView) {
-                    // === 优化：智能紧凑视图 (Smart Compact View) ===
-                    // 通过相似度匹配，区分“修改”和“纯新增/纯删除”
-                    
-                    // 1. 准备数据
-                    const matchThreshold = 40; // 相似度阈值 (0-100)，高于此值视为修改，否则视为新增
-                    const matches = new Map<number, number>(); // RightIndex -> LeftIndex
-                    const usedLeftIndices = new Set<number>(); // 记录已被匹配的左侧行
+                    const matchThreshold = 40; 
+                    const matches = new Map<number, number>(); 
+                    const usedLeftIndices = new Set<number>(); 
 
-                    // 2. 智能匹配：遍历右侧（新内容），在左侧（旧内容）中寻找最佳匹配
                     rightLines.forEach((rLine, rIdx) => {
                         let bestScore = 0;
                         let bestLIdx = -1;
 
                         leftLines.forEach((lLine, lIdx) => {
-                            if (usedLeftIndices.has(lIdx)) return; // 已经被匹配过的行不再参与
+                            if (usedLeftIndices.has(lIdx)) return; 
                             
-                            // 计算相似度
                             const score = this.calculateSimilarity(lLine, rLine);
                             
-                            // 如果相似度超过阈值，且是目前最好的匹配
                             if (score > matchThreshold && score > bestScore) {
                                 bestScore = score;
                                 bestLIdx = lIdx;
                             }
                         });
 
-                        // 如果找到了足够相似的行，记录匹配关系
                         if (bestLIdx !== -1) {
                             matches.set(rIdx, bestLIdx);
                             usedLeftIndices.add(bestLIdx);
                         }
                     });
 
-                    // 3. 渲染逻辑
-                    // 3.1 先渲染完全被删除的行 (Removed)
                     leftLines.forEach((lLine, lIdx) => {
                         if (!usedLeftIndices.has(lIdx)) {
                             renderLine(lLine, 'removed', leftLineNum++, null);
                         }
                     });
 
-                    // 3.2 遍历右侧行，渲染 修改(Modified) 或 新增(Added)
                     rightLines.forEach((rLine, rIdx) => {
                         if (matches.has(rIdx)) {
-                            // ==> 情况 A: 找到了相似行 -> 渲染为 [修改] (~)
                             const lIdx = matches.get(rIdx)!;
                             const lLine = leftLines[lIdx];
                             
-                            // 计算行内差异 (Word or Char)
                             const lineDiff = secondaryDiffFn(lLine, rLine);
-                            // 创建包含红/绿高亮的 HTML 片段
                             const combinedFrag = createHighlightedFragment(lineDiff, true);
                             
-                            // 渲染为 modified，同时增加左右行号
                             renderLine(combinedFrag, 'modified', leftLineNum++, rightLineNum++, undefined, lLine);
                         } else {
-                            // ==> 情况 B: 没找到相似行 -> 渲染为 [新增] (+)
                             renderLine(rLine, 'added', null, rightLineNum++, undefined, null);
                         }
                     });
-                    // === 优化结束 ===
                 }
                 else if (leftLines.length === rightLines.length) {
                     const minLen = Math.min(leftLines.length, rightLines.length);
@@ -4426,7 +4493,6 @@ class DiffModal extends Modal {
         const renderLine = (panel: HTMLElement, content: string | DocumentFragment, type: string, lineNum: number | null, moveId?: number, oldContentForRevert: string | null = null) => {
             const lineEl = panel.createEl('div', { cls: `diff-line diff-${type}` });
 
-            // [新增] 确保有用于背景色的类
             if (type === 'added') lineEl.addClass('diff-line-bg-added');
             else if (type === 'removed') lineEl.addClass('diff-line-bg-removed');
             else if (type === 'modified') lineEl.addClass('diff-line-bg-modified');
@@ -4438,24 +4504,39 @@ class DiffModal extends Modal {
             if (lineNum) lineEl.dataset.lineNumber = String(lineNum);
             if (moveId !== undefined) lineEl.dataset.moveId = String(moveId);
 
-            const lineNumContainer = lineEl.createEl('div', { cls: 'line-number-container' });
+            const gutterCol = lineEl.createEl('div', { cls: 'diff-gutter-column' });
+
+            const numsRow = gutterCol.createEl('div', { cls: 'diff-gutter-nums' });
             if (this.showLineNumbers) {
-                lineNumContainer.createEl('span', { cls: 'line-number', text: lineNum ? String(lineNum) : '' });
+                numsRow.createEl('span', { text: lineNum ? String(lineNum) : '' });
             }
 
-            const historyBtn = lineNumContainer.createEl('span', { text: '📜', cls: 'diff-line-history-btn', attr: { 'aria-label': '查看行历史' } });
-            historyBtn.addEventListener('click', () => this.showLineHistory(typeof content === 'string' ? content : content.textContent || ''));
+            const opsRow = gutterCol.createEl('div', { cls: 'diff-gutter-ops' });
 
-            if (this.secondVersionId === 'current') {
-                const isRightPanel = panel === rightPanel;
-                if (isRightPanel && (type === 'added' || type === 'modified')) {
-                    const revertBtn = lineNumContainer.createEl('span', { text: '-', cls: 'diff-line-action-btn', attr: { 'aria-label': '撤销此更改' } });
-                    const newContent = typeof content === 'string' ? content : content.textContent || '';
-                    revertBtn.addEventListener('click', () => this.revertChanges(newContent, lineNum!, oldContentForRevert));
-                }
-                if (!isRightPanel && (type === 'removed' || type === 'modified')) {
-                    const applyBtn = lineNumContainer.createEl('span', { text: '+', cls: 'diff-line-action-btn', attr: { 'aria-label': '应用此更改' } });
-                    applyBtn.addEventListener('click', () => this.applyChanges(typeof content === 'string' ? content : content.textContent || '', rightLineNum));
+            if (type !== 'placeholder') {
+                const historyBtn = opsRow.createEl('span', { text: '📜', cls: 'diff-line-history-btn', attr: { 'aria-label': '查看行历史', 'title': '查看行历史' } });
+                historyBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this.showLineHistory(typeof content === 'string' ? content : content.textContent || '');
+                });
+
+                if (this.secondVersionId === 'current') {
+                    const isRightPanel = panel === rightPanel;
+                    if (isRightPanel && (type === 'added' || type === 'modified')) {
+                        const revertBtn = opsRow.createEl('span', { text: '↩️', cls: 'diff-line-action-btn', attr: { 'aria-label': '撤销此更改', 'title': '撤销更改' } });
+                        const newContent = typeof content === 'string' ? content : content.textContent || '';
+                        revertBtn.addEventListener('click', (e) => {
+                            e.stopPropagation();
+                            this.revertChanges(newContent, lineNum!, oldContentForRevert);
+                        });
+                    }
+                    if (!isRightPanel && (type === 'removed' || type === 'modified')) {
+                        const applyBtn = opsRow.createEl('span', { text: '📥', cls: 'diff-line-action-btn', attr: { 'aria-label': '应用此更改', 'title': '恢复内容' } });
+                        applyBtn.addEventListener('click', (e) => {
+                            e.stopPropagation();
+                            this.applyChanges(typeof content === 'string' ? content : content.textContent || '', rightLineNum);
+                        });
+                    }
                 }
             }
 
@@ -5087,7 +5168,6 @@ class IntegrityReportModal extends Modal {
             const warningDiv = contentEl.createEl('div', { cls: 'integrity-warning' });
             warningDiv.createEl('p', { text: `⚠️ 发现 ${this.report.length} 个文件存在问题。` });
 
-            // --- 新增：批量操作区域 ---
             const batchContainer = contentEl.createEl('div', { cls: 'integrity-batch-actions' });
             batchContainer.style.display = 'flex';
             batchContainer.style.gap = '10px';
@@ -5097,7 +5177,6 @@ class IntegrityReportModal extends Modal {
             batchContainer.style.borderRadius = '5px';
             batchContainer.style.border = '1px solid var(--background-modifier-border)';
 
-            // 1. 一键修复按钮
             const repairAllBtn = batchContainer.createEl('button', { text: '🔧 一键修复所有哈希错误' });
             repairAllBtn.addClass('mod-cta');
             const hashErrorCount = this.report.filter(i => i.errors.some(e => e.includes("哈希校验失败"))).length;
@@ -5126,7 +5205,6 @@ class IntegrityReportModal extends Modal {
                 });
             }
 
-            // 2. 一键删除按钮
             const deleteAllBtn = batchContainer.createEl('button', { text: '🗑️ 一键删除所有问题文件' });
             deleteAllBtn.addClass('mod-warning');
             deleteAllBtn.addEventListener('click', () => {
@@ -5157,7 +5235,6 @@ class IntegrityReportModal extends Modal {
                     }
                 ).open();
             });
-            // --- 批量操作区域结束 ---
 
             const listContainer = contentEl.createEl('div', { cls: 'integrity-list' });
 
@@ -5229,7 +5306,6 @@ class IntegrityReportModal extends Modal {
     }
 }
 
-// 新增：自定义上下文行数输入弹窗
 class ContextLineInputModal extends Modal {
     currentLines: number;
     onSubmit: (lines: number) => void;
@@ -5256,7 +5332,6 @@ class ContextLineInputModal extends Modal {
                     .onChange(value => {
                         this.currentLines = parseInt(value);
                     });
-                // 监听回车键
                 text.inputEl.addEventListener('keydown', (e) => {
                     if (e.key === 'Enter') {
                         e.preventDefault();
@@ -5276,7 +5351,6 @@ class ContextLineInputModal extends Modal {
         });
         confirmBtn.addEventListener('click', () => this.submit());
         
-        // 自动聚焦输入框
         setTimeout(() => {
             if(inputEl) inputEl.focus();
         }, 50);
