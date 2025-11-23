@@ -4207,24 +4207,67 @@ class DiffModal extends Modal {
                 const rightLines = nextPart.value.replace(/\n$/, '').split('\n');
 
                 if (useCompactView) {
-                    // === 修复：逐行处理紧凑视图，而不是合并成一行 ===
-                    const maxLines = Math.max(leftLines.length, rightLines.length);
+                    // === 优化：智能紧凑视图 (Smart Compact View) ===
+                    // 通过相似度匹配，区分“修改”和“纯新增/纯删除”
+                    
+                    // 1. 准备数据
+                    const matchThreshold = 40; // 相似度阈值 (0-100)，高于此值视为修改，否则视为新增
+                    const matches = new Map<number, number>(); // RightIndex -> LeftIndex
+                    const usedLeftIndices = new Set<number>(); // 记录已被匹配的左侧行
 
-                    for (let j = 0; j < maxLines; j++) {
-                        const leftLine = leftLines[j];
-                        const rightLine = rightLines[j];
+                    // 2. 智能匹配：遍历右侧（新内容），在左侧（旧内容）中寻找最佳匹配
+                    rightLines.forEach((rLine, rIdx) => {
+                        let bestScore = 0;
+                        let bestLIdx = -1;
 
-                        if (leftLine !== undefined && rightLine !== undefined) {
-                            const lineDiff = secondaryDiffFn(leftLine, rightLine);
-                            const combinedFrag = createHighlightedFragment(lineDiff, true);
-                            renderLine(combinedFrag, 'modified', leftLineNum++, rightLineNum++, undefined, leftLine);
-                        } else if (leftLine !== undefined) {
-                            renderLine(leftLine, 'removed', leftLineNum++, null);
-                        } else if (rightLine !== undefined) {
-                            renderLine(rightLine, 'added', null, rightLineNum++, undefined, null);
+                        leftLines.forEach((lLine, lIdx) => {
+                            if (usedLeftIndices.has(lIdx)) return; // 已经被匹配过的行不再参与
+                            
+                            // 计算相似度
+                            const score = this.calculateSimilarity(lLine, rLine);
+                            
+                            // 如果相似度超过阈值，且是目前最好的匹配
+                            if (score > matchThreshold && score > bestScore) {
+                                bestScore = score;
+                                bestLIdx = lIdx;
+                            }
+                        });
+
+                        // 如果找到了足够相似的行，记录匹配关系
+                        if (bestLIdx !== -1) {
+                            matches.set(rIdx, bestLIdx);
+                            usedLeftIndices.add(bestLIdx);
                         }
-                    }
-                    // === 修复结束 ===
+                    });
+
+                    // 3. 渲染逻辑
+                    // 3.1 先渲染完全被删除的行 (Removed)
+                    leftLines.forEach((lLine, lIdx) => {
+                        if (!usedLeftIndices.has(lIdx)) {
+                            renderLine(lLine, 'removed', leftLineNum++, null);
+                        }
+                    });
+
+                    // 3.2 遍历右侧行，渲染 修改(Modified) 或 新增(Added)
+                    rightLines.forEach((rLine, rIdx) => {
+                        if (matches.has(rIdx)) {
+                            // ==> 情况 A: 找到了相似行 -> 渲染为 [修改] (~)
+                            const lIdx = matches.get(rIdx)!;
+                            const lLine = leftLines[lIdx];
+                            
+                            // 计算行内差异 (Word or Char)
+                            const lineDiff = secondaryDiffFn(lLine, rLine);
+                            // 创建包含红/绿高亮的 HTML 片段
+                            const combinedFrag = createHighlightedFragment(lineDiff, true);
+                            
+                            // 渲染为 modified，同时增加左右行号
+                            renderLine(combinedFrag, 'modified', leftLineNum++, rightLineNum++, undefined, lLine);
+                        } else {
+                            // ==> 情况 B: 没找到相似行 -> 渲染为 [新增] (+)
+                            renderLine(rLine, 'added', null, rightLineNum++, undefined, null);
+                        }
+                    });
+                    // === 优化结束 ===
                 }
                 else if (leftLines.length === rightLines.length) {
                     const minLen = Math.min(leftLines.length, rightLines.length);
