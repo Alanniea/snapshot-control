@@ -125,10 +125,7 @@ export default class VersionControlPlugin extends Plugin {
     versionCache: Map<string, VersionFile> = new Map();
     previousActiveFile: TFile | null = null;
 
-    // [Fix 3] 并发写入锁：防止读取-修改-写入过程中的竞态条件
     fileLocks: Map<string, Promise<void>> = new Map();
-    
-    // [Fix 4] 恢复状态标志：防止恢复操作触发自动保存
     isRestoring: boolean = false; 
 
     async onload() {
@@ -153,7 +150,6 @@ export default class VersionControlPlugin extends Plugin {
             this.activateVersionHistoryView();
         });
 
-        // ... (Commands 注册保持不变) ...
         this.addCommand({
             id: 'create-version',
             name: '创建版本快照',
@@ -212,7 +208,6 @@ export default class VersionControlPlugin extends Plugin {
 
         this.registerEvent(
             this.app.vault.on('modify', (file) => {
-                // [Fix 4] 如果正在恢复版本，不触发修改事件
                 if (this.isRestoring) return;
 
                 if (file instanceof TFile && this.settings.autoSave && this.settings.autoSaveOnModify) {
@@ -221,7 +216,6 @@ export default class VersionControlPlugin extends Plugin {
             })
         );
 
-        // [Fix 2] 监听重命名事件
         this.registerEvent(
             this.app.vault.on('rename', async (file, oldPath) => {
                 if (file instanceof TFile) {
@@ -230,7 +224,6 @@ export default class VersionControlPlugin extends Plugin {
             })
         );
 
-        // [Fix 2] 监听删除事件
         this.registerEvent(
             this.app.vault.on('delete', async (file) => {
                 if (file instanceof TFile) {
@@ -282,26 +275,17 @@ export default class VersionControlPlugin extends Plugin {
         this.versionCache.clear();
     }
 
-    // [Fix 3] 辅助方法：文件锁
     async withLock(filePath: string, fn: () => Promise<void>): Promise<void> {
-        // 获取当前文件的锁链，如果没有则为一个已解决的 Promise
         let currentLock = this.fileLocks.get(filePath) || Promise.resolve();
-        
-        // 创建新的锁，链接在当前锁之后
         const nextLock = currentLock
             .then(() => fn())
             .catch((err) => {
                 console.error(`[VersionControl] Error in locked operation for ${filePath}:`, err);
             });
-            
-        // 更新 Map 中的锁
         this.fileLocks.set(filePath, nextLock);
-        
-        // 等待执行完成（虽然调用者可能不需要等待，但为了保持逻辑顺序最好 await）
         await nextLock;
     }
 
-    // [Fix 1] 辅助方法：生成字符串哈希
     stringHash(str: string): string {
         let hash = 0;
         for (let i = 0; i < str.length; i++) {
@@ -311,28 +295,23 @@ export default class VersionControlPlugin extends Plugin {
         return (hash >>> 0).toString(16);
     }
 
-    // [Fix 1] 修改后的路径获取方法：使用哈希避免冲突
     getVersionFilePath(filePath: string): string {
         const hash = this.stringHash(filePath);
-        // 保留文件名的一部分用于识别，但依赖哈希保证唯一性
         const fileName = filePath.split('/').pop() || 'file';
-        // 只保留安全字符
         const safeName = fileName.replace(/[^a-zA-Z0-9.\-_]/g, '_');
         return `${this.settings.versionFolder}/${safeName}_${hash}.json`;
     }
 
-    // [Fix 1] 旧的路径获取方法（用于兼容性迁移）
     getLegacyVersionFilePath(filePath: string): string {
         const sanitized = this.sanitizeFileName(filePath);
         return `${this.settings.versionFolder}/${sanitized}.json`;
     }
 
-    // [Fix 2] 处理重命名
+    // [Fix 3] 竞态条件修复：处理重命名时清理新旧路径的 Pending Save
     async handleRename(file: TFile, oldPath: string) {
         await this.withLock(oldPath, async () => {
             const adapter = this.app.vault.adapter;
             
-            // 尝试查找旧版本文件 (优先尝试新命名规则，如果不存在尝试旧规则)
             let oldVersionPath = this.getVersionFilePath(oldPath);
             if (!await adapter.exists(oldVersionPath)) {
                 oldVersionPath = this.getLegacyVersionFilePath(oldPath);
@@ -341,16 +320,13 @@ export default class VersionControlPlugin extends Plugin {
             if (await adapter.exists(oldVersionPath)) {
                 const newVersionPath = this.getVersionFilePath(file.path);
                 
-                // 移动文件
                 await adapter.rename(oldVersionPath, newVersionPath);
                 
-                // 更新版本文件内部的 filePath 字段
                 try {
-                    const versionFile = await this.loadVersionFile(file.path); // 此时 loadVersionFile 会读取到刚移动过去的文件
+                    const versionFile = await this.loadVersionFile(file.path); 
                     versionFile.filePath = file.path;
                     await this.saveVersionFile(file.path, versionFile);
                     
-                    // 清理旧缓存
                     this.versionCache.delete(oldPath);
                     this.lastModifiedTime.delete(oldPath);
                     this.lastModifiedTime.set(file.path, versionFile.lastModified);
@@ -360,29 +336,33 @@ export default class VersionControlPlugin extends Plugin {
             }
         });
         
-        // 转移 pending save
-        const pending = this.pendingSaves.get(oldPath);
-        if (pending) {
-            clearTimeout(pending);
+        // 1. 清理旧路径的 pending save
+        const pendingOld = this.pendingSaves.get(oldPath);
+        if (pendingOld) {
+            clearTimeout(pendingOld);
             this.pendingSaves.delete(oldPath);
-            this.handleFileModify(file); // 在新路径下重新触发保存计划
+        }
+
+        // 2. 清理新路径可能产生的 pending save (防止覆盖刚移动过来的历史)
+        const pendingNew = this.pendingSaves.get(file.path);
+        if (pendingNew) {
+            clearTimeout(pendingNew);
+            this.pendingSaves.delete(file.path);
+            // 重新挂起一个新的保存任务，确保内容变更被捕获
+            this.handleFileModify(file); 
         }
     }
 
-    // [Fix 2] 处理删除
     async handleDelete(filePath: string) {
         await this.withLock(filePath, async () => {
             const adapter = this.app.vault.adapter;
             let versionPath = this.getVersionFilePath(filePath);
             
-            // 兼容性检查
             if (!await adapter.exists(versionPath)) {
                 versionPath = this.getLegacyVersionFilePath(filePath);
             }
 
             if (await adapter.exists(versionPath)) {
-                // 将版本文件移动到回收站或直接删除，这里选择移动到系统回收站(如果API支持)或直接删除
-                // 为了简单起见，这里直接删除，更好的做法可能是移动到 .trash
                 await adapter.remove(versionPath);
                 this.versionCache.delete(filePath);
                 this.lastModifiedTime.delete(filePath);
@@ -391,10 +371,9 @@ export default class VersionControlPlugin extends Plugin {
         });
     }
 
-    // ... (loadSettings, saveSettings, updateAllRelativeTimes, getSaveTypeLabel, updateStatusBar 等方法保持不变) ...
     async loadSettings() { this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData()); }
     async saveSettings() { await this.saveData(this.settings); this.updateStatusBar(); }
-    updateAllRelativeTimes() { /*...原代码...*/ 
+    updateAllRelativeTimes() { 
         const file = this.app.workspace.getActiveFile();
         if (!file) return;
         if (this.settings.useRelativeTime || this.settings.showLastSaveTimeInStatusBar) {
@@ -403,7 +382,7 @@ export default class VersionControlPlugin extends Plugin {
             leaves.forEach(leaf => { if (leaf.view instanceof VersionHistoryView) leaf.view.updateRelativeTimes(); });
         }
     }
-    getSaveTypeLabel(message: string): string { /*...原代码...*/ 
+    getSaveTypeLabel(message: string): string { 
         if (message.includes('[Auto Save - On Modify]')) return '修改保存';
         if (message.includes('[Auto Save - Interval]')) return '定时保存';
         if (message.includes('[Auto Save - File Switch]')) return '切换保存';
@@ -413,7 +392,7 @@ export default class VersionControlPlugin extends Plugin {
         if (message.includes('[Auto Save')) return '自动保存';
         return '手动保存';
     }
-    async updateStatusBar() { /*...原代码...*/
+    async updateStatusBar() {
         if (!this.settings.autoSave) { this.statusBarItem.setText('⏸ 版本控制: 已暂停'); this.statusBarItem.title = '自动保存已暂停'; return; }
         const file = this.app.workspace.getActiveFile();
         if (!this.settings.showLastSaveTimeInStatusBar || !file) { this.statusBarItem.setText('⏱ 版本控制: 已启用'); this.statusBarItem.title = '点击可快速对比当前文件与最新版本'; return; }
@@ -432,7 +411,7 @@ export default class VersionControlPlugin extends Plugin {
             this.statusBarItem.title = '当前文件无历史版本。点击可快速对比。';
         }
     }
-    async quickDiffFromStatusBar() { /*...原代码...*/
+    async quickDiffFromStatusBar() {
         if (!this.settings.enableStatusBarDiff) return;
         const file = this.app.workspace.getActiveFile();
         if (!file) { new Notice('没有打开的文件'); return; }
@@ -441,23 +420,23 @@ export default class VersionControlPlugin extends Plugin {
         const lastVersion = versions[0];
         new DiffModal(this.app, this, file, lastVersion.id).open();
     }
-    async ensureVersionFolder() { /*...原代码...*/ 
+    async ensureVersionFolder() { 
         const adapter = this.app.vault.adapter;
         const folderPath = this.settings.versionFolder;
         try { if (!await adapter.exists(folderPath)) { await adapter.mkdir(folderPath); } } 
         catch (error) { console.error('创建版本文件夹失败:', error); new Notice('⚠️ 无法创建版本文件夹,请检查权限'); }
     }
-    async activateVersionHistoryView() { /*...原代码...*/ 
+    async activateVersionHistoryView() { 
         const { workspace } = this.app;
         let leaf = workspace.getLeavesOfType('version-history')[0];
         if (!leaf) { const rightLeaf = workspace.getRightLeaf(false); if (!rightLeaf) { new Notice('无法打开版本历史视图'); return; } leaf = rightLeaf; await leaf.setViewState({ type: 'version-history', active: true, }); }
         workspace.revealLeaf(leaf);
     }
-    startAutoSave() { /*...原代码...*/ 
+    startAutoSave() { 
         if (this.autoSaveTimer) { window.clearInterval(this.autoSaveTimer); this.autoSaveTimer = null; }
         if (this.settings.autoSaveOnInterval) { this.autoSaveTimer = window.setInterval(() => { this.autoSaveCurrentFile(); }, this.settings.autoSaveInterval * 60 * 1000); }
     }
-    scheduleSave(file: TFile, delay: number, message: string) { /*...原代码...*/ 
+    scheduleSave(file: TFile, delay: number, message: string) { 
         if (this.isExcluded(file.path)) { return; }
         const existingTimeout = this.pendingSaves.get(file.path);
         if (existingTimeout) { clearTimeout(existingTimeout); }
@@ -466,25 +445,24 @@ export default class VersionControlPlugin extends Plugin {
         this.pendingSaves.set(file.path, timeout);
     }
 
-    // [Fix 3] 自动保存逻辑需要加锁 (通过调用 createVersion 加锁，但最好在这里也确保读取的一致性)
     async autoSaveFile(file: TFile, message: string) {
         if (!file || !this.app.vault.getAbstractFileByPath(file.path)) {
             this.pendingSaves.delete(file.path);
             return;
         }
 
-        // 使用锁来确保 读取->比较->保存 是原子的
         await this.withLock(file.path, async () => {
             try {
                 const rawContent = await this.app.vault.read(file);
                 const content = this.normalizeText(rawContent);
                 
-                // 注意：这里调用 loadVersionFile，在锁内部是安全的
                 const versions = await this.getAllVersions(file.path);
                 let lastContent = '';
                 if (versions.length > 0) {
                     const latestVersion = versions[0];
                     const currentHash = this.hashContent(content);
+                    
+                    // 注意：这里的快速检查只是为了性能，真正的防碰撞检查在 createVersionInternal
                     if (latestVersion.hash === currentHash) {
                         return;
                     }
@@ -500,7 +478,6 @@ export default class VersionControlPlugin extends Plugin {
                     return;
                 }
 
-                // createVersionInternal 是不加锁的版本，防止死锁 (见下文)
                 await this.createVersionInternal(file, message, false, [], false, content);
                 
             } catch (error) {
@@ -509,32 +486,32 @@ export default class VersionControlPlugin extends Plugin {
         });
     }
 
-    countChanges(oldText: string, newText: string): number { /*...原代码...*/ 
+    countChanges(oldText: string, newText: string): number { 
         const changes = Diff.diffChars(oldText, newText); let changeCount = 0;
         for (const part of changes) { if (part.added || part.removed) { changeCount += part.value.length; } }
         return changeCount;
     }
-    handleFileModify(file: TFile) { /*...原代码...*/ 
+    handleFileModify(file: TFile) { 
         this.scheduleSave(file, this.settings.autoSaveDelayOnModify, '[Auto Save - On Modify]');
     }
-    async handleFileSwitch() { /*...原代码...*/ 
+    async handleFileSwitch() { 
         const currentFile = this.app.workspace.getActiveFile();
         if (this.previousActiveFile && this.previousActiveFile !== currentFile) { const fileStillExists = this.app.vault.getAbstractFileByPath(this.previousActiveFile.path); if (fileStillExists) { this.scheduleSave(this.previousActiveFile as TFile, this.settings.autoSaveDelayOnFileSwitch, '[Auto Save - File Switch]'); } else { const pending = this.pendingSaves.get(this.previousActiveFile.path); if (pending) clearTimeout(pending); this.pendingSaves.delete(this.previousActiveFile.path); this.lastModifiedTime.delete(this.previousActiveFile.path); } }
         this.previousActiveFile = currentFile;
     }
-    async handleFocusLost() { /*...原代码...*/ 
+    async handleFocusLost() { 
         const file = this.app.workspace.getActiveFile();
         if (!file || this.isExcluded(file.path)) return;
         const fileStillExists = this.app.vault.getAbstractFileByPath(file.path);
         if (!fileStillExists) return;
         this.scheduleSave(file, this.settings.autoSaveDelayOnFocusLost, '[Auto Save - Focus Lost]');
     }
-    async autoSaveCurrentFile() { /*...原代码...*/ 
+    async autoSaveCurrentFile() { 
         const file = this.app.workspace.getActiveFile();
         if (!file || this.isExcluded(file.path)) return;
         await this.autoSaveFile(file, '[Auto Save - Interval]');
     }
-    isExcluded(filePath: string): boolean { /*...原代码...*/ 
+    isExcluded(filePath: string): boolean { 
         return this.settings.excludedFolders.some(folder => filePath.startsWith(folder));
     }
 
@@ -552,7 +529,6 @@ export default class VersionControlPlugin extends Plugin {
         }
 
         new VersionMessageModal(this.app, this.settings, async (message, tags) => {
-            // 手动保存也走锁机制
             await this.createVersion(file, message, true, tags, true);
         }).open();
     }
@@ -562,7 +538,6 @@ export default class VersionControlPlugin extends Plugin {
         return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
     }
 
-    // [Fix 3] 公共的 createVersion 入口，带锁
     async createVersion(file: TFile, message: string, showNotification: boolean = false, tags: string[] = [], isManual: boolean = false) {
         await this.withLock(file.path, async () => {
              const rawContent = await this.app.vault.read(file);
@@ -571,39 +546,53 @@ export default class VersionControlPlugin extends Plugin {
         });
     }
 
-    // [Fix 3] 内部实现，不带锁（被 withLock 调用）
+    // [Fix 1] 核心修复：哈希碰撞保护
     private async createVersionInternal(file: TFile, message: string, showNotification: boolean, tags: string[], isManual: boolean, content: string) {
         try {
             const timestamp = Date.now();
             const id = `${timestamp}-${Math.random().toString(36).substring(2, 9)}`;
             const hash = this.hashContent(content);
             
-            // 此时 loadVersionFile 读取的是最新状态（因为在锁内）
             const versionFile = await this.loadVersionFile(file.path);
             
             if (this.settings.enableDeduplication) {
                 const latestVersion = versionFile.versions[0];
                 if (latestVersion && latestVersion.hash === hash) {
-                    if (isManual && latestVersion.message.includes('[Auto Save')) {
-                        latestVersion.message = message;
-                        latestVersion.timestamp = timestamp;
-                        latestVersion.tags = tags.length > 0 ? tags : latestVersion.tags;
+                    // 哈希相同，进行二次确认
+                    let contentReallyIdentical = false;
+                    try {
+                        const prevContent = await this.getVersionContent(file.path, latestVersion.id, true);
+                        if (prevContent === content) {
+                            contentReallyIdentical = true;
+                        }
+                    } catch (e) {
+                        console.warn("Deduplication check: could not read previous version content", e);
+                    }
 
-                        await this.saveVersionFile(file.path, versionFile);
-                        this.versionCache.set(file.path, versionFile);
-                        this.refreshVersionHistoryView();
-                        this.updateStatusBar();
-                        
+                    if (contentReallyIdentical) {
+                        if (isManual && latestVersion.message.includes('[Auto Save')) {
+                            latestVersion.message = message;
+                            latestVersion.timestamp = timestamp;
+                            latestVersion.tags = tags.length > 0 ? tags : latestVersion.tags;
+
+                            await this.saveVersionFile(file.path, versionFile);
+                            this.versionCache.set(file.path, versionFile);
+                            this.refreshVersionHistoryView();
+                            this.updateStatusBar();
+                            
+                            if (showNotification && this.settings.showNotifications) {
+                                new Notice(`✅ 版本已创建 (自动保存已更新)`);
+                            }
+                            return;
+                        }
+
                         if (showNotification && this.settings.showNotifications) {
-                            new Notice(`✅ 版本已创建 (自动保存已更新)`);
+                            new Notice('ℹ️ 内容未变化,跳过创建版本');
                         }
                         return;
+                    } else {
+                        console.warn(`[VersionControl] Hash collision detected for ${file.path}. Saving new version.`);
                     }
-
-                    if (showNotification && this.settings.showNotifications) {
-                        new Notice('ℹ️ 内容未变化,跳过创建版本');
-                    }
-                    return;
                 }
             }
 
@@ -718,20 +707,20 @@ export default class VersionControlPlugin extends Plugin {
         return this.getVersionContent(versionFile.filePath, versionFile.versions[0].id);
     }
 
-    createDiff(oldContent: string, newContent: string): string { /*...原代码...*/ 
+    createDiff(oldContent: string, newContent: string): string { 
         const changes = Diff.createPatch('file', oldContent, newContent, '', ''); return changes;
     }
-    applyDiff(baseContent: string, diffStr: string, suppressNotice: boolean = false): string { /*...原代码...*/ 
+    applyDiff(baseContent: string, diffStr: string, suppressNotice: boolean = false): string { 
         try { const result = Diff.applyPatch(baseContent, diffStr); if (result === false) { console.error('应用差异补丁失败 (applyPatch returned false). 返回基础内容。'); if (!suppressNotice) { new Notice('应用差异补丁失败，版本内容可能不完整。'); } return baseContent; } return result; } catch (error) { console.error('应用差异时捕获到异常:', error); return baseContent; }
     }
-    buildVersionIndex(versionFile: VersionFile) { /*...原代码...*/ 
+    buildVersionIndex(versionFile: VersionFile) { 
         const index = new Map<string, number>(); versionFile.versions.forEach((version, idx) => { index.set(version.id, idx); }); versionFile.versionIndex = index;
     }
-    hashContent(content: string): string { /*...原代码...*/ 
+    hashContent(content: string): string { 
         let hash = 0; for (let i = 0; i < content.length; i++) { const char = content.charCodeAt(i); hash = ((hash << 5) - hash) + char; hash = hash & hash; } return hash.toString(36);
     }
     
-    resolveContentFromList(versions: VersionData[], versionId: string, depth: number = 0): string { /*...原代码...*/ 
+    resolveContentFromList(versions: VersionData[], versionId: string, depth: number = 0): string { 
         if (depth > 100) throw new Error("版本依赖链过深");
         const version = versions.find(v => v.id === versionId);
         if (!version) throw new Error(`无法在内存中找到基准版本: ${versionId}`);
@@ -740,7 +729,7 @@ export default class VersionControlPlugin extends Plugin {
         throw new Error(`版本 ${versionId} 数据不完整`);
     }
 
-    // [Fix 5] 增强版清理逻辑，确保链条断裂时有保护
+    // [Fix 6] 确保清理逻辑中引用完整列表
     async cleanupVersionsInMemory(versionFile: VersionFile): Promise<number> {
         const originalCount = versionFile.versions.length;
         
@@ -765,13 +754,12 @@ export default class VersionControlPlugin extends Plugin {
         for (let i = proposedList.length - 1; i >= 0; i--) {
             const v = proposedList[i];
             
-            // 如果一个增量版本的基准被删除了，我们需要将该增量版本“固化”为全量版本
             if (v.diff && v.baseVersionId) {
                 if (!proposedKeepSet.has(v.baseVersionId)) {
                     try {
                         console.log(`[VersionControl] 版本 ${v.id} 的基准将被清理，正在将其转换为完整快照...`);
                         
-                        // [Fix 5] 这里要确保 resolveContentFromList 不出错，如果出错，不能删除该基准
+                        // 注意：这里我们使用 versionFile.versions（完整列表）来解析内容
                         const fullContent = this.resolveContentFromList(versionFile.versions, v.id);
                         
                         v.content = fullContent;
@@ -782,7 +770,7 @@ export default class VersionControlPlugin extends Plugin {
                     } catch (error) {
                         console.error(`[VersionControl] 严重错误：无法固化版本 ${v.id}，为防止数据丢失，取消本次清理。`, error);
                         new Notice(`⚠️ 自动清理中止：版本 ${v.id.substring(0,8)} 无法重构，这可能是由于数据链损坏。`);
-                        return 0; // 安全退出，不执行任何删除
+                        return 0; 
                     }
                 }
             }
@@ -793,17 +781,14 @@ export default class VersionControlPlugin extends Plugin {
     }
 
     async loadVersionFile(filePath: string): Promise<VersionFile> {
-        // 先检查缓存
         if (this.versionCache.has(filePath)) {
             return this.versionCache.get(filePath)!;
         }
 
         const adapter = this.app.vault.adapter;
         
-        // [Fix 1] 优先尝试读取 Hash 命名的新文件
         let versionPath = this.getVersionFilePath(filePath);
         
-        // 如果新文件不存在，尝试读取旧命名规则的文件 (兼容性)
         if (!await adapter.exists(versionPath)) {
             const legacyPath = this.getLegacyVersionFilePath(filePath);
             if (await adapter.exists(legacyPath)) {
@@ -828,7 +813,6 @@ export default class VersionControlPlugin extends Plugin {
                 }
                 
                 const versionFile = JSON.parse(content) as VersionFile;
-                // 确保 filePath 是最新的 (如果从旧文件迁移过来，可能需要更新)
                 versionFile.filePath = filePath; 
                 
                 if (!versionFile.versionIndex) {
@@ -881,17 +865,64 @@ export default class VersionControlPlugin extends Plugin {
     }
 
     sanitizeFileName(path: string): string {
-        // [Fix 1] 原有的不安全替换，保留用于兼容性读取
         return path.replace(/[\/\\:*?"<>|]/g, '_');
     }
 
-    // ... (getVersions, getAllVersions, getVersionContent 等保持不变) ...
-    async getVersions(filePath: string, page: number = 0): Promise<VersionData[]> { /*...原代码...*/ try { const versionFile = await this.loadVersionFile(filePath); if (this.settings.versionsPerPage > 0) { const start = page * this.settings.versionsPerPage; const end = start + this.settings.versionsPerPage; return versionFile.versions.slice(start, end); } return versionFile.versions; } catch (error) { console.error('获取版本列表失败:', error); return []; } }
-    async getAllVersions(filePath: string): Promise<VersionData[]> { /*...原代码...*/ try { const versionFile = await this.loadVersionFile(filePath); return versionFile.versions; } catch (error) { console.error('获取版本列表失败:', error); return []; } }
-    async getVersionContent(filePath: string, versionId: string, suppressNotice: boolean = false, strictMode: boolean = false): Promise<string> { /*...原代码...*/ try { const versionFile = await this.loadVersionFile(filePath); const resolveContent = async (vId: string, depth: number = 0): Promise<string> => { if (depth > 100) throw new Error(`版本依赖链过深 (${depth})`); const index = versionFile.versionIndex?.get(vId); const version = index !== undefined ? versionFile.versions[index] : versionFile.versions.find(v => v.id === vId); if (!version) { throw new Error(`版本 ${vId} 不存在`); } if (version.content !== undefined && version.content !== null) { return this.normalizeText(version.content); } if (version.diff) { let baseContent = ""; if (version.baseVersionId) { baseContent = await resolveContent(version.baseVersionId, depth + 1); } else if (versionFile.baseVersion !== undefined && versionFile.baseVersion !== null) { baseContent = this.normalizeText(versionFile.baseVersion); } else { throw new Error(`版本 ${vId} 既无内容也无有效基准引用`); } try { const normalizedBase = this.normalizeText(baseContent); const result = Diff.applyPatch(normalizedBase, version.diff); if (result === false) { if (strictMode) { throw new Error("增量补丁应用失败 (Patch Mismatch)"); } console.warn(`[VersionControl] 版本 ${vId} 增量还原失败: Diff Patch 不匹配。返回基础内容。`); return normalizedBase; } return this.normalizeText(result); } catch (error) { if (error.message.includes("Patch Mismatch")) throw error; console.error(`应用补丁失败 (Version: ${vId}):`, error); throw new Error(`还原版本 ${vId} 失败: 补丁应用错误`); } } throw new Error(`无法获取版本 ${vId} 的内容：缺少 content 和 diff`); }; return await resolveContent(versionId); } catch (error) { console.error('读取版本内容失败:', error); if (!suppressNotice || strictMode) { } else { } throw new Error(`无法读取版本内容: ${error.message}`); } }
-    async verifyVersionFileIntegrity(filePath: string): Promise<boolean> { /*...原代码...*/ const errors = await this.verifyFileVersion(filePath); return errors.length === 0; }
+    async getVersions(filePath: string, page: number = 0): Promise<VersionData[]> { try { const versionFile = await this.loadVersionFile(filePath); if (this.settings.versionsPerPage > 0) { const start = page * this.settings.versionsPerPage; const end = start + this.settings.versionsPerPage; return versionFile.versions.slice(start, end); } return versionFile.versions; } catch (error) { console.error('获取版本列表失败:', error); return []; } }
+    async getAllVersions(filePath: string): Promise<VersionData[]> { try { const versionFile = await this.loadVersionFile(filePath); return versionFile.versions; } catch (error) { console.error('获取版本列表失败:', error); return []; } }
     
-    // [修正] verifyFileVersion 需要适配新的路径逻辑
+    // [Fix 5] 获取版本内容时的错误提示
+    async getVersionContent(filePath: string, versionId: string, suppressNotice: boolean = false, strictMode: boolean = false): Promise<string> { 
+        try { 
+            const versionFile = await this.loadVersionFile(filePath); 
+            const resolveContent = async (vId: string, depth: number = 0): Promise<string> => { 
+                if (depth > 100) throw new Error(`版本依赖链过深 (${depth})`); 
+                const index = versionFile.versionIndex?.get(vId); 
+                const version = index !== undefined ? versionFile.versions[index] : versionFile.versions.find(v => v.id === vId); 
+                if (!version) { throw new Error(`版本 ${vId} 不存在`); } 
+                if (version.content !== undefined && version.content !== null) { return this.normalizeText(version.content); } 
+                if (version.diff) { 
+                    let baseContent = ""; 
+                    if (version.baseVersionId) { 
+                        baseContent = await resolveContent(version.baseVersionId, depth + 1); 
+                    } else if (versionFile.baseVersion !== undefined && versionFile.baseVersion !== null) { 
+                        baseContent = this.normalizeText(versionFile.baseVersion); 
+                    } else { 
+                        throw new Error(`版本 ${vId} 既无内容也无有效基准引用`); 
+                    } 
+                    try { 
+                        const normalizedBase = this.normalizeText(baseContent); 
+                        const result = Diff.applyPatch(normalizedBase, version.diff); 
+                        if (result === false) { 
+                            if (strictMode) { throw new Error("增量补丁应用失败 (Patch Mismatch)"); } 
+                            console.warn(`[VersionControl] 版本 ${vId} 增量还原失败: Diff Patch 不匹配。返回基础内容。`); 
+                            
+                            // 增加明确的错误提示
+                            if (!suppressNotice) {
+                                new Notice(`⚠️ 版本 ${vId.substring(0,8)} 数据损坏，仅显示基准内容。`);
+                            }
+
+                            return normalizedBase; 
+                        } 
+                        return this.normalizeText(result); 
+                    } catch (error) { 
+                        if (error.message.includes("Patch Mismatch")) throw error; 
+                        console.error(`应用补丁失败 (Version: ${vId}):`, error); 
+                        throw new Error(`还原版本 ${vId} 失败: 补丁应用错误`); 
+                    } 
+                } 
+                throw new Error(`无法获取版本 ${vId} 的内容：缺少 content 和 diff`); 
+            }; 
+            return await resolveContent(versionId); 
+        } catch (error) { 
+            console.error('读取版本内容失败:', error); 
+            if (!suppressNotice || strictMode) { } 
+            throw new Error(`无法读取版本内容: ${error.message}`); 
+        } 
+    }
+
+    async verifyVersionFileIntegrity(filePath: string): Promise<boolean> { const errors = await this.verifyFileVersion(filePath); return errors.length === 0; }
+    
     async verifyFileVersion(filePath: string): Promise<string[]> {
         const errors: string[] = [];
         let versionPath = this.getVersionFilePath(filePath);
@@ -927,14 +958,59 @@ export default class VersionControlPlugin extends Plugin {
             errors.push(`文件读取失败: ${error.message}`);
             return errors;
         }
-        // ... (后续校验逻辑保持不变)
+        
         if (!versionFile.versions || !Array.isArray(versionFile.versions)) { errors.push("文件结构错误: versions 字段丢失或无效"); return errors; } const versionMap = new Map<string, VersionData>(); versionFile.versions.forEach(v => versionMap.set(v.id, v)); for (const version of versionFile.versions) { if (!version.id || !version.timestamp) { errors.push(`版本记录损坏: 缺少 ID 或时间戳`); continue; } if (version.diff) { if (!version.baseVersionId && !versionFile.baseVersion) { errors.push(`版本 ${version.id.substring(0,8)}: 是增量版本但缺少 baseVersionId`); } else if (version.baseVersionId && !versionMap.has(version.baseVersionId)) { errors.push(`版本 ${version.id.substring(0,8)}: 依赖的基准版本 (${version.baseVersionId.substring(0,8)}) 丢失 (链条断裂)`); } } else if (version.content === undefined) { errors.push(`版本 ${version.id.substring(0,8)}: 既无 content 也无 diff，数据丢失`); } try { const content = await this.getVersionContent(filePath, version.id, true, true); if (version.hash) { const currentHash = this.hashContent(content); if (currentHash !== version.hash) { errors.push(`版本 ${version.id.substring(0,8)}: 哈希校验失败 (内容不匹配)`); } } } catch (e) { errors.push(`版本 ${version.id.substring(0,8)}: 内容还原失败 - ${e.message}`); } }
         return errors;
     }
 
-    async checkAllVersionsIntegrity() { /*...原代码...*/ const adapter = this.app.vault.adapter; const folderPath = this.settings.versionFolder; if (!await adapter.exists(folderPath)) { new Notice("版本文件夹不存在，无需检查。"); return; } const files = await adapter.list(folderPath); const jsonFiles = files.files.filter(f => f.endsWith('.json')); const total = jsonFiles.length; const notice = new Notice(`正在检查完整性... 0/${total}`, 0); const report: { filePath: string; errors: string[] }[] = []; for (let i = 0; i < total; i++) { const file = jsonFiles[i]; const rawFileName = file.replace(folderPath + '/', '').replace('.json', ''); let originalFilePath = rawFileName; try { let contentStr = ""; try { contentStr = await adapter.read(file); if (!contentStr.startsWith('{')) { const bin = await adapter.readBinary(file); contentStr = pako.ungzip(new Uint8Array(bin), { to: 'string' }); } } catch(e) { /* ignore */ } if (contentStr) { const vData = JSON.parse(contentStr) as VersionFile; if (vData.filePath) originalFilePath = vData.filePath; } } catch (e) { report.push({ filePath: rawFileName, errors: ["文件完全无法读取/解压"] }); continue; } const errors = await this.verifyFileVersion(originalFilePath); if (errors.length > 0) { report.push({ filePath: originalFilePath, errors }); } if (i % 10 === 0) { notice.setMessage(`正在检查完整性... ${i + 1}/${total}`); await new Promise(resolve => setTimeout(resolve, 5)); } } notice.hide(); new IntegrityReportModal(this.app, this, report).open(); }
+    // [Fix 4] 性能优化：降低 UI 阻塞
+    async checkAllVersionsIntegrity() { 
+        const adapter = this.app.vault.adapter; 
+        const folderPath = this.settings.versionFolder; 
+        if (!await adapter.exists(folderPath)) { new Notice("版本文件夹不存在，无需检查。"); return; } 
+        const files = await adapter.list(folderPath); 
+        const jsonFiles = files.files.filter(f => f.endsWith('.json')); 
+        const total = jsonFiles.length; 
+        const notice = new Notice(`正在检查完整性... 0/${total}`, 0); 
+        const report: { filePath: string; errors: string[] }[] = []; 
+        
+        for (let i = 0; i < total; i++) { 
+            const file = jsonFiles[i]; 
+            const rawFileName = file.replace(folderPath + '/', '').replace('.json', ''); 
+            let originalFilePath = rawFileName; 
+            try { 
+                let contentStr = ""; 
+                try { 
+                    contentStr = await adapter.read(file); 
+                    if (!contentStr.startsWith('{')) { 
+                        const bin = await adapter.readBinary(file); 
+                        contentStr = pako.ungzip(new Uint8Array(bin), { to: 'string' }); 
+                    } 
+                } catch(e) { /* ignore */ } 
+                if (contentStr) { 
+                    const vData = JSON.parse(contentStr) as VersionFile; 
+                    if (vData.filePath) originalFilePath = vData.filePath; 
+                } 
+            } catch (e) { 
+                report.push({ filePath: rawFileName, errors: ["文件完全无法读取/解压"] }); 
+                continue; 
+            } 
+            const errors = await this.verifyFileVersion(originalFilePath); 
+            if (errors.length > 0) { 
+                report.push({ filePath: originalFilePath, errors }); 
+            } 
+            
+            // 改为每 5 个文件休息一次，稍微提高响应频率
+            if (i % 5 === 0) { 
+                notice.setMessage(`正在检查完整性... ${i + 1}/${total}`); 
+                await new Promise(resolve => setTimeout(resolve, 5)); 
+            } 
+        } 
+        notice.hide(); 
+        new IntegrityReportModal(this.app, this, report).open(); 
+    }
 
-    async repairVersionFile(filePath: string): Promise<boolean> { /*...原代码, 需要加锁...*/
+    async repairVersionFile(filePath: string): Promise<boolean> {
         return new Promise(async (resolve) => {
              await this.withLock(filePath, async () => {
                 const versionFile = await this.loadVersionFile(filePath);
@@ -997,8 +1073,8 @@ export default class VersionControlPlugin extends Plugin {
         });
     }
 
-    async starLastVersion() { /*...原代码...*/ const file = this.app.workspace.getActiveFile(); if (!file) { new Notice('没有打开的文件'); return; } const versions = await this.getAllVersions(file.path); if (versions.length === 0) { new Notice('没有可标记的版本'); return; } await this.toggleVersionStar(file.path, versions[0].id); new Notice('⭐ 已标记/取消标记'); }
-    async quickPreviewLastVersion() { /*...原代码...*/ const file = this.app.workspace.getActiveFile(); if (!file) { new Notice('没有打开的文件'); return; } const versions = await this.getAllVersions(file.path); if (versions.length === 0) { new Notice('没有历史版本可预览'); return; } new QuickPreviewModal(this.app, this, file, versions[0].id).open(); }
+    async starLastVersion() { const file = this.app.workspace.getActiveFile(); if (!file) { new Notice('没有打开的文件'); return; } const versions = await this.getAllVersions(file.path); if (versions.length === 0) { new Notice('没有可标记的版本'); return; } await this.toggleVersionStar(file.path, versions[0].id); new Notice('⭐ 已标记/取消标记'); }
+    async quickPreviewLastVersion() { const file = this.app.workspace.getActiveFile(); if (!file) { new Notice('没有打开的文件'); return; } const versions = await this.getAllVersions(file.path); if (versions.length === 0) { new Notice('没有历史版本可预览'); return; } new QuickPreviewModal(this.app, this, file, versions[0].id).open(); }
 
     async deleteVersion(filePath: string, versionId: string) {
         await this.withLock(filePath, async () => {
@@ -1039,7 +1115,6 @@ export default class VersionControlPlugin extends Plugin {
     }
 
     async restoreVersion(file: TFile, versionId: string) {
-        // [Fix 4] 开启恢复状态锁
         this.isRestoring = true;
         try {
             await this.createVersion(file, '[Before Restore]', false);
@@ -1055,25 +1130,23 @@ export default class VersionControlPlugin extends Plugin {
             console.error('恢复版本失败:', error);
             new Notice('❌ 恢复版本失败');
         } finally {
-            // [Fix 4] 延迟释放锁，确保事件处理完毕
             setTimeout(() => {
                 this.isRestoring = false;
             }, 500);
         }
     }
 
-    // ... (rest of methods)
-    async restoreLastVersion() { /*...原代码...*/ const file = this.app.workspace.getActiveFile(); if (!file) { new Notice('没有打开的文件'); return; } const versions = await this.getAllVersions(file.path); if (versions.length === 0) { new Notice('没有可恢复的版本'); return; } const lastVersion = versions[0]; new ConfirmModal(this.app, '恢复到上一版本', `确定要恢复到版本: ${this.formatTime(lastVersion.timestamp)}?\n\n当前未保存的修改将会丢失,插件会在恢复前自动创建备份版本。`, async () => { await this.restoreVersion(file, lastVersion.id); }).open(); }
-    async quickCompare() { /*...原代码...*/ const file = this.app.workspace.getActiveFile(); if (!file) { new Notice('没有打开的文件'); return; } const versions = await this.getAllVersions(file.path); if (versions.length === 0) { new Notice('没有历史版本可对比'); return; } const lastVersion = versions[0]; new DiffModal(this.app, this, file, lastVersion.id).open(); }
-    async createFullSnapshot() { /*...原代码...*/ const files = this.app.vault.getMarkdownFiles(); const total = files.length; let count = 0; let skipped = 0; const progressNotice = new Notice(`正在准备全库快照... (0/${total})`, 0); const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms)); for (let i = 0; i < total; i++) { const file = files[i]; if (i % 10 === 0) { progressNotice.setMessage(`正在创建全库快照... (${i + 1}/${total})`); await sleep(10); } if (this.isExcluded(file.path)) { skipped++; continue; } try { await this.createVersion(file, '[Full Snapshot]', false, [], true); count++; } catch (error) { console.error(`创建版本失败: ${file.path}`, error); } } progressNotice.hide(); if (this.settings.showNotifications) { setTimeout(() => { new Notice(`✅ 全库版本创建完成\n处理: ${count} 个文件${skipped > 0 ? `\n跳过: ${skipped} 个文件` : ''}`); }, 500); } }
-    async optimizeAllVersionFiles() { /*...原代码...*/ const progressNotice = new Notice('正在优化存储...', 0); try { const adapter = this.app.vault.adapter; const versionFolder = this.settings.versionFolder; if (!await adapter.exists(versionFolder)) { progressNotice.hide(); new Notice('版本文件夹不存在'); return; } const files = await adapter.list(versionFolder); let optimized = 0; let savedBytes = 0; for (const file of files.files) { if (file.endsWith('.json')) { try { const oldSize = (await adapter.stat(file))?.size || 0; const filePath = file.replace(this.settings.versionFolder + '/', '').replace('.json', ''); const versionFile = await this.loadVersionFile(filePath); this.buildVersionIndex(versionFile); await this.saveVersionFile(versionFile.filePath, versionFile); const newSize = (await adapter.stat(file))?.size || 0; savedBytes += (oldSize - newSize); optimized++; } catch (error) { console.error('优化文件失败:', file, error); } } } progressNotice.hide(); new Notice(`✅ 优化完成\n处理: ${optimized} 个文件\n节省: ${this.formatFileSize(savedBytes)}`); } catch (error) { progressNotice.hide(); console.error('优化失败:', error); new Notice('❌ 优化失败'); } }
-    async getStorageStats(): Promise<{ totalSize: number; versionCount: number; fileCount: number; compressionRatio: number; starredCount: number; taggedCount: number }> { /*...原代码...*/ const adapter = this.app.vault.adapter; const versionFolder = this.settings.versionFolder; try { if (!await adapter.exists(versionFolder)) { return { totalSize: 0, versionCount: 0, fileCount: 0, compressionRatio: 0, starredCount: 0, taggedCount: 0 }; } const files = await adapter.list(versionFolder); let totalSize = 0; let versionCount = 0; let fileCount = 0; let totalOriginalSize = 0; let starredCount = 0; let taggedCount = 0; for (const file of files.files) { if (file.endsWith('.json')) { try { const stat = await adapter.stat(file); const fileSize = stat?.size || 0; totalSize += fileSize; let versionFile: VersionFile; if (this.settings.enableCompression) { try { const rawData = await adapter.readBinary(file); const decompressed = pako.ungzip(new Uint8Array(rawData), { to: 'string' }); versionFile = JSON.parse(decompressed) as VersionFile; } catch (e) { const content = await adapter.read(file); versionFile = JSON.parse(content) as VersionFile; } } else { const content = await adapter.read(file); versionFile = JSON.parse(content) as VersionFile; } if (versionFile.versions && Array.isArray(versionFile.versions)) { versionCount += versionFile.versions.length; versionFile.versions.forEach(v => { if (v.content) { totalOriginalSize += v.content.length; } else if (v.diff) { totalOriginalSize += v.diff.length; } if (v.starred) starredCount++; if (v.tags && v.tags.length > 0) taggedCount++; }); fileCount++; } } catch (error) { console.error('读取版本文件失败:', file, error); } } } const compressionRatio = totalOriginalSize > 0 ? ((1 - totalSize / totalOriginalSize) * 100) : 0; return { totalSize, versionCount, fileCount, compressionRatio, starredCount, taggedCount }; } catch (error) { console.error('获取存储统计失败:', error); return { totalSize: 0, versionCount: 0, fileCount: 0, compressionRatio: 0, starredCount: 0, taggedCount: 0 }; } }
-    async exportVersions(filePath: string): Promise<void> { /*...原代码...*/ try { const versionFile = await this.loadVersionFile(filePath); const exportPath = `${this.settings.versionFolder}/export_${this.sanitizeFileName(filePath)}_${Date.now()}.json`; await this.app.vault.adapter.write(exportPath, JSON.stringify(versionFile, null, 2)); new Notice(`✅ 版本已导出到: ${exportPath}`); } catch (error) { console.error('导出版本失败:', error); new Notice('❌ 导出失败'); } }
-    async exportVersionAsFile(filePath: string, versionId: string): Promise<void> { /*...原代码...*/ try { const content = await this.getVersionContent(filePath, versionId); const fileName = filePath.replace(/\.[^/.]+$/, ''); const exportPath = `${fileName}_v${versionId.substring(0,8)}.md`; await this.app.vault.create(exportPath, content); new Notice(`✅ 版本已导出为: ${exportPath}`); } catch (error) { console.error('导出版本为文件失败:', error); new Notice('❌ 导出失败'); } }
-    formatFileSize(bytes: number): string { /*...原代码...*/ if (bytes < 1024) return `${bytes} B`; if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(2)} KB`; return `${(bytes / (1024 * 1024)).toFixed(2)} MB`; }
-    formatTime(timestamp: number): string { /*...原代码...*/ if (this.settings.useRelativeTime) { return this.getRelativeTime(timestamp); } return new Date(timestamp).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
-    getRelativeTime(timestamp: number): string { /*...原代码...*/ const diff = Date.now() - timestamp; const seconds = Math.floor(diff / 1000); const minutes = Math.floor(seconds / 60); const hours = Math.floor(minutes / 60); const days = Math.floor(hours / 24); const months = Math.floor(days / 30); const years = Math.floor(days / 365); if (years > 0) return `${years} 年前`; if (months > 0) return `${months} 个月前`; if (days > 0) return `${days} 天前`; if (hours > 0) return `${hours} 小时前`; if (minutes > 0) return `${minutes} 分钟前`; if (seconds < 10) return '刚刚'; return `${seconds} 秒前`; }
-    refreshVersionHistoryView() { /*...原代码...*/ const leaves = this.app.workspace.getLeavesOfType('version-history'); leaves.forEach(leaf => { if (leaf.view instanceof VersionHistoryView) { leaf.view.refresh(); } }); }
+    async restoreLastVersion() { const file = this.app.workspace.getActiveFile(); if (!file) { new Notice('没有打开的文件'); return; } const versions = await this.getAllVersions(file.path); if (versions.length === 0) { new Notice('没有可恢复的版本'); return; } const lastVersion = versions[0]; new ConfirmModal(this.app, '恢复到上一版本', `确定要恢复到版本: ${this.formatTime(lastVersion.timestamp)}?\n\n当前未保存的修改将会丢失,插件会在恢复前自动创建备份版本。`, async () => { await this.restoreVersion(file, lastVersion.id); }).open(); }
+    async quickCompare() { const file = this.app.workspace.getActiveFile(); if (!file) { new Notice('没有打开的文件'); return; } const versions = await this.getAllVersions(file.path); if (versions.length === 0) { new Notice('没有历史版本可对比'); return; } const lastVersion = versions[0]; new DiffModal(this.app, this, file, lastVersion.id).open(); }
+    async createFullSnapshot() { const files = this.app.vault.getMarkdownFiles(); const total = files.length; let count = 0; let skipped = 0; const progressNotice = new Notice(`正在准备全库快照... (0/${total})`, 0); const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms)); for (let i = 0; i < total; i++) { const file = files[i]; if (i % 10 === 0) { progressNotice.setMessage(`正在创建全库快照... (${i + 1}/${total})`); await sleep(10); } if (this.isExcluded(file.path)) { skipped++; continue; } try { await this.createVersion(file, '[Full Snapshot]', false, [], true); count++; } catch (error) { console.error(`创建版本失败: ${file.path}`, error); } } progressNotice.hide(); if (this.settings.showNotifications) { setTimeout(() => { new Notice(`✅ 全库版本创建完成\n处理: ${count} 个文件${skipped > 0 ? `\n跳过: ${skipped} 个文件` : ''}`); }, 500); } }
+    async optimizeAllVersionFiles() { const progressNotice = new Notice('正在优化存储...', 0); try { const adapter = this.app.vault.adapter; const versionFolder = this.settings.versionFolder; if (!await adapter.exists(versionFolder)) { progressNotice.hide(); new Notice('版本文件夹不存在'); return; } const files = await adapter.list(versionFolder); let optimized = 0; let savedBytes = 0; for (const file of files.files) { if (file.endsWith('.json')) { try { const oldSize = (await adapter.stat(file))?.size || 0; const filePath = file.replace(this.settings.versionFolder + '/', '').replace('.json', ''); const versionFile = await this.loadVersionFile(filePath); this.buildVersionIndex(versionFile); await this.saveVersionFile(versionFile.filePath, versionFile); const newSize = (await adapter.stat(file))?.size || 0; savedBytes += (oldSize - newSize); optimized++; } catch (error) { console.error('优化文件失败:', file, error); } } } progressNotice.hide(); new Notice(`✅ 优化完成\n处理: ${optimized} 个文件\n节省: ${this.formatFileSize(savedBytes)}`); } catch (error) { progressNotice.hide(); console.error('优化失败:', error); new Notice('❌ 优化失败'); } }
+    async getStorageStats(): Promise<{ totalSize: number; versionCount: number; fileCount: number; compressionRatio: number; starredCount: number; taggedCount: number }> { const adapter = this.app.vault.adapter; const versionFolder = this.settings.versionFolder; try { if (!await adapter.exists(versionFolder)) { return { totalSize: 0, versionCount: 0, fileCount: 0, compressionRatio: 0, starredCount: 0, taggedCount: 0 }; } const files = await adapter.list(versionFolder); let totalSize = 0; let versionCount = 0; let fileCount = 0; let totalOriginalSize = 0; let starredCount = 0; let taggedCount = 0; for (const file of files.files) { if (file.endsWith('.json')) { try { const stat = await adapter.stat(file); const fileSize = stat?.size || 0; totalSize += fileSize; let versionFile: VersionFile; if (this.settings.enableCompression) { try { const rawData = await adapter.readBinary(file); const decompressed = pako.ungzip(new Uint8Array(rawData), { to: 'string' }); versionFile = JSON.parse(decompressed) as VersionFile; } catch (e) { const content = await adapter.read(file); versionFile = JSON.parse(content) as VersionFile; } } else { const content = await adapter.read(file); versionFile = JSON.parse(content) as VersionFile; } if (versionFile.versions && Array.isArray(versionFile.versions)) { versionCount += versionFile.versions.length; versionFile.versions.forEach(v => { if (v.content) { totalOriginalSize += v.content.length; } else if (v.diff) { totalOriginalSize += v.diff.length; } if (v.starred) starredCount++; if (v.tags && v.tags.length > 0) taggedCount++; }); fileCount++; } } catch (error) { console.error('读取版本文件失败:', file, error); } } } const compressionRatio = totalOriginalSize > 0 ? ((1 - totalSize / totalOriginalSize) * 100) : 0; return { totalSize, versionCount, fileCount, compressionRatio, starredCount, taggedCount }; } catch (error) { console.error('获取存储统计失败:', error); return { totalSize: 0, versionCount: 0, fileCount: 0, compressionRatio: 0, starredCount: 0, taggedCount: 0 }; } }
+    async exportVersions(filePath: string): Promise<void> { try { const versionFile = await this.loadVersionFile(filePath); const exportPath = `${this.settings.versionFolder}/export_${this.sanitizeFileName(filePath)}_${Date.now()}.json`; await this.app.vault.adapter.write(exportPath, JSON.stringify(versionFile, null, 2)); new Notice(`✅ 版本已导出到: ${exportPath}`); } catch (error) { console.error('导出版本失败:', error); new Notice('❌ 导出失败'); } }
+    async exportVersionAsFile(filePath: string, versionId: string): Promise<void> { try { const content = await this.getVersionContent(filePath, versionId); const fileName = filePath.replace(/\.[^/.]+$/, ''); const exportPath = `${fileName}_v${versionId.substring(0,8)}.md`; await this.app.vault.create(exportPath, content); new Notice(`✅ 版本已导出为: ${exportPath}`); } catch (error) { console.error('导出版本为文件失败:', error); new Notice('❌ 导出失败'); } }
+    formatFileSize(bytes: number): string { if (bytes < 1024) return `${bytes} B`; if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(2)} KB`; return `${(bytes / (1024 * 1024)).toFixed(2)} MB`; }
+    formatTime(timestamp: number): string { if (this.settings.useRelativeTime) { return this.getRelativeTime(timestamp); } return new Date(timestamp).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
+    getRelativeTime(timestamp: number): string { const diff = Date.now() - timestamp; const seconds = Math.floor(diff / 1000); const minutes = Math.floor(seconds / 60); const hours = Math.floor(minutes / 60); const days = Math.floor(hours / 24); const months = Math.floor(days / 30); const years = Math.floor(days / 365); if (years > 0) return `${years} 年前`; if (months > 0) return `${months} 个月前`; if (days > 0) return `${days} 天前`; if (hours > 0) return `${hours} 小时前`; if (minutes > 0) return `${minutes} 分钟前`; if (seconds < 10) return '刚刚'; return `${seconds} 秒前`; }
+    refreshVersionHistoryView() { const leaves = this.app.workspace.getLeavesOfType('version-history'); leaves.forEach(leaf => { if (leaf.view instanceof VersionHistoryView) { leaf.view.refresh(); } }); }
 }
 
 class QuickPreviewModal extends Modal {
@@ -1230,7 +1303,6 @@ class VersionHistoryView extends ItemView {
     }
 
     async onClose() {
-        // No timer to clear
     }
 
     updateRelativeTimes() {
@@ -2327,7 +2399,6 @@ class DiffModal extends Modal {
             type: part.added ? 'added' : part.removed ? 'removed' : 'context' 
         }));
 
-        // 1. 精确匹配
         const removedMap = new Map<string, number[]>();
         const addedMap = new Map<string, number[]>();
 
@@ -2360,7 +2431,6 @@ class DiffModal extends Modal {
             }
         }
 
-        // 2. 模糊匹配
         const unmatchedRemovedIndices: number[] = [];
         const unmatchedAddedIndices: number[] = [];
 
@@ -2478,116 +2548,123 @@ class DiffModal extends Modal {
         const { contentEl } = this;
         contentEl.addClass('diff-modal');
 
-        // --- 注入自定义样式支持两排显示 ---
-        const style = document.createElement('style');
-        style.textContent = `
-            /* 基础 Diff 行布局调整 */
-            .diff-line {
-                display: flex !important;
-                align-items: stretch !important; /* 让高度拉伸以适应内容 */
-                flex-direction: row !important;
-                padding-left: 0 !important; /* 移除原有 padding，交给 gutter */
-            }
-            
-            /* 新的侧边栏容器 (Gutter) */
-            .diff-gutter-column {
-                display: flex;
-                flex-direction: column;
-                justify-content: center;
-                align-items: center;
-                min-width: 48px; /* 调整宽度以容纳两排 */
-                padding: 2px 4px;
-                background-color: var(--background-secondary);
-                border-right: 1px solid var(--background-modifier-border);
-                margin-right: 8px;
-                flex-shrink: 0;
-                user-select: none;
-            }
-
-            /* 第一排：行号 */
-            .diff-gutter-nums {
-                display: flex;
-                justify-content: center;
-                gap: 4px;
-                font-family: var(--font-monospace);
-                font-size: 0.65em;
-                color: var(--text-muted);
-                line-height: 1.2;
-                margin-bottom: 2px;
-                width: 100%;
-            }
-
-            /* 第二排：操作按钮 */
-            .diff-gutter-ops {
-                display: flex;
-                justify-content: center;
-                gap: 6px;
-                line-height: 1;
-                font-size: 0.85em;
-                width: 100%;
-                opacity: 0.6;
-                transition: opacity 0.2s;
-            }
-            .diff-gutter-ops:hover {
-                opacity: 1;
-            }
-
-            /* 按钮样式微调 */
-            .diff-line-action-btn, .diff-line-history-btn { 
-                cursor: pointer; 
-                display: inline-block;
-            }
-            .diff-line-action-btn:hover, .diff-line-history-btn:hover { 
-                color: var(--text-accent); 
-                transform: scale(1.1);
-            }
-
-            /* 内容区域微调，使其垂直居中或顶部对齐 */
-            .diff-line .line-content {
-                padding-top: 4px; 
-                padding-bottom: 4px;
-                flex-grow: 1;
-                word-break: break-all;
-            }
-            
-            /* 标记符号 (+/-) 的位置 */
-            .diff-line .diff-marker {
-                margin-right: 6px;
-                opacity: 0.5;
-                font-family: var(--font-monospace);
-                align-self: center;
-            }
-        `;
-        contentEl.appendChild(style);
-        
-        if (Platform.isMobile) {
-            contentEl.addClass('is-mobile');
-            // 注入针对移动端的行号显示修复样式
+        // [Fix 2] 防止重复注入样式
+        const styleId = 'version-control-diff-styles';
+        if (!document.getElementById(styleId)) {
             const style = document.createElement('style');
+            style.id = styleId;
             style.textContent = `
-                .is-mobile .diff-line.actions-visible .line-number-container {
-                    width: auto !important;
-                    min-width: 45px !important;
+                /* 基础 Diff 行布局调整 */
+                .diff-line {
                     display: flex !important;
+                    align-items: stretch !important; /* 让高度拉伸以适应内容 */
                     flex-direction: row !important;
-                    align-items: center !important;
-                    justify-content: flex-start !important;
-                    background: var(--background-primary);
-                    z-index: 5;
+                    padding-left: 0 !important; /* 移除原有 padding，交给 gutter */
                 }
-                .is-mobile .diff-line.actions-visible .line-number {
-                    display: inline-block !important;
-                    opacity: 1 !important;
-                    margin-right: 4px !important;
-                    font-size: 0.7em !important;
+                
+                /* 新的侧边栏容器 (Gutter) */
+                .diff-gutter-column {
+                    display: flex;
+                    flex-direction: column;
+                    justify-content: center;
+                    align-items: center;
+                    min-width: 48px; /* 调整宽度以容纳两排 */
+                    padding: 2px 4px;
+                    background-color: var(--background-secondary);
+                    border-right: 1px solid var(--background-modifier-border);
+                    margin-right: 8px;
+                    flex-shrink: 0;
+                    user-select: none;
                 }
-                .is-mobile .diff-line.actions-visible .diff-line-action-btn {
-                    position: static !important;
-                    display: inline-flex !important;
-                    margin: 0 2px !important;
+
+                /* 第一排：行号 */
+                .diff-gutter-nums {
+                    display: flex;
+                    justify-content: center;
+                    gap: 4px;
+                    font-family: var(--font-monospace);
+                    font-size: 0.65em;
+                    color: var(--text-muted);
+                    line-height: 1.2;
+                    margin-bottom: 2px;
+                    width: 100%;
+                }
+
+                /* 第二排：操作按钮 */
+                .diff-gutter-ops {
+                    display: flex;
+                    justify-content: center;
+                    gap: 6px;
+                    line-height: 1;
+                    font-size: 0.85em;
+                    width: 100%;
+                    opacity: 0.6;
+                    transition: opacity 0.2s;
+                }
+                .diff-gutter-ops:hover {
+                    opacity: 1;
+                }
+
+                /* 按钮样式微调 */
+                .diff-line-action-btn, .diff-line-history-btn { 
+                    cursor: pointer; 
+                    display: inline-block;
+                }
+                .diff-line-action-btn:hover, .diff-line-history-btn:hover { 
+                    color: var(--text-accent); 
+                    transform: scale(1.1);
+                }
+
+                /* 内容区域微调，使其垂直居中或顶部对齐 */
+                .diff-line .line-content {
+                    padding-top: 4px; 
+                    padding-bottom: 4px;
+                    flex-grow: 1;
+                    word-break: break-all;
+                }
+                
+                /* 标记符号 (+/-) 的位置 */
+                .diff-line .diff-marker {
+                    margin-right: 6px;
+                    opacity: 0.5;
+                    font-family: var(--font-monospace);
+                    align-self: center;
                 }
             `;
             contentEl.appendChild(style);
+        }
+        
+        if (Platform.isMobile) {
+            contentEl.addClass('is-mobile');
+            const mobileStyleId = 'version-control-diff-styles-mobile';
+            if (!document.getElementById(mobileStyleId)) {
+                const style = document.createElement('style');
+                style.id = mobileStyleId;
+                style.textContent = `
+                    .is-mobile .diff-line.actions-visible .line-number-container {
+                        width: auto !important;
+                        min-width: 45px !important;
+                        display: flex !important;
+                        flex-direction: row !important;
+                        align-items: center !important;
+                        justify-content: flex-start !important;
+                        background: var(--background-primary);
+                        z-index: 5;
+                    }
+                    .is-mobile .diff-line.actions-visible .line-number {
+                        display: inline-block !important;
+                        opacity: 1 !important;
+                        margin-right: 4px !important;
+                        font-size: 0.7em !important;
+                    }
+                    .is-mobile .diff-line.actions-visible .diff-line-action-btn {
+                        position: static !important;
+                        display: inline-flex !important;
+                        margin: 0 2px !important;
+                    }
+                `;
+                contentEl.appendChild(style);
+            }
         }
 
         window.addEventListener('resize', this.resizeHandler);
@@ -3647,7 +3724,6 @@ class DiffModal extends Modal {
     }
 
     renderUnifiedDiff(container: HTMLElement, left: string, right: string) {
-        // 如果全局粒度直接选了 char/word，使用原逻辑（流式显示）
         if (this.currentGranularity === 'char' || this.currentGranularity === 'word') {
             const diffFn = this.currentGranularity === 'char'
                 ? Diff.diffChars
@@ -3679,8 +3755,6 @@ class DiffModal extends Modal {
             return;
         }
 
-        // --- 行级/统一视图逻辑开始 ---
-
         const diffResult = Diff.diffLines(left, right, { ignoreWhitespace: this.ignoreWhitespace });
         const processedDiff: ProcessedDiff[] = this.enableMoveDetection 
             ? this.processDiffForMoves(diffResult) 
@@ -3692,20 +3766,14 @@ class DiffModal extends Modal {
         
         const useCompactView = this.plugin.settings.compactUnifiedDiff;
 
-        // 获取行内差异算法。如果想要极致精准，建议在设置里把"行内差异算法"设为"按字符"
-        // 或者我们在这里针对紧凑视图强制使用 diffChars (视需求而定)
         const getSecondaryDiffFn = () => {
-             // 技巧：如果你希望紧凑视图总是字符级精准，可以直接返回 Diff.diffChars
-             // 这里还是尊重用户的设置，但建议用户开启 "按字符"
             return this.plugin.settings.inlineDiffAlgorithm === 'char' ? Diff.diffChars : (this.plugin.settings.smartWordDiff ? this.smartDiffWords : Diff.diffWordsWithSpace);
         };
         const secondaryDiffFn = getSecondaryDiffFn();
 
-        // 辅助函数：创建高亮片段
         const createHighlightedFragment = (diffParts: Diff.Change[], includeRemoved: boolean = true): DocumentFragment => {
             const fragment = document.createDocumentFragment();
             diffParts.forEach(part => {
-                // CSS 类名决定颜色
                 const className = part.added ? 'diff-word-added' : (part.removed ? 'diff-word-removed' : '');
                 const processedText = this.showWhitespace ? this.visualizeWhitespace(part.value) : part.value;
                 
@@ -3730,7 +3798,6 @@ class DiffModal extends Modal {
             return fragment;
         };
 
-        // 渲染单行
         const renderLine = (content: string | DocumentFragment, type: ProcessedDiff['type'], lineNumLeft: number | null, lineNumRight: number | null, moveId?: number, oldContentForRevert: string | null = null) => {
             const lineEl = container.createEl('div', { cls: `diff-line diff-${type}` });
             
@@ -3748,7 +3815,6 @@ class DiffModal extends Modal {
             
             const gutterCol = lineEl.createEl('div', { cls: 'diff-gutter-column' });
 
-            // 行号
             const numsRow = gutterCol.createEl('div', { cls: 'diff-gutter-nums' });
             if (this.showLineNumbers) {
                 if (lineNumLeft) numsRow.createEl('span', { text: String(lineNumLeft) });
@@ -3756,7 +3822,6 @@ class DiffModal extends Modal {
                 if (lineNumRight) numsRow.createEl('span', { text: String(lineNumRight) });
             }
 
-            // 操作按钮
             const opsRow = gutterCol.createEl('div', { cls: 'diff-gutter-ops' });
             const historyBtn = opsRow.createEl('span', { text: '📜', cls: 'diff-line-history-btn', attr: { 'aria-label': '查看行历史', 'title': '查看行历史' } });
             historyBtn.addEventListener('click', (e) => {
@@ -3765,19 +3830,14 @@ class DiffModal extends Modal {
             });
     
             if (this.secondVersionId === 'current') {
-                // 紧凑模式下 Modified 行既有撤销也有应用，因为它是混合体
-                // 这里简单处理：Modified 视为 Added (最终状态)，所以提供撤销
                 if (type === 'added' || (type === 'modified' && lineNumRight)) {
                     const revertBtn = opsRow.createEl('span', { text: '↩️', cls: 'diff-line-action-btn', attr: { 'aria-label': '撤销此更改', 'title': '撤销更改' } });
-                    // 对于 Modified，oldContentForRevert 是必须的
                     const newContent = typeof content === 'string' ? content : (content.textContent || ''); 
                     revertBtn.addEventListener('click', (e) => {
                         e.stopPropagation();
-                        // 如果是 Modified，我们需要 revert 到旧内容
                         this.revertChanges(newContent, lineNumRight!, oldContentForRevert); 
                     });
                 }
-                // 纯删除行提供恢复
                 if (type === 'removed' && !lineNumRight) {
                     const applyBtn = opsRow.createEl('span', { text: '📥', cls: 'diff-line-action-btn', attr: { 'aria-label': '恢复此行', 'title': '恢复内容' } });
                     applyBtn.addEventListener('click', (e) => {
@@ -3792,7 +3852,7 @@ class DiffModal extends Modal {
             else if (type === 'removed') marker = '-';
             else if (type === 'moved-from') marker = '⮫';
             else if (type === 'moved-to') marker = '⮪';
-            else if (type === 'modified') marker = '~'; // 紧凑模式的修改标记
+            else if (type === 'modified') marker = '~';
 
             lineEl.createEl('span', { cls: 'diff-marker', text: marker });
             
@@ -3803,7 +3863,6 @@ class DiffModal extends Modal {
                 contentEl.appendChild(content);
             }
             
-            // 移动端交互
             if (Platform.isMobile) {
                 lineEl.addEventListener('dblclick', (e) => {
                     e.stopPropagation();
@@ -3821,7 +3880,6 @@ class DiffModal extends Modal {
             const part = processedDiff[i];
             const nextPart = processedDiff[i + 1];
 
-            // 核心逻辑：当检测到移除紧接着新增时，尝试合并
             if (part.removed && nextPart && nextPart.added) {
                 const leftLines = part.value.replace(/\n$/, '').split('\n');
                 const rightLines = nextPart.value.replace(/\n$/, '').split('\n');
@@ -3830,57 +3888,43 @@ class DiffModal extends Modal {
                     let lIndex = 0;
                     let rIndex = 0;
 
-                    // 智能对齐循环
                     while (lIndex < leftLines.length || rIndex < rightLines.length) {
                         const lLine = leftLines[lIndex];
                         const rLine = rightLines[rIndex];
 
-                        // 左侧空，右侧有 -> 纯新增
                         if (lLine === undefined) {
                             renderLine(rLine, 'added', null, rightLineNum++, undefined, null);
                             rIndex++;
                             continue;
                         }
 
-                        // 右侧空，左侧有 -> 纯删除
                         if (rLine === undefined) {
                             renderLine(lLine, 'removed', leftLineNum++, null);
                             lIndex++;
                             continue;
                         }
 
-                        // 计算相似度
                         const currentSim = this.calculateSimilarity(lLine, rLine);
 
-                        // 向后看：右侧下一行是否更匹配左侧当前行？（说明右侧当前行是插入的）
                         const nextRightLine = rightLines[rIndex + 1];
                         const insertionSim = nextRightLine ? this.calculateSimilarity(lLine, nextRightLine) : 0;
 
-                        // 向后看：左侧下一行是否更匹配右侧当前行？（说明左侧当前行是删除的）
                         const nextLeftLine = leftLines[lIndex + 1];
                         const deletionSim = nextLeftLine ? this.calculateSimilarity(nextLeftLine, rLine) : 0;
 
-                        // 阈值控制：数值越高越难判定为插入/删除，越容易判定为修改（合并）
-                        // 为了达到“字符级”效果，我们要倾向于判定为修改，所以提高阈值
                         const threshold = 30; 
 
                         if (insertionSim > currentSim + threshold) {
-                            // 判定为插入
                             renderLine(rLine, 'added', null, rightLineNum++, undefined, null);
                             rIndex++;
                         } else if (deletionSim > currentSim + threshold) {
-                            // 判定为删除
                             renderLine(lLine, 'removed', leftLineNum++, null);
                             lIndex++;
                         } else {
-                            // 判定为修改 -> 进行行内字符级对比
-                            // 强制使用 secondaryDiffFn 计算差异
                             const lineDiff = secondaryDiffFn(lLine, rLine);
                             
-                            // 关键：includeRemoved = true，这样我们才能看到一行里原本是什么
                             const combinedFrag = createHighlightedFragment(lineDiff, true);
                             
-                            // 渲染为 'modified' 类型，同时传入旧内容以便撤销
                             renderLine(combinedFrag, 'modified', leftLineNum++, rightLineNum++, undefined, lLine);
                             lIndex++;
                             rIndex++;
@@ -3888,8 +3932,6 @@ class DiffModal extends Modal {
                     }
                 }
                 else if (leftLines.length === rightLines.length) {
-                    // 非紧凑模式，但行数相同，尝试并排显示（实际上统一视图是上下）
-                    // 这里原逻辑是保留的，会渲染成一红一绿
                     const minLen = Math.min(leftLines.length, rightLines.length);
                     for (let j = 0; j < minLen; j++) {
                         const oldLine = leftLines[j];
@@ -3903,13 +3945,11 @@ class DiffModal extends Modal {
                         renderLine(rightFrag, 'added', null, rightLineNum++, undefined, oldLine);
                     }
                 } else {
-                    // 完全不匹配，直接显示一堆删，一堆增
                     leftLines.forEach(line => renderLine(line, 'removed', leftLineNum++, null));
                     rightLines.forEach(line => renderLine(line, 'added', null, rightLineNum++, undefined, null));
                 }
-                i++; // 跳过 nextPart
+                i++; 
             } else { 
-                // 处理 Context, Moved, 单独 Added/Removed
                 const lines = part.value.replace(/\n$/, '').split('\n');
                 
                 if (part.type === 'context') {
@@ -5343,7 +5383,6 @@ class LineHistoryModal extends Modal {
             const btn = item.createEl('button', { text: '查看' });
             btn.addEventListener('click', () => {
                 this.close();
-                // 打开差异对比 Modal，对比该版本
                 new DiffModal(this.app, this.plugin, this.file, v.id).open();
             });
         });
