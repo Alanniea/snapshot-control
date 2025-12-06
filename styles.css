@@ -1243,6 +1243,11 @@
     border-left: 3px solid #d29922;
 }
 
+/* 紧凑视图混合状态的特殊背景（合并代码后补充） */
+.diff-line.diff-modified {
+    background-color: rgba(255, 200, 0, 0.1); 
+}
+
 .diff-added .diff-marker {
     color: #2ea043;
 }
@@ -1280,9 +1285,11 @@
     padding: 1px 2px;
 }
 
-/* 具体差异文字高亮 */
+/* 具体差异文字高亮 - 覆盖并增强 */
 .diff-word-added {
-    background-color: rgba(46, 160, 67, 0.4) !important;
+    background-color: rgba(46, 160, 67, 0.4) !important; /* 调整为更柔和的绿色 */
+    /* 紧凑模式覆盖 */
+    background-color: rgba(100, 255, 100, 0.25);
     color: var(--text-normal);
     border-radius: 2px;
     padding: 0 3px;
@@ -1291,10 +1298,15 @@
 }
 
 .diff-word-removed {
-    background-color: rgba(248, 81, 73, 0.4) !important;
+    background-color: rgba(248, 81, 73, 0.4) !important; /* 调整为更柔和的红色 */
+    /* 紧凑模式覆盖 */
+    background-color: rgba(255, 100, 100, 0.25);
     color: var(--text-muted);
     border-bottom: 1px solid rgba(244, 67, 54, 0.4);
-    text-decoration: none !important;
+    
+    /* 关键：强制使用删除线，确保紧凑视图效果 */
+    text-decoration: line-through !important;
+    
     border-radius: 2px;
     opacity: 0.85;
     padding: 0 3px;
@@ -1617,6 +1629,17 @@
 .theme-dark .diff-char-removed {
     background: rgba(248, 81, 73, 0.5);
     box-shadow: 0 0 0 1px rgba(248, 81, 73, 0.5);
+}
+
+/* 紧凑视图 - 深色模式适配 */
+.theme-dark .diff-word-removed {
+    background-color: rgba(180, 50, 50, 0.4);
+}
+.theme-dark .diff-word-added {
+    background-color: rgba(40, 150, 40, 0.4);
+}
+.theme-dark .diff-line.diff-modified {
+    background-color: rgba(150, 120, 0, 0.15);
 }
 
 .theme-dark .diff-panel {
