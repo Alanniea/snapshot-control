@@ -3647,6 +3647,7 @@ class DiffModal extends Modal {
     }
 
     renderUnifiedDiff(container: HTMLElement, left: string, right: string) {
+        // 如果全局粒度直接选了 char/word，使用原逻辑（流式显示）
         if (this.currentGranularity === 'char' || this.currentGranularity === 'word') {
             const diffFn = this.currentGranularity === 'char'
                 ? Diff.diffChars
@@ -3678,6 +3679,8 @@ class DiffModal extends Modal {
             return;
         }
 
+        // --- 行级/统一视图逻辑开始 ---
+
         const diffResult = Diff.diffLines(left, right, { ignoreWhitespace: this.ignoreWhitespace });
         const processedDiff: ProcessedDiff[] = this.enableMoveDetection 
             ? this.processDiffForMoves(diffResult) 
@@ -3689,14 +3692,20 @@ class DiffModal extends Modal {
         
         const useCompactView = this.plugin.settings.compactUnifiedDiff;
 
+        // 获取行内差异算法。如果想要极致精准，建议在设置里把"行内差异算法"设为"按字符"
+        // 或者我们在这里针对紧凑视图强制使用 diffChars (视需求而定)
         const getSecondaryDiffFn = () => {
+             // 技巧：如果你希望紧凑视图总是字符级精准，可以直接返回 Diff.diffChars
+             // 这里还是尊重用户的设置，但建议用户开启 "按字符"
             return this.plugin.settings.inlineDiffAlgorithm === 'char' ? Diff.diffChars : (this.plugin.settings.smartWordDiff ? this.smartDiffWords : Diff.diffWordsWithSpace);
         };
         const secondaryDiffFn = getSecondaryDiffFn();
 
+        // 辅助函数：创建高亮片段
         const createHighlightedFragment = (diffParts: Diff.Change[], includeRemoved: boolean = true): DocumentFragment => {
             const fragment = document.createDocumentFragment();
             diffParts.forEach(part => {
+                // CSS 类名决定颜色
                 const className = part.added ? 'diff-word-added' : (part.removed ? 'diff-word-removed' : '');
                 const processedText = this.showWhitespace ? this.visualizeWhitespace(part.value) : part.value;
                 
@@ -3721,6 +3730,7 @@ class DiffModal extends Modal {
             return fragment;
         };
 
+        // 渲染单行
         const renderLine = (content: string | DocumentFragment, type: ProcessedDiff['type'], lineNumLeft: number | null, lineNumRight: number | null, moveId?: number, oldContentForRevert: string | null = null) => {
             const lineEl = container.createEl('div', { cls: `diff-line diff-${type}` });
             
@@ -3738,6 +3748,7 @@ class DiffModal extends Modal {
             
             const gutterCol = lineEl.createEl('div', { cls: 'diff-gutter-column' });
 
+            // 行号
             const numsRow = gutterCol.createEl('div', { cls: 'diff-gutter-nums' });
             if (this.showLineNumbers) {
                 if (lineNumLeft) numsRow.createEl('span', { text: String(lineNumLeft) });
@@ -3745,8 +3756,8 @@ class DiffModal extends Modal {
                 if (lineNumRight) numsRow.createEl('span', { text: String(lineNumRight) });
             }
 
+            // 操作按钮
             const opsRow = gutterCol.createEl('div', { cls: 'diff-gutter-ops' });
-            
             const historyBtn = opsRow.createEl('span', { text: '📜', cls: 'diff-line-history-btn', attr: { 'aria-label': '查看行历史', 'title': '查看行历史' } });
             historyBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
@@ -3754,16 +3765,21 @@ class DiffModal extends Modal {
             });
     
             if (this.secondVersionId === 'current') {
+                // 紧凑模式下 Modified 行既有撤销也有应用，因为它是混合体
+                // 这里简单处理：Modified 视为 Added (最终状态)，所以提供撤销
                 if (type === 'added' || (type === 'modified' && lineNumRight)) {
                     const revertBtn = opsRow.createEl('span', { text: '↩️', cls: 'diff-line-action-btn', attr: { 'aria-label': '撤销此更改', 'title': '撤销更改' } });
-                    const newContent = typeof content === 'string' ? content : content.textContent || '';
+                    // 对于 Modified，oldContentForRevert 是必须的
+                    const newContent = typeof content === 'string' ? content : (content.textContent || ''); 
                     revertBtn.addEventListener('click', (e) => {
                         e.stopPropagation();
-                        this.revertChanges(newContent, lineNumRight!, oldContentForRevert);
+                        // 如果是 Modified，我们需要 revert 到旧内容
+                        this.revertChanges(newContent, lineNumRight!, oldContentForRevert); 
                     });
                 }
-                if (type === 'removed' || (type === 'modified' && lineNumLeft)) {
-                    const applyBtn = opsRow.createEl('span', { text: '📥', cls: 'diff-line-action-btn', attr: { 'aria-label': '应用此更改', 'title': '恢复内容' } });
+                // 纯删除行提供恢复
+                if (type === 'removed' && !lineNumRight) {
+                    const applyBtn = opsRow.createEl('span', { text: '📥', cls: 'diff-line-action-btn', attr: { 'aria-label': '恢复此行', 'title': '恢复内容' } });
                     applyBtn.addEventListener('click', (e) => {
                         e.stopPropagation();
                         this.applyChanges(typeof content === 'string' ? content : content.textContent || '', lineNumRight || rightLineNum);
@@ -3776,7 +3792,7 @@ class DiffModal extends Modal {
             else if (type === 'removed') marker = '-';
             else if (type === 'moved-from') marker = '⮫';
             else if (type === 'moved-to') marker = '⮪';
-            else if (type === 'modified') marker = '~';
+            else if (type === 'modified') marker = '~'; // 紧凑模式的修改标记
 
             lineEl.createEl('span', { cls: 'diff-marker', text: marker });
             
@@ -3786,7 +3802,8 @@ class DiffModal extends Modal {
             } else {
                 contentEl.appendChild(content);
             }
-
+            
+            // 移动端交互
             if (Platform.isMobile) {
                 lineEl.addEventListener('dblclick', (e) => {
                     e.stopPropagation();
@@ -3804,6 +3821,7 @@ class DiffModal extends Modal {
             const part = processedDiff[i];
             const nextPart = processedDiff[i + 1];
 
+            // 核心逻辑：当检测到移除紧接着新增时，尝试合并
             if (part.removed && nextPart && nextPart.added) {
                 const leftLines = part.value.replace(/\n$/, '').split('\n');
                 const rightLines = nextPart.value.replace(/\n$/, '').split('\n');
@@ -3817,21 +3835,21 @@ class DiffModal extends Modal {
                         const lLine = leftLines[lIndex];
                         const rLine = rightLines[rIndex];
 
-                        // 左侧空，右侧有 -> 新增
+                        // 左侧空，右侧有 -> 纯新增
                         if (lLine === undefined) {
                             renderLine(rLine, 'added', null, rightLineNum++, undefined, null);
                             rIndex++;
                             continue;
                         }
 
-                        // 右侧空，左侧有 -> 删除
+                        // 右侧空，左侧有 -> 纯删除
                         if (rLine === undefined) {
                             renderLine(lLine, 'removed', leftLineNum++, null);
                             lIndex++;
                             continue;
                         }
 
-                        // 智能判断：对比相似度
+                        // 计算相似度
                         const currentSim = this.calculateSimilarity(lLine, rLine);
 
                         // 向后看：右侧下一行是否更匹配左侧当前行？（说明右侧当前行是插入的）
@@ -3842,7 +3860,9 @@ class DiffModal extends Modal {
                         const nextLeftLine = leftLines[lIndex + 1];
                         const deletionSim = nextLeftLine ? this.calculateSimilarity(nextLeftLine, rLine) : 0;
 
-                        const threshold = 20; // 相似度差异阈值
+                        // 阈值控制：数值越高越难判定为插入/删除，越容易判定为修改（合并）
+                        // 为了达到“字符级”效果，我们要倾向于判定为修改，所以提高阈值
+                        const threshold = 30; 
 
                         if (insertionSim > currentSim + threshold) {
                             // 判定为插入
@@ -3853,9 +3873,14 @@ class DiffModal extends Modal {
                             renderLine(lLine, 'removed', leftLineNum++, null);
                             lIndex++;
                         } else {
-                            // 判定为修改（或相似度都很低，强制对齐）
+                            // 判定为修改 -> 进行行内字符级对比
+                            // 强制使用 secondaryDiffFn 计算差异
                             const lineDiff = secondaryDiffFn(lLine, rLine);
+                            
+                            // 关键：includeRemoved = true，这样我们才能看到一行里原本是什么
                             const combinedFrag = createHighlightedFragment(lineDiff, true);
+                            
+                            // 渲染为 'modified' 类型，同时传入旧内容以便撤销
                             renderLine(combinedFrag, 'modified', leftLineNum++, rightLineNum++, undefined, lLine);
                             lIndex++;
                             rIndex++;
@@ -3863,8 +3888,9 @@ class DiffModal extends Modal {
                     }
                 }
                 else if (leftLines.length === rightLines.length) {
+                    // 非紧凑模式，但行数相同，尝试并排显示（实际上统一视图是上下）
+                    // 这里原逻辑是保留的，会渲染成一红一绿
                     const minLen = Math.min(leftLines.length, rightLines.length);
-                    
                     for (let j = 0; j < minLen; j++) {
                         const oldLine = leftLines[j];
                         const newLine = rightLines[j];
@@ -3877,15 +3903,13 @@ class DiffModal extends Modal {
                         renderLine(rightFrag, 'added', null, rightLineNum++, undefined, oldLine);
                     }
                 } else {
-                    leftLines.forEach(line => {
-                        renderLine(line, 'removed', leftLineNum++, null);
-                    });
-                    rightLines.forEach(line => {
-                        renderLine(line, 'added', null, rightLineNum++, undefined, null);
-                    });
+                    // 完全不匹配，直接显示一堆删，一堆增
+                    leftLines.forEach(line => renderLine(line, 'removed', leftLineNum++, null));
+                    rightLines.forEach(line => renderLine(line, 'added', null, rightLineNum++, undefined, null));
                 }
-                i++; 
+                i++; // 跳过 nextPart
             } else { 
+                // 处理 Context, Moved, 单独 Added/Removed
                 const lines = part.value.replace(/\n$/, '').split('\n');
                 
                 if (part.type === 'context') {
@@ -3917,15 +3941,10 @@ class DiffModal extends Modal {
                    }
                 } else {
                     for (const line of lines) {
-                        if (part.type === 'moved-from') {
-                            renderLine(line, 'moved-from', leftLineNum++, null, part.moveId);
-                        } else if (part.type === 'moved-to') {
-                            renderLine(line, 'moved-to', null, rightLineNum++, part.moveId);
-                        } else if (part.added) {
-                            renderLine(line, 'added', null, rightLineNum++, undefined, null);
-                        } else if (part.removed) {
-                            renderLine(line, 'removed', leftLineNum++, null);
-                        }
+                        if (part.type === 'moved-from') renderLine(line, 'moved-from', leftLineNum++, null, part.moveId);
+                        else if (part.type === 'moved-to') renderLine(line, 'moved-to', null, rightLineNum++, part.moveId);
+                        else if (part.added) renderLine(line, 'added', null, rightLineNum++, undefined, null);
+                        else if (part.removed) renderLine(line, 'removed', leftLineNum++, null);
                     }
                 }
             }
