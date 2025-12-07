@@ -40,7 +40,7 @@ interface VersionControlSettings {
     enableMaxDays: boolean;
 
     useRelativeTime: boolean;
-    diffGranularity: 'char' | 'word' | 'line' | 'sentence' | 'semantic';
+    diffGranularity: 'char' | 'word' | 'line'; // Removed sentence and semantic
     diffViewMode: 'unified' | 'split';
     enableDeduplication: boolean;
     showNotifications: boolean;
@@ -2316,12 +2316,6 @@ type ProcessedDiff = {
     moveId?: number;
 } & Diff.Change;
 
-interface SemanticBlock {
-    type: 'heading' | 'paragraph' | 'code' | 'list' | 'quote' | 'thematicBreak' | 'unknown';
-    content: string;
-    hash: string;
-}
-
 interface MarkdownSection {
     heading: string;
     level: number;
@@ -2349,7 +2343,7 @@ class DiffModal extends Modal {
     wrapLines: boolean = true;
     leftContent: string = '';
     rightContent: string = '';
-    currentGranularity: 'char' | 'word' | 'line' | 'sentence' | 'semantic';
+    currentGranularity: 'char' | 'word' | 'line'; // Removed sentence and semantic
     contextLines: number;
     enableMoveDetection: boolean = true;
     showWhitespace: boolean = false;
@@ -2532,39 +2526,6 @@ class DiffModal extends Modal {
             });
         });
         return result;
-    }
-
-    private splitIntoSentences(text: string): string[] {
-        if (!text) return [];
-        const sentenceRegex = /.+?[.!?。！？…\n](?:\s|\n|$)|.+?\n\n|.+?$/g;
-        const sentences = text.match(sentenceRegex);
-        return sentences ? sentences.map(s => s.trim()).filter(s => s.length > 0) : [];
-    }
-
-    private parseToSemanticBlocks(text: string): SemanticBlock[] {
-        if (!text) return [];
-        const blocks: SemanticBlock[] = [];
-        const chunks = text.split(/\n\n+/);
-
-        for (const chunk of chunks) {
-            const content = chunk.trim();
-            if (!content) continue;
-
-            let type: SemanticBlock['type'] = 'paragraph';
-
-            if (content.startsWith('#')) type = 'heading';
-            else if (content.startsWith('```')) type = 'code';
-            else if (content.startsWith(' >')) type = 'quote';
-            else if (content.match(/^(\*|-|\+)\s/) || content.match(/^\d+\.\s/)) type = 'list';
-            else if (content.match(/^(---|___|\*\*\*)$/)) type = 'thematicBreak';
-            
-            blocks.push({
-                type,
-                content,
-                hash: this.plugin.hashContent(content)
-            });
-        }
-        return blocks;
     }
 
     async onOpen() {
@@ -2754,8 +2715,6 @@ class DiffModal extends Modal {
             menu.addItem(item => item.setTitle('字符').setChecked(this.currentGranularity === 'char').onClick(() => this.updateGranularity('char')));
             menu.addItem(item => item.setTitle('单词').setChecked(this.currentGranularity === 'word').onClick(() => this.updateGranularity('word')));
             menu.addItem(item => item.setTitle('行').setChecked(this.currentGranularity === 'line').onClick(() => this.updateGranularity('line')));
-            menu.addItem(item => item.setTitle('句子').setChecked(this.currentGranularity === 'sentence').onClick(() => this.updateGranularity('sentence')));
-            menu.addItem(item => item.setTitle('语义').setChecked(this.currentGranularity === 'semantic').onClick(() => this.updateGranularity('semantic')));
 
             menu.addItem(item => item.setTitle('智能对比').setDisabled(true).setSection('diff-settings-group-label'));
             menu.addItem(item => item.setTitle('智能单词模式').setChecked(this.plugin.settings.smartWordDiff).onClick(async () => {
@@ -2785,7 +2744,6 @@ class DiffModal extends Modal {
 
             const isLineBased = this.currentGranularity === 'line';
             const isWordCharBased = this.currentGranularity === 'char' || this.currentGranularity === 'word';
-            const isSentenceSemantic = this.currentGranularity === 'sentence' || this.currentGranularity === 'semantic';
 
             const lineNumAndMoveEnabled = isLineBased;
             
@@ -2797,8 +2755,6 @@ class DiffModal extends Modal {
                 contextTitle += ' (不适用于字符/单词模式)';
             } else if (isLineBased) {
                 contextTitle += ' (0=仅变更, N=显示N行)';
-            } else if (isSentenceSemantic) {
-                contextTitle += ' (0=仅变更, >0=显示全部)';
             }
 
             menu.addItem(item => item.setTitle('自动换行').setChecked(this.wrapLines).onClick(() => { this.wrapLines = !this.wrapLines; this.renderTextDiff(); }));
@@ -2840,14 +2796,11 @@ class DiffModal extends Modal {
             } else {
                 menu.addItem(item => item
                     .setTitle(`自定义上下文行数... (当前: ${this.contextLines >= 9999 ? '全部' : this.contextLines})`)
-                    .setDisabled(isSentenceSemantic)
                     .onClick(() => {
-                        if (!isSentenceSemantic) {
-                            new ContextLineInputModal(this.app, this.contextLines, (lines) => {
-                                this.contextLines = lines;
-                                this.renderTextDiff();
-                            }).open();
-                        }
+                        new ContextLineInputModal(this.app, this.contextLines, (lines) => {
+                            this.contextLines = lines;
+                            this.renderTextDiff();
+                        }).open();
                     }));
             }
 
@@ -3024,7 +2977,7 @@ class DiffModal extends Modal {
         }, 100);
     }
 
-    updateGranularity(granularity: 'char' | 'word' | 'line' | 'sentence' | 'semantic') {
+    updateGranularity(granularity: 'char' | 'word' | 'line') {
         this.currentGranularity = granularity;
         this.collapsedSections.clear();
         this.renderTextDiff();
@@ -3435,30 +3388,18 @@ class DiffModal extends Modal {
         
         const modeSelect = this.containerEl.querySelector('.diff-select[aria-label="视图模式"]') as HTMLSelectElement;
         
-        if (this.currentGranularity === 'sentence') {
-            if (modeSelect.value === 'unified') {
-                container.removeClass('diff-split');
-                this.renderSentenceUnifiedDiff(container, leftProcessed, rightProcessed);
-            } else {
-                container.addClass('diff-split');
-                const leftLabelEl = this.containerEl.querySelector('#diff-left-version-btn') as HTMLElement;
-                const rightLabelEl = this.containerEl.querySelector('#diff-right-version-btn') as HTMLElement;
-                this.renderSentenceSplitDiff(container, leftProcessed, rightProcessed, leftLabelEl.textContent || '版本 A', rightLabelEl.textContent || '版本 B');
-            }
-        } else if (this.currentGranularity === 'semantic') {
-            this.renderSemanticDiff(container, leftProcessed, rightProcessed);
+        // Removed sentence and semantic conditional blocks here
+        
+        if (modeSelect.value === 'unified') {
+            container.removeClass('diff-split');
+            this.renderUnifiedDiff(container, leftProcessed, rightProcessed);
         } else {
-            if (modeSelect.value === 'unified') {
-                container.removeClass('diff-split');
-                this.renderUnifiedDiff(container, leftProcessed, rightProcessed);
-            } else {
-                container.addClass('diff-split');
-                const leftLabelEl = this.containerEl.querySelector('#diff-left-version-btn') as HTMLElement;
-                const rightLabelEl = this.containerEl.querySelector('#diff-right-version-btn') as HTMLElement;
-                this.renderSplitDiff(container, leftProcessed, rightProcessed, leftLabelEl.textContent || '版本 A', rightLabelEl.textContent || '版本 B');
-                
-                this.alignSplitViewLines();
-            }
+            container.addClass('diff-split');
+            const leftLabelEl = this.containerEl.querySelector('#diff-left-version-btn') as HTMLElement;
+            const rightLabelEl = this.containerEl.querySelector('#diff-right-version-btn') as HTMLElement;
+            this.renderSplitDiff(container, leftProcessed, rightProcessed, leftLabelEl.textContent || '版本 A', rightLabelEl.textContent || '版本 B');
+            
+            this.alignSplitViewLines();
         }
 
         if (this.wrapLines) container.addClass('diff-wrap-lines');
@@ -4256,226 +4197,6 @@ class DiffModal extends Modal {
         }
     }
 
-    renderSentenceUnifiedDiff(container: HTMLElement, left: string, right: string) {
-        const leftSentences = this.splitIntoSentences(left);
-        const rightSentences = this.splitIntoSentences(right);
-        const diffResult = Diff.diffArrays(leftSentences, rightSentences);
-        
-        let diffIdx = 0;
-        const secondaryDiffFn = this.plugin.settings.smartWordDiff ? this.smartDiffWords : Diff.diffWordsWithSpace;
-
-        const createHighlightedFragment = (diffParts: Diff.Change[]): DocumentFragment => {
-            const fragment = document.createDocumentFragment();
-            diffParts.forEach(part => {
-                const className = part.added ? 'diff-word-added' : part.removed ? 'diff-word-removed' : '';
-                fragment.append(createEl('span', { text: part.value, cls: className }));
-            });
-            return fragment;
-        };
-
-        const renderSentence = (content: string | DocumentFragment, type: 'added' | 'removed' | 'modified' | 'context') => {
-            const sentenceEl = container.createEl('div', { cls: `diff-line diff-${type}` });
-            if (type !== 'context') {
-                sentenceEl.dataset.diffIndex = String(diffIdx++);
-                this.diffElements.push(sentenceEl);
-            }
-            
-            let marker = ' ';
-            if (type === 'added') marker = '+';
-            else if (type === 'removed') marker = '-';
-            else if (type === 'modified') marker = '~';
-            sentenceEl.createEl('span', { cls: 'diff-marker', text: marker });
-
-            const contentEl = sentenceEl.createEl('span', { cls: 'line-content' });
-            if (typeof content === 'string') {
-                contentEl.setText(content);
-            } else {
-                contentEl.appendChild(content);
-            }
-        };
-
-        for (let i = 0; i < diffResult.length; i++) {
-            const part = diffResult[i];
-            const nextPart = diffResult[i + 1];
-
-            if (part.removed && nextPart && nextPart.added) {
-                const removedText = part.value.join(' ');
-                const addedText = nextPart.value.join(' ');
-                const wordDiff = secondaryDiffFn(removedText, addedText);
-                renderSentence(createHighlightedFragment(wordDiff), 'modified');
-                i++;
-            } else if (part.added) {
-                part.value.forEach(sentence => renderSentence(sentence, 'added'));
-            } else if (part.removed) {
-                part.value.forEach(sentence => renderSentence(sentence, 'removed'));
-            } else {
-                if (this.contextLines > 0) { 
-                    part.value.forEach(sentence => renderSentence(sentence, 'context'));
-                }
-            }
-        }
-    }
-
-    renderSentenceSplitDiff(container: HTMLElement, left: string, right: string, leftLabel: string, rightLabel: string) {
-        const leftPanel = container.createEl('div', { cls: 'diff-panel' });
-        const rightPanel = container.createEl('div', { cls: 'diff-panel' });
-
-        leftPanel.createEl('h3', { text: leftLabel });
-        rightPanel.createEl('h3', { text: rightLabel });
-
-        const leftContentEl = leftPanel.createEl('div', { cls: 'diff-content' });
-        const rightContentEl = rightPanel.createEl('div', { cls: 'diff-content' });
-
-        const leftSentences = this.splitIntoSentences(left);
-        const rightSentences = this.splitIntoSentences(right);
-        const diffResult = Diff.diffArrays(leftSentences, rightSentences);
-        
-        let diffIdx = 0;
-        const secondaryDiffFn = this.plugin.settings.smartWordDiff ? this.smartDiffWords : Diff.diffWordsWithSpace;
-
-        const createHighlightedFragment = (diffParts: Diff.Change[], type: 'added' | 'removed'): DocumentFragment => {
-            const fragment = document.createDocumentFragment();
-            diffParts.forEach(part => {
-                if (type === 'added' && part.removed) return;
-                if (type === 'removed' && part.added) return;
-                const className = part.added ? 'diff-word-added' : part.removed ? 'diff-word-removed' : '';
-                fragment.append(createEl('span', { text: part.value, cls: className }));
-            });
-            return fragment;
-        };
-
-        const renderSentence = (panel: HTMLElement, content: string | DocumentFragment, type: string) => {
-            const sentenceEl = panel.createEl('div', { cls: `diff-line diff-${type}` });
-             if (type !== 'context' && type !== 'placeholder') {
-                sentenceEl.dataset.diffIndex = String(diffIdx++);
-                this.diffElements.push(sentenceEl);
-            }
-            const contentEl = sentenceEl.createEl('span', { cls: 'line-content' });
-            if (typeof content === 'string') {
-                contentEl.setText(content);
-            } else {
-                contentEl.appendChild(content);
-            }
-        };
-
-        for (let i = 0; i < diffResult.length; i++) {
-            const part = diffResult[i];
-            const nextPart = diffResult[i + 1];
-
-            if (part.removed && nextPart && nextPart.added) {
-                const removedText = part.value.join(' ');
-                const addedText = nextPart.value.join(' ');
-                const wordDiff = secondaryDiffFn(removedText, addedText);
-                renderSentence(leftContentEl, createHighlightedFragment(wordDiff, 'removed'), 'modified');
-                renderSentence(rightContentEl, createHighlightedFragment(wordDiff, 'added'), 'modified');
-                i++;
-            } else if (part.added) {
-                part.value.forEach(sentence => {
-                    renderSentence(leftContentEl, '', 'placeholder');
-                    renderSentence(rightContentEl, sentence, 'added');
-                });
-            } else if (part.removed) {
-                part.value.forEach(sentence => {
-                    renderSentence(leftContentEl, sentence, 'removed');
-                    renderSentence(rightContentEl, '', 'placeholder');
-                });
-            } else {
-                if (this.contextLines > 0) { 
-                    part.value.forEach(sentence => {
-                        renderSentence(leftContentEl, sentence, 'context');
-                        renderSentence(rightContentEl, sentence, 'context');
-                    });
-                }
-            }
-        }
-    }
-
-    renderSemanticDiff(container: HTMLElement, left: string, right: string) {
-        const leftBlocks = this.parseToSemanticBlocks(left);
-        const rightBlocks = this.parseToSemanticBlocks(right);
-
-        const findBestMatch = (block: SemanticBlock, candidates: SemanticBlock[], usedIndices: Set<number>): { index: number; score: number } | null => {
-            let bestMatch: { index: number; score: number } | null = null;
-            for (let i = 0; i < candidates.length; i++) {
-                if (usedIndices.has(i)) continue;
-                const score = this.calculateSimilarity(block.content, candidates[i].content);
-                if (score > (bestMatch?.score || 0.5)) {
-                    bestMatch = { index: i, score: score };
-                }
-            }
-            return bestMatch;
-        };
-
-        const matches: (number | null)[] = new Array(leftBlocks.length).fill(null);
-        const usedRightIndices = new Set<number>();
-
-        for (let i = 0; i < leftBlocks.length; i++) {
-            const bestMatch = findBestMatch(leftBlocks[i], rightBlocks, usedRightIndices);
-            if (bestMatch) {
-                matches[i] = bestMatch.index;
-                usedRightIndices.add(bestMatch.index);
-            }
-        }
-
-        let diffIdx = 0;
-        const renderBlock = (block: SemanticBlock, type: 'added' | 'removed' | 'context' | 'modified', innerDiffContainer?: HTMLElement) => {
-            const blockEl = container.createEl('div', { cls: `diff-semantic-block diff-${type}` });
-            if (type !== 'context') {
-                blockEl.dataset.diffIndex = String(diffIdx++);
-                this.diffElements.push(blockEl);
-            }
-            
-            const header = blockEl.createEl('div', { cls: 'diff-semantic-header' });
-            let marker = ' ';
-            if (type === 'added') marker = '+';
-            else if (type === 'removed') marker = '-';
-            else if (type === 'modified') marker = '~';
-            header.createEl('span', { cls: 'diff-marker', text: marker });
-            header.createEl('span', { text: block.type.toUpperCase(), cls: 'diff-semantic-type' });
-
-            const contentEl = blockEl.createEl('div', { cls: 'diff-semantic-content' });
-            if (innerDiffContainer) {
-                contentEl.appendChild(innerDiffContainer);
-            } else {
-                contentEl.createEl('pre', { text: block.content });
-            }
-        };
-
-        let rightIdx = 0;
-        for (let i = 0; i < leftBlocks.length; i++) {
-            const matchIndex = matches[i];
-            
-            while (rightIdx < (matchIndex ?? rightBlocks.length)) {
-                if (![...usedRightIndices].includes(rightIdx)) {
-                    renderBlock(rightBlocks[rightIdx], 'added');
-                }
-                rightIdx++;
-            }
-
-            if (matchIndex !== null) {
-                const leftBlock = leftBlocks[i];
-                const rightBlock = rightBlocks[matchIndex];
-                if (leftBlock.hash === rightBlock.hash) {
-                    if (this.contextLines > 0) renderBlock(leftBlock, 'context'); 
-                } else {
-                    const innerDiffContainer = createDiv();
-                    this.renderUnifiedDiff(innerDiffContainer, leftBlock.content, rightBlock.content);
-                    renderBlock(rightBlock, 'modified', innerDiffContainer);
-                }
-                rightIdx = matchIndex + 1;
-            } else {
-                renderBlock(leftBlocks[i], 'removed');
-            }
-        }
-
-        while (rightIdx < rightBlocks.length) {
-            if (!usedRightIndices.has(rightIdx)) {
-                renderBlock(rightBlocks[rightIdx], 'added');
-            }
-            rightIdx++;
-        }
-    }
-
     scrollToDiff() {
         if (this.diffElements.length === 0 || this.currentDiffIndex >= this.diffElements.length) return;
         const element = this.diffElements[this.currentDiffIndex];
@@ -5043,10 +4764,8 @@ class VersionControlSettingTab extends PluginSettingTab {
                 .addOption('char', '字符级')
                 .addOption('word', '单词级')
                 .addOption('line', '行级')
-                .addOption('sentence', '句子级 (适合长文)')
-                .addOption('semantic', '语义级 (实验性)')
                 .setValue(this.plugin.settings.diffGranularity)
-                .onChange(async (value: 'char' | 'word' | 'line' | 'sentence' | 'semantic') => {
+                .onChange(async (value: 'char' | 'word' | 'line') => {
                     this.plugin.settings.diffGranularity = value;
                     await this.plugin.saveSettings();
                 }));
