@@ -307,7 +307,6 @@ export default class VersionControlPlugin extends Plugin {
         return `${this.settings.versionFolder}/${sanitized}.json`;
     }
 
-    // [Fix 3] 竞态条件修复：处理重命名时清理新旧路径的 Pending Save
     async handleRename(file: TFile, oldPath: string) {
         await this.withLock(oldPath, async () => {
             const adapter = this.app.vault.adapter;
@@ -336,19 +335,16 @@ export default class VersionControlPlugin extends Plugin {
             }
         });
         
-        // 1. 清理旧路径的 pending save
         const pendingOld = this.pendingSaves.get(oldPath);
         if (pendingOld) {
             clearTimeout(pendingOld);
             this.pendingSaves.delete(oldPath);
         }
 
-        // 2. 清理新路径可能产生的 pending save (防止覆盖刚移动过来的历史)
         const pendingNew = this.pendingSaves.get(file.path);
         if (pendingNew) {
             clearTimeout(pendingNew);
             this.pendingSaves.delete(file.path);
-            // 重新挂起一个新的保存任务，确保内容变更被捕获
             this.handleFileModify(file); 
         }
     }
@@ -462,7 +458,6 @@ export default class VersionControlPlugin extends Plugin {
                     const latestVersion = versions[0];
                     const currentHash = this.hashContent(content);
                     
-                    // 注意：这里的快速检查只是为了性能，真正的防碰撞检查在 createVersionInternal
                     if (latestVersion.hash === currentHash) {
                         return;
                     }
@@ -546,7 +541,6 @@ export default class VersionControlPlugin extends Plugin {
         });
     }
 
-    // [Fix 1] 核心修复：哈希碰撞保护
     private async createVersionInternal(file: TFile, message: string, showNotification: boolean, tags: string[], isManual: boolean, content: string) {
         try {
             const timestamp = Date.now();
@@ -558,7 +552,6 @@ export default class VersionControlPlugin extends Plugin {
             if (this.settings.enableDeduplication) {
                 const latestVersion = versionFile.versions[0];
                 if (latestVersion && latestVersion.hash === hash) {
-                    // 哈希相同，进行二次确认
                     let contentReallyIdentical = false;
                     try {
                         const prevContent = await this.getVersionContent(file.path, latestVersion.id, true);
@@ -729,7 +722,6 @@ export default class VersionControlPlugin extends Plugin {
         throw new Error(`版本 ${versionId} 数据不完整`);
     }
 
-    // [Fix 6] 确保清理逻辑中引用完整列表
     async cleanupVersionsInMemory(versionFile: VersionFile): Promise<number> {
         const originalCount = versionFile.versions.length;
         
@@ -759,7 +751,6 @@ export default class VersionControlPlugin extends Plugin {
                     try {
                         console.log(`[VersionControl] 版本 ${v.id} 的基准将被清理，正在将其转换为完整快照...`);
                         
-                        // 注意：这里我们使用 versionFile.versions（完整列表）来解析内容
                         const fullContent = this.resolveContentFromList(versionFile.versions, v.id);
                         
                         v.content = fullContent;
@@ -871,7 +862,6 @@ export default class VersionControlPlugin extends Plugin {
     async getVersions(filePath: string, page: number = 0): Promise<VersionData[]> { try { const versionFile = await this.loadVersionFile(filePath); if (this.settings.versionsPerPage > 0) { const start = page * this.settings.versionsPerPage; const end = start + this.settings.versionsPerPage; return versionFile.versions.slice(start, end); } return versionFile.versions; } catch (error) { console.error('获取版本列表失败:', error); return []; } }
     async getAllVersions(filePath: string): Promise<VersionData[]> { try { const versionFile = await this.loadVersionFile(filePath); return versionFile.versions; } catch (error) { console.error('获取版本列表失败:', error); return []; } }
     
-    // [Fix 5] 获取版本内容时的错误提示
     async getVersionContent(filePath: string, versionId: string, suppressNotice: boolean = false, strictMode: boolean = false): Promise<string> { 
         try { 
             const versionFile = await this.loadVersionFile(filePath); 
@@ -897,7 +887,6 @@ export default class VersionControlPlugin extends Plugin {
                             if (strictMode) { throw new Error("增量补丁应用失败 (Patch Mismatch)"); } 
                             console.warn(`[VersionControl] 版本 ${vId} 增量还原失败: Diff Patch 不匹配。返回基础内容。`); 
                             
-                            // 增加明确的错误提示
                             if (!suppressNotice) {
                                 new Notice(`⚠️ 版本 ${vId.substring(0,8)} 数据损坏，仅显示基准内容。`);
                             }
@@ -963,7 +952,6 @@ export default class VersionControlPlugin extends Plugin {
         return errors;
     }
 
-    // [Fix 4] 性能优化：降低 UI 阻塞
     async checkAllVersionsIntegrity() { 
         const adapter = this.app.vault.adapter; 
         const folderPath = this.settings.versionFolder; 
@@ -1000,7 +988,6 @@ export default class VersionControlPlugin extends Plugin {
                 report.push({ filePath: originalFilePath, errors }); 
             } 
             
-            // 改为每 5 个文件休息一次，稍微提高响应频率
             if (i % 5 === 0) { 
                 notice.setMessage(`正在检查完整性... ${i + 1}/${total}`); 
                 await new Promise(resolve => setTimeout(resolve, 5)); 
@@ -2484,6 +2471,42 @@ class DiffModal extends Modal {
     }
 
     private smartDiffWords(oldStr: string, newStr: string): Diff.Change[] {
+        // [修复] 使用 Intl.Segmenter 支持中文分词，解决中文对比时字符碎片化问题
+        if (typeof Intl !== 'undefined' && (Intl as any).Segmenter) {
+            try {
+                const segmenter = new (Intl as any).Segmenter(undefined, { granularity: 'word' });
+                const tokenize = (input: string) => Array.from(segmenter.segment(input)).map((s: any) => s.segment);
+                
+                const oldTokens = tokenize(oldStr);
+                const newTokens = tokenize(newStr);
+                
+                const diffResult = Diff.diffArrays(oldTokens, newTokens);
+                
+                // 将结果转换回 Diff.Change 格式
+                const result: Diff.Change[] = [];
+                diffResult.forEach(part => {
+                    const value = part.value.join('');
+                    if (result.length > 0) {
+                        const last = result[result.length - 1];
+                        if (last.added === part.added && last.removed === part.removed) {
+                            last.value += value;
+                            last.count = (last.count || 0) + (part.count || 0);
+                            return;
+                        }
+                    }
+                    result.push({
+                        value: value,
+                        added: part.added,
+                        removed: part.removed,
+                        count: part.count
+                    });
+                });
+                return result;
+            } catch (e) {
+                console.warn("Intl.Segmenter failed, falling back to regex", e);
+            }
+        }
+
         const splitRegex = /(\w+|[^\w]+)/g;
         const oldTokens = oldStr.match(splitRegex) || [];
         const newTokens = newStr.match(splitRegex) || [];
@@ -2548,7 +2571,6 @@ class DiffModal extends Modal {
         const { contentEl } = this;
         contentEl.addClass('diff-modal');
 
-        // [Fix 2] 防止重复注入样式
         const styleId = 'version-control-diff-styles';
         if (!document.getElementById(styleId)) {
             const style = document.createElement('style');
