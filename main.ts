@@ -18,7 +18,7 @@ interface VersionData {
     starred?: boolean;
     addedLines?: number;
     removedLines?: number;
-    modifiedLines?: number; // 新增：用于存储修改行数
+    modifiedLines?: number;
 }
 
 interface VersionFile {
@@ -2358,19 +2358,6 @@ type ProcessedDiff = {
     moveId?: number;
 } & Diff.Change;
 
-interface MarkdownSection {
-    heading: string;
-    level: number;
-    content: string;
-    originalIndex: number;
-}
-
-type SectionDiffResult = 
-    | { type: 'unchanged'; left: MarkdownSection; right: MarkdownSection }
-    | { type: 'modified'; left: MarkdownSection; right: MarkdownSection; diff: ProcessedDiff[] }
-    | { type: 'added'; section: MarkdownSection }
-    | { type: 'removed'; section: MarkdownSection };
-
 class DiffModal extends Modal {
     plugin: VersionControlPlugin;
     file: TFile;
@@ -2390,12 +2377,7 @@ class DiffModal extends Modal {
     enableMoveDetection: boolean = true;
     showWhitespace: boolean = false;
 
-    private currentView: 'text' | 'rendered' | 'structured' = 'text';
     private textDiffContainer: HTMLElement;
-    private renderedDiffContainer: HTMLElement;
-    private structuredDiffContainer: HTMLElement;
-    private isRenderedViewBuilt: boolean = false;
-    private isStructuredViewBuilt: boolean = false;
     private allVersions: VersionData[] = [];
     private infoBannerContainer: HTMLElement;
     private loadingOverlay: HTMLElement;
@@ -2410,7 +2392,7 @@ class DiffModal extends Modal {
         this.currentGranularity = this.plugin.settings.diffGranularity;
         this.contextLines = this.plugin.settings.diffContextLines;
         this.resizeHandler = () => {
-             if (this.currentView === 'text' && this.textDiffContainer && this.textDiffContainer.hasClass('diff-split')) {
+             if (this.textDiffContainer && this.textDiffContainer.hasClass('diff-split')) {
                 this.alignSplitViewLines();
             }
         };
@@ -2699,14 +2681,9 @@ class DiffModal extends Modal {
         const headerContainer = contentEl.createEl('div');
         const mainContainer = contentEl.createEl('div', { cls: 'diff-main-container' });
         this.textDiffContainer = mainContainer.createEl('div', { cls: 'diff-container' });
-        this.renderedDiffContainer = mainContainer.createEl('div', { cls: 'rendered-diff-container', attr: { style: 'display: none;' } });
-        this.structuredDiffContainer = mainContainer.createEl('div', { cls: 'structured-diff-container', attr: { style: 'display: none;' } });
 
         this.loadingOverlay = mainContainer.createEl('div', { cls: 'diff-loading-overlay', attr: { style: 'display: none;' } });
         this.loadingOverlay.createEl('div', { text: '正在加载新版本...', cls: 'diff-loading-message' });
-
-        this.addMobileInteraction(this.renderedDiffContainer);
-        this.addMobileInteraction(this.structuredDiffContainer);
 
         try {
             this.allVersions = await this.plugin.getAllVersions(this.file.path);
@@ -2722,9 +2699,6 @@ class DiffModal extends Modal {
 
         const toolbar = headerContainer.createEl('div', { cls: 'diff-toolbar-redesigned' });
         
-        const viewSwitcher = toolbar.createEl('div', { cls: 'diff-view-switcher' });
-        const textDiffBtn = viewSwitcher.createEl('button', { text: '文本', cls: 'active' });
-
         const navGroup = toolbar.createEl('div', { cls: 'diff-toolbar-group', attr: { id: 'diff-nav-group' } });
         const firstDiffBtn = navGroup.createEl('button', { text: '«', attr: { 'aria-label': '第一个差异' } });
         const prevBtn = navGroup.createEl('button', { text: '‹', attr: { 'aria-label': '上一个差异 (↑)' } });
@@ -2861,32 +2835,14 @@ class DiffModal extends Modal {
         modeSelect.value = this.plugin.settings.diffViewMode;
         modeSelect.addEventListener('change', () => { this.collapsedSections.clear(); this.renderTextDiff(); });
 
-        const switchView = (view: 'text' | 'rendered' | 'structured') => {
-            this.currentView = view;
-            
-            textDiffBtn.toggleClass('active', view === 'text');
-
-            this.textDiffContainer.style.display = view === 'text' ? '' : 'none';
-            this.renderedDiffContainer.style.display = view === 'rendered' ? '' : 'none';
-            this.structuredDiffContainer.style.display = view === 'structured' ? '' : 'none';
-
-            const showTextToolbar = view === 'text';
-            [navGroup, actionsGroup, settingsGroup].forEach(g => g.style.display = showTextToolbar ? 'flex' : 'none');
-
-            if (view === 'rendered' && !this.isRenderedViewBuilt) { this.renderRenderedView(); this.isRenderedViewBuilt = true; }
-            if (view === 'structured' && !this.isStructuredViewBuilt) { this.renderStructuredDiff(); this.isStructuredViewBuilt = true; }
-        };
-
-        textDiffBtn.addEventListener('click', () => switchView('text'));
-
         prevBtn.addEventListener('click', () => this.navigateDiff(-1));
         nextBtn.addEventListener('click', () => this.navigateDiff(1));
         firstDiffBtn.addEventListener('click', () => this.navigateDiff('first'));
         lastDiffBtn.addEventListener('click', () => this.navigateDiff('last'));
 
-        this.scope.register([], 'ArrowUp', () => { if (this.currentView === 'text' && !prevBtn.disabled) prevBtn.click(); return false; });
-        this.scope.register([], 'ArrowDown', () => { if (this.currentView === 'text' && !nextBtn.disabled) nextBtn.click(); return false; });
-        this.scope.register(['Mod'], 'f', (evt) => { if (this.currentView === 'text') { evt.preventDefault(); this.showSearchBox(); } return false; });
+        this.scope.register([], 'ArrowUp', () => { if (!prevBtn.disabled) prevBtn.click(); return false; });
+        this.scope.register([], 'ArrowDown', () => { if (!nextBtn.disabled) nextBtn.click(); return false; });
+        this.scope.register(['Mod'], 'f', (evt) => { evt.preventDefault(); this.showSearchBox(); return false; });
 
         this.textDiffContainer.addEventListener('mouseover', (e) => {
             const target = e.target as HTMLElement;
@@ -2906,111 +2862,6 @@ class DiffModal extends Modal {
         });
 
         await this.updateDiffView();
-    }
-
-    private addMobileInteraction(container: HTMLElement) {
-        let pressTimer: NodeJS.Timeout;
-
-        const startPress = (e: MouseEvent | TouchEvent) => {
-            const target = e.target as HTMLElement;
-            if (!target || target.tagName === 'A' || target.tagName === 'BUTTON') return;
-
-            pressTimer = setTimeout(() => {
-                this.handleViewDoubleClick(e);
-                new Notice('长按跳转成功！');
-            }, 800);
-        };
-
-        const cancelPress = () => {
-            clearTimeout(pressTimer);
-        };
-
-        container.addEventListener('mousedown', startPress);
-        container.addEventListener('mouseup', cancelPress);
-        container.addEventListener('mouseleave', cancelPress);
-        
-        container.addEventListener('touchstart', startPress, { passive: true });
-        container.addEventListener('touchend', cancelPress);
-        container.addEventListener('touchcancel', cancelPress);
-
-        container.addEventListener('dblclick', this.handleViewDoubleClick.bind(this));
-    }
-
-    private handleViewDoubleClick(e: MouseEvent | TouchEvent) {
-        e.preventDefault();
-        const target = e.target as HTMLElement;
-        if (!target) return;
-
-        const textContent = target.textContent?.trim();
-        if (!textContent || textContent.length < 3) {
-            return;
-        }
-
-        const isLeftPanel = target.closest('.rendered-diff-panel:first-child') !== null;
-        const isRightPanel = target.closest('.rendered-diff-panel:last-child') !== null;
-        const structuredSection = target.closest('.structured-section');
-
-        let sourceContent: string | null = null;
-        
-        if (this.currentView === 'rendered') {
-            if (isLeftPanel) sourceContent = this.leftContent;
-            else if (isRightPanel) sourceContent = this.rightContent;
-        } else if (this.currentView === 'structured' && structuredSection) {
-            const sectionType = structuredSection.className.match(/structured-(added|removed|modified)/);
-            if (sectionType) {
-                if (sectionType[1] === 'removed') {
-                    sourceContent = this.leftContent;
-                } else {
-                    sourceContent = this.rightContent;
-                }
-            }
-        }
-
-        if (sourceContent) {
-            this.findLineAndSwitchToTextView(textContent, sourceContent);
-        }
-    }
-
-    private findLineAndSwitchToTextView(searchText: string, sourceContent: string) {
-        const snippet = searchText.substring(0, 50);
-        const matchIndex = sourceContent.indexOf(snippet);
-
-        if (matchIndex === -1) {
-            new Notice('ℹ️ 未能定位到源码位置');
-            return;
-        }
-
-        const precedingText = sourceContent.substring(0, matchIndex);
-        const lineNumber = (precedingText.match(/\n/g) || []).length + 1;
-
-        const viewSwitcher = this.containerEl.querySelector('.diff-view-switcher');
-        const textBtn = viewSwitcher?.querySelector('button:first-child') as HTMLButtonElement;
-        if (textBtn) {
-            textBtn.click();
-        }
-
-        setTimeout(() => {
-            const modeSelect = this.containerEl.querySelector('.diff-select[aria-label="视图模式"]') as HTMLSelectElement;
-            let lineEl: HTMLElement | null = null;
-
-            if (modeSelect.value === 'unified') {
-                lineEl = this.textDiffContainer.querySelector(`.diff-line[data-line-number-right="${lineNumber}"]`) || this.textDiffContainer.querySelector(`.diff-line[data-line-number-left="${lineNumber}"]`);
-            } else {
-                lineEl = this.textDiffContainer.querySelector(`.diff-panel .diff-line[data-line-number="${lineNumber}"]`);
-            }
-
-            if (lineEl) {
-                const highlightedEl = lineEl;
-                highlightedEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                highlightedEl.addClass('diff-line-highlight');
-                new Notice(`✅ 已定位到源码第 ${lineNumber} 行`);
-                setTimeout(() => {
-                    highlightedEl.removeClass('diff-line-highlight');
-                }, 2000);
-            } else {
-                new Notice(`ℹ️ 已切换视图，但无法高亮第 ${lineNumber} 行`);
-            }
-        }, 100);
     }
 
     updateGranularity(granularity: 'char' | 'word' | 'line') {
@@ -3262,19 +3113,7 @@ class DiffModal extends Modal {
             }
 
             this.updateSelectorButtonLabels();
-            
-            this.isRenderedViewBuilt = false;
-            this.isStructuredViewBuilt = false;
-
-            if (this.currentView === 'text') {
-                this.renderTextDiff();
-            } else if (this.currentView === 'rendered') {
-                this.renderRenderedView();
-                this.isRenderedViewBuilt = true;
-            } else if (this.currentView === 'structured') {
-                this.renderStructuredDiff();
-                this.isStructuredViewBuilt = true;
-            }
+            this.renderTextDiff();
 
         } catch (error) {
             console.error("加载差异失败:", error);
@@ -3305,73 +3144,6 @@ class DiffModal extends Modal {
                 rightBtn.setText(version ? `🕒 ${this.plugin.formatTime(version.timestamp)}` : '未知版本');
             }
         }
-    }
-
-    async renderRenderedView() {
-        this.renderedDiffContainer.empty();
-        
-        const leftPanel = this.renderedDiffContainer.createEl('div', { cls: 'rendered-diff-panel' });
-        const rightPanel = this.renderedDiffContainer.createEl('div', { cls: 'rendered-diff-panel' });
-    
-        const leftVersion = this.allVersions.find(v => v.id === this.versionId);
-        const rightVersion = this.allVersions.find(v => v.id === this.secondVersionId);
-    
-        const leftLabel = this.versionId === 'current' ? '当前文件' : (leftVersion ? `版本 A: ${this.plugin.formatTime(leftVersion.timestamp)}` : '版本 A');
-        const rightLabel = this.secondVersionId === 'current' ? '当前文件' : (rightVersion ? `版本 B: ${this.plugin.formatTime(rightVersion.timestamp)}` : '版本 B');
-    
-        leftPanel.createEl('h3', { text: leftLabel });
-        rightPanel.createEl('h3', { text: rightLabel });
-    
-        const leftContentEl = leftPanel.createEl('div', { cls: 'rendered-diff-content' });
-        const rightContentEl = rightPanel.createEl('div', { cls: 'rendered-diff-content' });
-    
-        const diffResult = this.currentGranularity === 'line' 
-            ? Diff.diffLines(this.leftContent, this.rightContent, { ignoreWhitespace: this.ignoreWhitespace })
-            : (this.currentGranularity === 'word' 
-                ? Diff.diffWordsWithSpace(this.leftContent, this.rightContent) 
-                : Diff.diffChars(this.leftContent, this.rightContent));
-    
-        let leftMarked = '';
-        let rightMarked = '';
-        const START_DEL = '[[VC-DEL]]'; const END_DEL = '[[/VC-DEL]]';
-        const START_ADD = '[[VC-ADD]]'; const END_ADD = '[[/VC-ADD]]';
-    
-        for (const part of diffResult) {
-            const value = part.value;
-            if (part.added) {
-                rightMarked += START_ADD + value + END_ADD;
-            } else if (part.removed) {
-                leftMarked += START_DEL + value + END_DEL;
-            } else {
-                leftMarked += value;
-                rightMarked += value;
-            }
-        }
-    
-        const tempLeftDiv = createDiv();
-        const tempRightDiv = createDiv();
-        await MarkdownRenderer.renderMarkdown(leftMarked, tempLeftDiv, this.file.path, this.plugin);
-        await MarkdownRenderer.renderMarkdown(rightMarked, tempRightDiv, this.file.path, this.plugin);
-    
-        let leftHtml = tempLeftDiv.innerHTML;
-        let rightHtml = tempRightDiv.innerHTML;
-    
-        leftHtml = leftHtml.replace(/\[\[VC-DEL\]\]/g, '<span class="diff-rendered-removed">').replace(/\[\[\/VC-DEL\]\]/g, '</span>');
-        rightHtml = rightHtml.replace(/\[\[VC-ADD\]\]/g, '<span class="diff-rendered-added">').replace(/\[\[\/VC-ADD\]\]/g, '</span>');
-    
-        leftContentEl.innerHTML = leftHtml;
-        rightContentEl.innerHTML = rightHtml;
-    
-        let isScrolling = false;
-        const syncScroll = (source: HTMLElement, target: HTMLElement) => {
-            if (isScrolling) return;
-            isScrolling = true;
-            target.scrollTop = source.scrollTop;
-            setTimeout(() => { isScrolling = false; }, 50);
-        };
-    
-        leftContentEl.addEventListener('scroll', () => syncScroll(leftContentEl, rightContentEl));
-        rightContentEl.addEventListener('scroll', () => syncScroll(rightContentEl, leftContentEl));
     }
     
     alignSplitViewLines() {
@@ -4246,105 +4018,6 @@ class DiffModal extends Modal {
             new Notice('✅ 差异内容已复制到剪贴板');
         }).catch(() => {
             new Notice('❌ 复制失败');
-        });
-    }
-
-    renderStructuredDiff() {
-        const container = this.structuredDiffContainer;
-        container.empty();
-        const leftSections = this.parseMarkdownSections(this.leftContent);
-        const rightSections = this.parseMarkdownSections(this.rightContent);
-        const diffResults = this.compareSections(leftSections, rightSections);
-        if (diffResults.length === 0) {
-            container.createEl('div', { text: '✅ 内容相同', cls: 'diff-empty-notice' });
-            return;
-        }
-        for (const result of diffResults) {
-            const details = container.createEl('details', { cls: `structured-section structured-${result.type}` });
-            const summary = details.createEl('summary');
-            let badgeText = '', headingText = '', openByDefault = false;
-            switch (result.type) {
-                case 'added': badgeText = '新增'; headingText = result.section.heading; openByDefault = true; break;
-                case 'removed': badgeText = '删除'; headingText = result.section.heading; openByDefault = true; break;
-                case 'modified': badgeText = '修改'; headingText = result.right.heading; openByDefault = true; break;
-                case 'unchanged': badgeText = '未变'; headingText = result.right.heading; break;
-            }
-            summary.createEl('span', { text: badgeText, cls: `diff-badge diff-badge-${result.type}` });
-            summary.createEl('span', { text: headingText, cls: 'section-heading' });
-            details.open = openByDefault;
-            const contentContainer = details.createEl('div', { cls: 'section-content' });
-            if (result.type === 'modified') {
-                this.renderUnifiedDiff(contentContainer, result.left.content, result.right.content);
-            } else if (result.type === 'added') {
-                contentContainer.createEl('pre', { text: result.section.content });
-            } else if (result.type === 'removed') {
-                contentContainer.createEl('pre', { text: result.section.content });
-            }
-        }
-    }
-
-    private parseMarkdownSections(content: string): MarkdownSection[] {
-        const sections: MarkdownSection[] = [];
-        const headingRegex = /^(#+)\s+(.*)/;
-        const lines = content.split('\n');
-        let currentSection: MarkdownSection | null = null;
-        let sectionContent: string[] = [];
-        let index = 0;
-        for (const line of lines) {
-            const match = line.match(headingRegex);
-            if (match) {
-                if (currentSection) {
-                    currentSection.content = sectionContent.join('\n').trim();
-                    sections.push(currentSection);
-                } else if (sectionContent.length > 0 && sectionContent.join('').trim() !== '') {
-                    sections.push({ heading: '（文档开头）', level: 0, content: sectionContent.join('\n').trim(), originalIndex: index++ });
-                }
-                sectionContent = [];
-                currentSection = { heading: match[2], level: match[1].length, content: '', originalIndex: index++ };
-            } else {
-                sectionContent.push(line);
-            }
-        }
-        if (currentSection) {
-            currentSection.content = sectionContent.join('\n').trim();
-            sections.push(currentSection);
-        } else if (sectionContent.length > 0 && sectionContent.join('').trim() !== '') {
-            sections.push({ heading: sections.length > 0 ? '（文档末尾）' : '（全文）', level: 0, content: sectionContent.join('\n').trim(), originalIndex: index++ });
-        }
-        return sections;
-    }
-
-    private compareSections(left: MarkdownSection[], right: MarkdownSection[]): SectionDiffResult[] {
-        const results: SectionDiffResult[] = [];
-        const leftMap = new Map(left.map(s => [s.heading, s]));
-        const processedLeftHeadings = new Set<string>();
-        for (const rightSection of right) {
-            const leftSection = leftMap.get(rightSection.heading);
-            if (leftSection) {
-                if (leftSection.content.trim() === rightSection.content.trim()) {
-                    results.push({ type: 'unchanged', left: leftSection, right: rightSection });
-                } else {
-                    const diff = Diff.diffLines(leftSection.content, rightSection.content, { ignoreWhitespace: this.ignoreWhitespace });
-                    const processedDiff = this.processDiffForMoves(diff);
-                    results.push({ type: 'modified', left: leftSection, right: rightSection, diff: processedDiff });
-                }
-                processedLeftHeadings.add(rightSection.heading);
-            } else {
-                results.push({ type: 'added', section: rightSection });
-            }
-        }
-        for (const leftSection of left) {
-            if (!processedLeftHeadings.has(leftSection.heading)) {
-                results.push({ type: 'removed', section: leftSection });
-            }
-        }
-        return results.sort((a, b) => {
-            const getIndex = (res: SectionDiffResult) => {
-                if (res.type === 'added') return res.section.originalIndex;
-                if (res.type === 'modified' || res.type === 'unchanged') return res.right.originalIndex;
-                return Infinity;
-            };
-            return getIndex(a) - getIndex(b);
         });
     }
 
