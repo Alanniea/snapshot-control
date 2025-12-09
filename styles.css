@@ -2337,3 +2337,87 @@
     margin: 5px 0;
     color: var(--text-muted);
 }
+
+/* ======================================================================= */
+/* ================= [新增] 多标签页视图 (Tabs & Global) ================= */
+/* ======================================================================= */
+
+.version-control-view-container {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+.vc-tab-bar {
+    display: flex;
+    justify-content: flex-start;
+    border-bottom: 1px solid var(--background-modifier-border);
+    margin-bottom: 15px;
+    gap: 2px;
+}
+
+.vc-tab-btn {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    padding: 8px 16px;
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--text-muted);
+    transition: all 0.2s ease;
+    border-radius: 4px 4px 0 0;
+}
+
+.vc-tab-btn:hover {
+    background-color: var(--background-modifier-hover);
+    color: var(--text-normal);
+}
+
+.vc-tab-btn.mod-cta {
+    color: var(--text-accent);
+    border-bottom-color: var(--interactive-accent);
+    background-color: transparent; /* Or slight tint */
+}
+
+.vc-content-area {
+    flex: 1;
+    overflow-y: auto;
+    padding-bottom: 20px;
+}
+
+.vc-desc {
+    color: var(--text-muted);
+    font-size: 0.9em;
+    margin-bottom: 15px;
+}
+
+.vc-batch-bar {
+    display: flex;
+    justify-content: flex-end;
+    padding: 8px;
+    background: var(--background-secondary);
+    border-radius: 6px;
+    margin-bottom: 15px;
+    border: 1px solid var(--background-modifier-border);
+}
+
+.vc-modified-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+/* 内部链接样式 */
+.internal-link {
+    color: var(--text-accent);
+    text-decoration: none;
+    cursor: pointer;
+    font-weight: 500;
+    transition: opacity 0.2s;
+}
+
+.internal-link:hover {
+    text-decoration: underline;
+    opacity: 0.8;
+}
