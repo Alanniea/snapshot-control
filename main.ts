@@ -18,7 +18,7 @@ interface VersionData {
     starred?: boolean;
     addedLines?: number;
     removedLines?: number;
-    modifiedLines?: number; // ✅ 新增：用于存储修改行数
+    modifiedLines?: number; // 新增：用于存储修改行数
 }
 
 interface VersionFile {
@@ -41,7 +41,7 @@ interface VersionControlSettings {
     enableMaxDays: boolean;
 
     useRelativeTime: boolean;
-    diffGranularity: 'char' | 'word' | 'line'; // Removed sentence and semantic
+    diffGranularity: 'char' | 'word' | 'line';
     diffViewMode: 'unified' | 'split';
     enableDeduplication: boolean;
     showNotifications: boolean;
@@ -115,7 +115,6 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
     diffContextLines: 3,
     compactUnifiedDiff: false, 
 };
-
 
 export default class VersionControlPlugin extends Plugin {
     settings: VersionControlSettings;
@@ -696,11 +695,6 @@ export default class VersionControlPlugin extends Plugin {
         }
     }
 
-    async reconstructLatestFullContent(versionFile: VersionFile): Promise<string> {
-        if (versionFile.versions.length === 0) return "";
-        return this.getVersionContent(versionFile.filePath, versionFile.versions[0].id);
-    }
-
     createDiff(oldContent: string, newContent: string): string { 
         const changes = Diff.createPatch('file', oldContent, newContent, '', ''); return changes;
     }
@@ -860,7 +854,6 @@ export default class VersionControlPlugin extends Plugin {
         return path.replace(/[\/\\:*?"<>|]/g, '_');
     }
 
-    async getVersions(filePath: string, page: number = 0): Promise<VersionData[]> { try { const versionFile = await this.loadVersionFile(filePath); if (this.settings.versionsPerPage > 0) { const start = page * this.settings.versionsPerPage; const end = start + this.settings.versionsPerPage; return versionFile.versions.slice(start, end); } return versionFile.versions; } catch (error) { console.error('获取版本列表失败:', error); return []; } }
     async getAllVersions(filePath: string): Promise<VersionData[]> { try { const versionFile = await this.loadVersionFile(filePath); return versionFile.versions; } catch (error) { console.error('获取版本列表失败:', error); return []; } }
     
     async getVersionContent(filePath: string, versionId: string, suppressNotice: boolean = false, strictMode: boolean = false): Promise<string> { 
@@ -1290,9 +1283,6 @@ class VersionHistoryView extends ItemView {
         await this.refresh();
     }
 
-    async onClose() {
-    }
-
     updateRelativeTimes() {
         if (!this.plugin.settings.useRelativeTime) return;
 
@@ -1357,10 +1347,8 @@ class VersionHistoryView extends ItemView {
     
             if (previousVersion) {
                 const previousContent = await this.plugin.getVersionContent(versionFile.filePath, previousVersion.id, true);
-                // ✅ 关键修改1：使用 ignoreWhitespace: true 以匹配差异视图的默认行为
                 const diffResult = Diff.diffLines(previousContent, currentContent, { ignoreWhitespace: true });
                 
-                // ✅ 关键修改2：引入“修改(Modified)”检测逻辑，与 DiffModal 保持一致
                 for (let i = 0; i < diffResult.length; i++) {
                     const part = diffResult[i];
                     const nextPart = diffResult[i + 1];
@@ -1388,7 +1376,7 @@ class VersionHistoryView extends ItemView {
     
             version.addedLines = added;
             version.removedLines = removed;
-            version.modifiedLines = modified; // ✅ 保存修改行数
+            version.modifiedLines = modified; // 保存修改行数
     
         } catch (error) {
             version.addedLines = 0;
@@ -1780,7 +1768,7 @@ class VersionHistoryView extends ItemView {
                     
                     const bar = diffStatsContainer.createEl('div', { cls: 'diff-stats-bar' });
                     
-                    // ✅ 渲染修改部分（黄色/强调色）
+                    // 渲染修改部分（黄色/强调色）
                     if (vModified > 0) {
                         bar.createEl('div', { 
                             cls: 'diff-stats-modified', 
@@ -1796,7 +1784,7 @@ class VersionHistoryView extends ItemView {
                         bar.createEl('div', { cls: 'diff-stats-removed', attr: { style: `width: ${removedWidth}%` } });
                     }
                     
-                    // ✅ 渲染文字统计：~1 +0 -0
+                    // 渲染文字统计：~1 +0 -0
                     if (vModified > 0) {
                         diffStatsContainer.createEl('span', { 
                             text: `~${vModified}`, 
@@ -2397,7 +2385,7 @@ class DiffModal extends Modal {
     wrapLines: boolean = true;
     leftContent: string = '';
     rightContent: string = '';
-    currentGranularity: 'char' | 'word' | 'line'; // Removed sentence and semantic
+    currentGranularity: 'char' | 'word' | 'line'; 
     contextLines: number;
     enableMoveDetection: boolean = true;
     showWhitespace: boolean = false;
@@ -3435,8 +3423,6 @@ class DiffModal extends Modal {
         container.toggleClass('show-whitespace-active', this.showWhitespace);
         
         const modeSelect = this.containerEl.querySelector('.diff-select[aria-label="视图模式"]') as HTMLSelectElement;
-        
-        // Removed sentence and semantic conditional blocks here
         
         if (modeSelect.value === 'unified') {
             container.removeClass('diff-split');
