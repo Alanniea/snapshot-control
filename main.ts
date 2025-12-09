@@ -1504,48 +1504,7 @@ class VersionHistoryView extends ItemView {
             return;
         }
 
-        if (allVersions.length > 0) {
-            try {
-                const rawCurrentContent = await this.app.vault.read(file);
-                const currentContent = this.plugin.normalizeText(rawCurrentContent);
-                const lastVersion = allVersions[0];
-                const lastContent = await this.plugin.getVersionContent(file.path, lastVersion.id);
-                
-                if (currentContent !== lastContent) {
-                    const diffResult = Diff.diffLines(lastContent, currentContent);
-                    let added = 0;
-                    let removed = 0;
-                    diffResult.forEach(part => {
-                        if (part.added) added += part.count || 0;
-                        if (part.removed) removed += part.count || 0;
-                    });
-                    
-                    const diffBanner = tempContainer.createEl('div', { cls: 'version-diff-banner' });
-                    diffBanner.createEl('span', { text: '⚠️ 文件已修改' });
-                    diffBanner.createEl('span', { 
-                        text: `+${added} -${removed}`,
-                        cls: 'diff-stats'
-                    });
-                    
-                    const quickSaveBtn = diffBanner.createEl('button', { 
-                        text: '💾 立即保存',
-                        cls: 'mod-cta'
-                    });
-                    quickSaveBtn.addEventListener('click', () => {
-                        this.plugin.createManualVersion();
-                    });
-
-                    const viewDiffBtn = diffBanner.createEl('button', { 
-                        text: '👁️ 查看差异'
-                    });
-                    viewDiffBtn.addEventListener('click', () => {
-                        new DiffModal(this.app, this.plugin, file, lastVersion.id).open();
-                    });
-                }
-            } catch (error) {
-                console.error('检查文件差异失败:', error);
-            }
-        }
+        // --- 已删除: 检测文件修改并显示黄色警告横幅的逻辑 ---
 
         let filteredVersions = allVersions;
         
