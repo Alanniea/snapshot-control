@@ -54,12 +54,10 @@ interface VersionControlSettings {
     autoSaveOnModify: boolean;
     autoSaveMinChanges: number;
     autoSaveOnInterval: boolean;
-    autoSaveOnFileSwitch: boolean;
-    autoSaveOnFocusLost: boolean;
+    
+    // 已删除: autoSaveOnFileSwitch, autoSaveOnFocusLost 及相关延迟设置
 
     autoSaveDelayOnModify: number;
-    autoSaveDelayOnFileSwitch: number;
-    autoSaveDelayOnFocusLost: number;
 
     enableQuickPreview: boolean;
     enableVersionTags: boolean;
@@ -96,12 +94,10 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
     autoSaveOnModify: true,
     autoSaveMinChanges: 10,
     autoSaveOnInterval: false,
-    autoSaveOnFileSwitch: true,
-    autoSaveOnFocusLost: false,
+    
+    // 已删除默认值配置
 
     autoSaveDelayOnModify: 180,
-    autoSaveDelayOnFileSwitch: 2,
-    autoSaveDelayOnFocusLost: 2,
 
     enableQuickPreview: true,
     enableVersionTags: true,
@@ -123,7 +119,7 @@ export default class VersionControlPlugin extends Plugin {
     pendingSaves: Map<string, NodeJS.Timeout> = new Map();
     statusBarItem: HTMLElement;
     versionCache: Map<string, VersionFile> = new Map();
-    previousActiveFile: TFile | null = null;
+    // 已删除 previousActiveFile
 
     fileLocks: Map<string, Promise<void>> = new Map();
     isRestoring: boolean = false; 
@@ -234,20 +230,12 @@ export default class VersionControlPlugin extends Plugin {
 
         this.registerEvent(
             this.app.workspace.on('active-leaf-change', () => {
-                if (this.settings.autoSave && this.settings.autoSaveOnFileSwitch) {
-                    this.handleFileSwitch();
-                }
+                // 已删除 handleFileSwitch 调用
                 this.updateStatusBar();
             })
         );
 
-        if (this.settings.autoSaveOnFocusLost) {
-            this.registerDomEvent(window, 'blur', () => {
-                if (this.settings.autoSave) {
-                    this.handleFocusLost();
-                }
-            });
-        }
+        // 已删除 window blur (handleFocusLost) 事件监听
 
         if (this.settings.autoSave && this.settings.autoSaveOnInterval) {
             this.startAutoSave();
@@ -381,8 +369,7 @@ export default class VersionControlPlugin extends Plugin {
     getSaveTypeLabel(message: string): string { 
         if (message.includes('[Auto Save - On Modify]')) return '修改保存';
         if (message.includes('[Auto Save - Interval]')) return '定时保存';
-        if (message.includes('[Auto Save - File Switch]')) return '切换保存';
-        if (message.includes('[Auto Save - Focus Lost]')) return '失焦保存';
+        // 已删除相关标签判断
         if (message.includes('[Full Snapshot]')) return '全库快照';
         if (message.includes('[Before Restore]')) return '恢复前备份';
         if (message.includes('[Auto Save')) return '自动保存';
@@ -489,18 +476,9 @@ export default class VersionControlPlugin extends Plugin {
     handleFileModify(file: TFile) { 
         this.scheduleSave(file, this.settings.autoSaveDelayOnModify, '[Auto Save - On Modify]');
     }
-    async handleFileSwitch() { 
-        const currentFile = this.app.workspace.getActiveFile();
-        if (this.previousActiveFile && this.previousActiveFile !== currentFile) { const fileStillExists = this.app.vault.getAbstractFileByPath(this.previousActiveFile.path); if (fileStillExists) { this.scheduleSave(this.previousActiveFile as TFile, this.settings.autoSaveDelayOnFileSwitch, '[Auto Save - File Switch]'); } else { const pending = this.pendingSaves.get(this.previousActiveFile.path); if (pending) clearTimeout(pending); this.pendingSaves.delete(this.previousActiveFile.path); this.lastModifiedTime.delete(this.previousActiveFile.path); } }
-        this.previousActiveFile = currentFile;
-    }
-    async handleFocusLost() { 
-        const file = this.app.workspace.getActiveFile();
-        if (!file || this.isExcluded(file.path)) return;
-        const fileStillExists = this.app.vault.getAbstractFileByPath(file.path);
-        if (!fileStillExists) return;
-        this.scheduleSave(file, this.settings.autoSaveDelayOnFocusLost, '[Auto Save - Focus Lost]');
-    }
+    // 已删除 handleFileSwitch
+    // 已删除 handleFocusLost
+
     async autoSaveCurrentFile() { 
         const file = this.app.workspace.getActiveFile();
         if (!file || this.isExcluded(file.path)) return;
@@ -1129,6 +1107,9 @@ export default class VersionControlPlugin extends Plugin {
     getRelativeTime(timestamp: number): string { const diff = Date.now() - timestamp; const seconds = Math.floor(diff / 1000); const minutes = Math.floor(seconds / 60); const hours = Math.floor(minutes / 60); const days = Math.floor(hours / 24); const months = Math.floor(days / 30); const years = Math.floor(days / 365); if (years > 0) return `${years} 年前`; if (months > 0) return `${months} 个月前`; if (days > 0) return `${days} 天前`; if (hours > 0) return `${hours} 小时前`; if (minutes > 0) return `${minutes} 分钟前`; if (seconds < 10) return '刚刚'; return `${seconds} 秒前`; }
     refreshVersionHistoryView() { const leaves = this.app.workspace.getLeavesOfType('version-history'); leaves.forEach(leaf => { if (leaf.view instanceof VersionHistoryView) { leaf.view.refresh(); } }); }
 }
+
+// ... QuickPreviewModal, VersionHistoryView, TagEditModal, NoteEditModal, VersionMessageModal, ConfirmModal ...
+// ... DiffModal, ContextLineInputModal, LineHistoryModal, VersionSelectModal 及其余类保持不变，因为它们不涉及被删除的逻辑 ...
 
 class QuickPreviewModal extends Modal {
     plugin: VersionControlPlugin;
@@ -4255,51 +4236,7 @@ class VersionControlSettingTab extends PluginSettingTab {
                     }
                 }));
 
-        new Setting(containerEl)
-            .setName('📄 切换文件时保存')
-            .setDesc('切换到其他文件时自动保存当前文件')
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.autoSaveOnFileSwitch)
-                .onChange(async (value) => {
-                    this.plugin.settings.autoSaveOnFileSwitch = value;
-                    await this.plugin.saveSettings();
-                }));
-        
-        new Setting(containerEl)
-            .setName('切换文件时保存延迟 (分钟)')
-            .setDesc('切换文件后等待多久才保存。支持小数,例如 0.1 代表6秒。')
-            .addText(text => text
-                .setValue(String(this.plugin.settings.autoSaveDelayOnFileSwitch / 60))
-                .onChange(async (value) => {
-                    const num = parseFloat(value);
-                    if (!isNaN(num) && num >= 0) {
-                        this.plugin.settings.autoSaveDelayOnFileSwitch = num * 60;
-                        await this.plugin.saveSettings();
-                    }
-                }));
-
-        new Setting(containerEl)
-            .setName('👁️ 失去焦点时保存')
-            .setDesc('窗口失去焦点时自动保存(切换应用时)')
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.autoSaveOnFocusLost)
-                .onChange(async (value) => {
-                    this.plugin.settings.autoSaveOnFocusLost = value;
-                    await this.plugin.saveSettings();
-                }));
-
-        new Setting(containerEl)
-            .setName('失去焦点时保存延迟 (分钟)')
-            .setDesc('失去焦点后等待多久才保存。支持小数,例如 0.1 代表6秒。')
-            .addText(text => text
-                .setValue(String(this.plugin.settings.autoSaveDelayOnFocusLost / 60))
-                .onChange(async (value) => {
-                    const num = parseFloat(value);
-                    if (!isNaN(num) && num >= 0) {
-                        this.plugin.settings.autoSaveDelayOnFocusLost = num * 60;
-                        await this.plugin.saveSettings();
-                    }
-                }));
+        // 已删除 “切换文件时保存” 和 “失去焦点时保存” 的 UI
 
         new Setting(containerEl)
             .setName('启用去重')
