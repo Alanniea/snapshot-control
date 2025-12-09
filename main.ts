@@ -2736,8 +2736,6 @@ class DiffModal extends Modal {
         
         const viewSwitcher = toolbar.createEl('div', { cls: 'diff-view-switcher' });
         const textDiffBtn = viewSwitcher.createEl('button', { text: '文本', cls: 'active' });
-        const renderedDiffBtn = viewSwitcher.createEl('button', { text: '渲染' });
-        const structuredDiffBtn = viewSwitcher.createEl('button', { text: '结构' });
 
         const navGroup = toolbar.createEl('div', { cls: 'diff-toolbar-group', attr: { id: 'diff-nav-group' } });
         const firstDiffBtn = navGroup.createEl('button', { text: '«', attr: { 'aria-label': '第一个差异' } });
@@ -2879,8 +2877,6 @@ class DiffModal extends Modal {
             this.currentView = view;
             
             textDiffBtn.toggleClass('active', view === 'text');
-            renderedDiffBtn.toggleClass('active', view === 'rendered');
-            structuredDiffBtn.toggleClass('active', view === 'structured');
 
             this.textDiffContainer.style.display = view === 'text' ? '' : 'none';
             this.renderedDiffContainer.style.display = view === 'rendered' ? '' : 'none';
@@ -2894,8 +2890,6 @@ class DiffModal extends Modal {
         };
 
         textDiffBtn.addEventListener('click', () => switchView('text'));
-        renderedDiffBtn.addEventListener('click', () => switchView('rendered'));
-        structuredDiffBtn.addEventListener('click', () => switchView('structured'));
 
         prevBtn.addEventListener('click', () => this.navigateDiff(-1));
         nextBtn.addEventListener('click', () => this.navigateDiff(1));
@@ -4181,7 +4175,7 @@ class DiffModal extends Modal {
                         renderLine(rightPanel, '', 'placeholder', null);
                     } else if (rightLine !== undefined) {
                         renderLine(leftPanel, '', 'placeholder', null);
-                        renderLine(rightPanel, rightLine, 'added', rightLineNum++, undefined, null);
+                        renderLine(rightPanel, rightLine, 'added', rightLineNum++, undefined, null); // Fix: oldLine -> null
                     }
                 }
                 i++;
