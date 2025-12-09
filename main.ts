@@ -18,6 +18,7 @@ interface VersionData {
     starred?: boolean;
     addedLines?: number;
     removedLines?: number;
+    modifiedLines?: number; // ✅ 新增：用于存储修改行数
 }
 
 interface VersionFile {
@@ -1339,7 +1340,10 @@ class VersionHistoryView extends ItemView {
         
         const version = versionFile.versions[versionIndex];
     
-        if (typeof version.addedLines === 'number' && typeof version.removedLines === 'number') {
+        // 如果已经计算过且包含 modifiedLines，则跳过
+        if (typeof version.addedLines === 'number' && 
+            typeof version.removedLines === 'number' && 
+            typeof version.modifiedLines === 'number') {
             return;
         }
     
@@ -1349,24 +1353,47 @@ class VersionHistoryView extends ItemView {
             
             let added = 0;
             let removed = 0;
+            let modified = 0;
     
             if (previousVersion) {
                 const previousContent = await this.plugin.getVersionContent(versionFile.filePath, previousVersion.id, true);
-                const diffResult = Diff.diffLines(previousContent, currentContent);
-                diffResult.forEach(part => {
-                    if (part.added) added += part.count || 0;
-                    if (part.removed) removed += part.count || 0;
-                });
+                // ✅ 关键修改1：使用 ignoreWhitespace: true 以匹配差异视图的默认行为
+                const diffResult = Diff.diffLines(previousContent, currentContent, { ignoreWhitespace: true });
+                
+                // ✅ 关键修改2：引入“修改(Modified)”检测逻辑，与 DiffModal 保持一致
+                for (let i = 0; i < diffResult.length; i++) {
+                    const part = diffResult[i];
+                    const nextPart = diffResult[i + 1];
+    
+                    // 检测相邻的删除和新增，将其视为“修改”
+                    if (part.removed && nextPart && nextPart.added) {
+                        const remCount = part.count || 0;
+                        const addCount = nextPart.count || 0;
+                        
+                        const overlap = Math.min(remCount, addCount);
+                        
+                        modified += overlap;
+                        removed += (remCount - overlap);
+                        added += (addCount - overlap);
+                        
+                        i++; // 跳过下一个 part，因为已经处理了
+                    } else {
+                        if (part.added) added += part.count || 0;
+                        if (part.removed) removed += part.count || 0;
+                    }
+                }
             } else {
                 added = currentContent.split('\n').length;
             }
     
             version.addedLines = added;
             version.removedLines = removed;
+            version.modifiedLines = modified; // ✅ 保存修改行数
     
         } catch (error) {
             version.addedLines = 0;
             version.removedLines = 0;
+            version.modifiedLines = 0;
         }
     }
 
@@ -1587,7 +1614,7 @@ class VersionHistoryView extends ItemView {
 
         let statsChanged = false;
         const calculationPromises = pageVersions
-            .filter(version => typeof version.addedLines !== 'number' || typeof version.removedLines !== 'number')
+            .filter(version => typeof version.addedLines !== 'number' || typeof version.removedLines !== 'number' || typeof version.modifiedLines !== 'number')
             .map(version => {
                 statsChanged = true;
                 return this.calculateDiffStatsForVersion(versionFile, version.id);
@@ -1738,28 +1765,55 @@ class VersionHistoryView extends ItemView {
                 });
 
                 const diffStatsContainer = statsRow.createEl('div', { cls: 'version-diff-stats' });
-                if (typeof version.addedLines === 'number' && typeof version.removedLines === 'number') {
-                    const totalChanges = version.addedLines + version.removedLines;
-                    if (totalChanges > 0) {
-                        const addedWidth = (version.addedLines / totalChanges) * 100;
-                        const removedWidth = (version.removedLines / totalChanges) * 100;
-                        
-                        const bar = diffStatsContainer.createEl('div', { cls: 'diff-stats-bar' });
-                        if (version.addedLines > 0) {
-                            bar.createEl('div', { cls: 'diff-stats-added', attr: { style: `width: ${addedWidth}%` } });
-                        }
-                        if (version.removedLines > 0) {
-                            bar.createEl('div', { cls: 'diff-stats-removed', attr: { style: `width: ${removedWidth}%` } });
-                        }
-                        
-                        diffStatsContainer.createEl('span', { text: `+${version.addedLines}`, cls: 'diff-stats-text-added' });
-                        diffStatsContainer.createEl('span', { text: `-${version.removedLines}`, cls: 'diff-stats-text-removed' });
-                        diffStatsContainer.title = `新增 ${version.addedLines} 行, 删除 ${version.removedLines} 行`;
-                    } else {
-                        diffStatsContainer.setText('无代码变更');
+                
+                // 获取数据，默认为0
+                const vAdded = version.addedLines || 0;
+                const vRemoved = version.removedLines || 0;
+                const vModified = version.modifiedLines || 0;
+
+                const totalChanges = vAdded + vRemoved + vModified;
+
+                if (totalChanges > 0) {
+                    const addedWidth = (vAdded / totalChanges) * 100;
+                    const removedWidth = (vRemoved / totalChanges) * 100;
+                    const modifiedWidth = (vModified / totalChanges) * 100;
+                    
+                    const bar = diffStatsContainer.createEl('div', { cls: 'diff-stats-bar' });
+                    
+                    // ✅ 渲染修改部分（黄色/强调色）
+                    if (vModified > 0) {
+                        bar.createEl('div', { 
+                            cls: 'diff-stats-modified', 
+                            attr: { style: `width: ${modifiedWidth}%; background-color: var(--text-accent);` } 
+                        });
                     }
+                    // 渲染新增部分
+                    if (vAdded > 0) {
+                        bar.createEl('div', { cls: 'diff-stats-added', attr: { style: `width: ${addedWidth}%` } });
+                    }
+                    // 渲染删除部分
+                    if (vRemoved > 0) {
+                        bar.createEl('div', { cls: 'diff-stats-removed', attr: { style: `width: ${removedWidth}%` } });
+                    }
+                    
+                    // ✅ 渲染文字统计：~1 +0 -0
+                    if (vModified > 0) {
+                        diffStatsContainer.createEl('span', { 
+                            text: `~${vModified}`, 
+                            cls: 'diff-stats-text-modified',
+                            attr: { style: 'color: var(--text-accent); margin-right: 4px;' }
+                        });
+                    }
+                    if (vAdded > 0) {
+                        diffStatsContainer.createEl('span', { text: `+${vAdded}`, cls: 'diff-stats-text-added' });
+                    }
+                    if (vRemoved > 0) {
+                        diffStatsContainer.createEl('span', { text: `-${vRemoved}`, cls: 'diff-stats-text-removed' });
+                    }
+                    
+                    diffStatsContainer.title = `修改 ${vModified} 行, 新增 ${vAdded} 行, 删除 ${vRemoved} 行`;
                 } else {
-                    diffStatsContainer.setText('计算中...');
+                    diffStatsContainer.setText('无代码变更');
                 }
 
                 const actions = item.createEl('div', { cls: 'version-actions' });
@@ -4067,7 +4121,7 @@ class DiffModal extends Modal {
                     const isRightPanel = panel === rightPanel;
                     if (isRightPanel && (type === 'added' || type === 'modified')) {
                         const revertBtn = opsRow.createEl('span', { text: '↩️', cls: 'diff-line-action-btn', attr: { 'aria-label': '撤销此更改', 'title': '撤销更改' } });
-                        const newContent = typeof content === 'string' ? content : content.textContent || '';
+                        const newContent = typeof content === 'string' ? content : (content.textContent || '');
                         revertBtn.addEventListener('click', (e) => {
                             e.stopPropagation();
                             this.revertChanges(newContent, lineNum!, oldContentForRevert);
