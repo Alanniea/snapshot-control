@@ -1881,7 +1881,7 @@ class VersionHistoryView extends ItemView {
                 const headerRow = info.createEl('div', { cls: 'version-time-row', attr: { style: 'justify-content:flex-start; gap:8px;' } });
                 
                 headerRow.createEl('span', { 
-                    text: new Date(version.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}),
+                    text: new Date(version.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second: '2-digit'}),
                     cls: 'version-time',
                     attr: { style: 'font-family:var(--font-monospace); color:var(--text-accent);' }
                 });
