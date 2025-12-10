@@ -1821,6 +1821,20 @@ class VersionHistoryView extends ItemView {
                 });
 
                 const actions = item.createEl('div', { cls: 'version-actions' });
+                
+                if (lastVersionTime > 0) {
+                    const diffBtn = actions.createEl('button', { text: '对比', cls: 'version-btn' });
+                    diffBtn.setAttribute('title', '对比当前内容与最新快照');
+                    diffBtn.addEventListener('click', async () => {
+                        const versions = await this.plugin.getAllVersions(file.path);
+                        if (versions.length > 0) {
+                            new DiffModal(this.app, this.plugin, file, versions[0].id).open();
+                        } else {
+                            new Notice('未找到历史版本记录');
+                        }
+                    });
+                }
+
                 const saveBtn = actions.createEl('button', { text: '快照', cls: 'version-btn' });
                 saveBtn.addEventListener('click', async () => {
                     saveBtn.setText('保存中...');
