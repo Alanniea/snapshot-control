@@ -146,7 +146,7 @@ export default class VersionControlPlugin extends Plugin {
 
         this.addCommand({
             id: 'create-version',
-            name: '创建版本快照',
+            name: '保存新版本',
             callback: () => this.createManualVersion()
         });
 
@@ -158,7 +158,7 @@ export default class VersionControlPlugin extends Plugin {
 
         this.addCommand({
             id: 'create-full-snapshot',
-            name: '创建全库版本',
+            name: '保存全库版本',
             callback: () => this.createFullSnapshot()
         });
 
@@ -371,7 +371,7 @@ export default class VersionControlPlugin extends Plugin {
     getSaveTypeLabel(message: string): string { 
         if (message.includes('[Auto Save - On Modify]')) return '修改保存';
         if (message.includes('[Auto Save - Interval]')) return '定时保存';
-        if (message.includes('[Full Snapshot]')) return '全库快照';
+        if (message.includes('[Full Snapshot]')) return '全库版本';
         if (message.includes('[Before Restore]')) return '恢复前备份';
         if (message.includes('[Auto Save')) return '自动保存';
         return '手动保存';
@@ -557,7 +557,7 @@ export default class VersionControlPlugin extends Plugin {
                             this.updateStatusBar();
                             
                             if (showNotification && this.settings.showNotifications) {
-                                new Notice(`✅ 版本已创建 (自动保存已更新)`);
+                                new Notice(`✅ 版本已保存 (自动保存已更新)`);
                             }
                             return;
                         }
@@ -622,10 +622,10 @@ export default class VersionControlPlugin extends Plugin {
                             diffStr = tempDiff;
                             baseVersionId = prevVersionId;
                         } else {
-                            console.warn(`[VersionControl] 增量补丁验证失败，降级为完整快照。File: ${file.path}`);
+                            console.warn(`[VersionControl] 增量补丁验证失败，降级为完整版本。File: ${file.path}`);
                         }
                     } catch (err) {
-                        console.error("生成增量版本时出错，降级为完整快照", err);
+                        console.error("生成增量版本时出错，降级为完整版本", err);
                         useIncremental = false;
                     }
                 }
@@ -670,11 +670,11 @@ export default class VersionControlPlugin extends Plugin {
             this.updateStatusBar();
             
             if (showNotification && this.settings.showNotifications) {
-                new Notice(`✅ 版本已创建: ${message}`);
+                new Notice(`✅ 版本已保存: ${message}`);
             }
         } catch (error) {
-            console.error('创建版本失败:', error);
-            new Notice('❌ 创建版本失败,请查看控制台');
+            console.error('保存版本失败:', error);
+            new Notice('❌ 保存版本失败,请查看控制台');
         }
     }
 
@@ -727,7 +727,7 @@ export default class VersionControlPlugin extends Plugin {
             if (v.diff && v.baseVersionId) {
                 if (!proposedKeepSet.has(v.baseVersionId)) {
                     try {
-                        console.log(`[VersionControl] 版本 ${v.id} 的基准将被清理，正在将其转换为完整快照...`);
+                        console.log(`[VersionControl] 版本 ${v.id} 的基准将被清理，正在将其转换为完整版本...`);
                         
                         const fullContent = this.resolveContentFromList(versionFile.versions, v.id);
                         
@@ -1102,7 +1102,7 @@ export default class VersionControlPlugin extends Plugin {
 
     async restoreLastVersion() { const file = this.app.workspace.getActiveFile(); if (!file) { new Notice('没有打开的文件'); return; } const versions = await this.getAllVersions(file.path); if (versions.length === 0) { new Notice('没有可恢复的版本'); return; } const lastVersion = versions[0]; new ConfirmModal(this.app, '恢复到上一版本', `确定要恢复到版本: ${this.formatTime(lastVersion.timestamp)}?\n\n当前未保存的修改将会丢失,插件会在恢复前自动创建备份版本。`, async () => { await this.restoreVersion(file, lastVersion.id); }).open(); }
     async quickCompare() { const file = this.app.workspace.getActiveFile(); if (!file) { new Notice('没有打开的文件'); return; } const versions = await this.getAllVersions(file.path); if (versions.length === 0) { new Notice('没有历史版本可对比'); return; } const lastVersion = versions[0]; new DiffModal(this.app, this, file, lastVersion.id).open(); }
-    async createFullSnapshot() { const files = this.app.vault.getMarkdownFiles(); const total = files.length; let count = 0; let skipped = 0; const progressNotice = new Notice(`正在准备全库快照... (0/${total})`, 0); const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms)); for (let i = 0; i < total; i++) { const file = files[i]; if (i % 10 === 0) { progressNotice.setMessage(`正在创建全库快照... (${i + 1}/${total})`); await sleep(10); } if (this.isExcluded(file.path)) { skipped++; continue; } try { await this.createVersion(file, '[Full Snapshot]', false, [], true); count++; } catch (error) { console.error(`创建版本失败: ${file.path}`, error); } } progressNotice.hide(); if (this.settings.showNotifications) { setTimeout(() => { new Notice(`✅ 全库版本创建完成\n处理: ${count} 个文件${skipped > 0 ? `\n跳过: ${skipped} 个文件` : ''}`); }, 500); } }
+    async createFullSnapshot() { const files = this.app.vault.getMarkdownFiles(); const total = files.length; let count = 0; let skipped = 0; const progressNotice = new Notice(`正在准备全库版本... (0/${total})`, 0); const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms)); for (let i = 0; i < total; i++) { const file = files[i]; if (i % 10 === 0) { progressNotice.setMessage(`正在保存全库版本... (${i + 1}/${total})`); await sleep(10); } if (this.isExcluded(file.path)) { skipped++; continue; } try { await this.createVersion(file, '[Full Snapshot]', false, [], true); count++; } catch (error) { console.error(`创建版本失败: ${file.path}`, error); } } progressNotice.hide(); if (this.settings.showNotifications) { setTimeout(() => { new Notice(`✅ 全库版本创建完成\n处理: ${count} 个文件${skipped > 0 ? `\n跳过: ${skipped} 个文件` : ''}`); }, 500); } }
     async optimizeAllVersionFiles() { const progressNotice = new Notice('正在优化存储...', 0); try { const adapter = this.app.vault.adapter; const versionFolder = this.settings.versionFolder; if (!await adapter.exists(versionFolder)) { progressNotice.hide(); new Notice('版本文件夹不存在'); return; } const files = await adapter.list(versionFolder); let optimized = 0; let savedBytes = 0; for (const file of files.files) { if (file.endsWith('.json')) { try { const oldSize = (await adapter.stat(file))?.size || 0; const filePath = file.replace(this.settings.versionFolder + '/', '').replace('.json', ''); const versionFile = await this.loadVersionFile(filePath); this.buildVersionIndex(versionFile); await this.saveVersionFile(versionFile.filePath, versionFile); const newSize = (await adapter.stat(file))?.size || 0; savedBytes += (oldSize - newSize); optimized++; } catch (error) { console.error('优化文件失败:', file, error); } } } progressNotice.hide(); new Notice(`✅ 优化完成\n处理: ${optimized} 个文件\n节省: ${this.formatFileSize(savedBytes)}`); } catch (error) { progressNotice.hide(); console.error('优化失败:', error); new Notice('❌ 优化失败'); } }
     async getStorageStats(): Promise<{ totalSize: number; versionCount: number; fileCount: number; compressionRatio: number; starredCount: number; taggedCount: number }> { const adapter = this.app.vault.adapter; const versionFolder = this.settings.versionFolder; try { if (!await adapter.exists(versionFolder)) { return { totalSize: 0, versionCount: 0, fileCount: 0, compressionRatio: 0, starredCount: 0, taggedCount: 0 }; } const files = await adapter.list(versionFolder); let totalSize = 0; let versionCount = 0; let fileCount = 0; let totalOriginalSize = 0; let starredCount = 0; let taggedCount = 0; for (const file of files.files) { if (file.endsWith('.json')) { try { const stat = await adapter.stat(file); const fileSize = stat?.size || 0; totalSize += fileSize; let versionFile: VersionFile; if (this.settings.enableCompression) { try { const rawData = await adapter.readBinary(file); const decompressed = pako.ungzip(new Uint8Array(rawData), { to: 'string' }); versionFile = JSON.parse(decompressed) as VersionFile; } catch (e) { const content = await adapter.read(file); versionFile = JSON.parse(content) as VersionFile; } } else { const content = await adapter.read(file); versionFile = JSON.parse(content) as VersionFile; } if (versionFile.versions && Array.isArray(versionFile.versions)) { versionCount += versionFile.versions.length; versionFile.versions.forEach(v => { if (v.content) { totalOriginalSize += v.content.length; } else if (v.diff) { totalOriginalSize += v.diff.length; } if (v.starred) starredCount++; if (v.tags && v.tags.length > 0) taggedCount++; }); fileCount++; } } catch (error) { console.error('读取版本文件失败:', file, error); } } } const compressionRatio = totalOriginalSize > 0 ? ((1 - totalSize / totalOriginalSize) * 100) : 0; return { totalSize, versionCount, fileCount, compressionRatio, starredCount, taggedCount }; } catch (error) { console.error('获取存储统计失败:', error); return { totalSize: 0, versionCount: 0, fileCount: 0, compressionRatio: 0, starredCount: 0, taggedCount: 0 }; } }
     async exportVersions(filePath: string): Promise<void> { try { const versionFile = await this.loadVersionFile(filePath); const exportPath = `${this.settings.versionFolder}/export_${this.sanitizeFileName(filePath)}_${Date.now()}.json`; await this.app.vault.adapter.write(exportPath, JSON.stringify(versionFile, null, 2)); new Notice(`✅ 版本已导出到: ${exportPath}`); } catch (error) { console.error('导出版本失败:', error); new Notice('❌ 导出失败'); } }
@@ -1510,7 +1510,7 @@ class VersionHistoryView extends ItemView {
 
         const tabs: {id: ViewMode, label: string}[] = [
             { id: 'current', label: '当前文件' },
-            { id: 'modified', label: '待快照' },
+            { id: 'modified', label: '待保存' },
             { id: 'global', label: '全库历史' }
         ];
 
@@ -1591,7 +1591,7 @@ class VersionHistoryView extends ItemView {
             const menu = new Menu();
             menu.addItem((item) => item.setTitle('📊 查看统计').setIcon('bar-chart').onClick(() => { this.showDetailedStats(); }));
             menu.addItem((item) => item.setTitle('📥 导出版本数据').setIcon('download').onClick(() => { this.plugin.exportVersions(file.path); }));
-            menu.addItem((item) => item.setTitle('📂 创建全库版本').setIcon('folder').onClick(() => { this.plugin.createFullSnapshot(); }));
+            menu.addItem((item) => item.setTitle('📂 保存全库版本').setIcon('folder').onClick(() => { this.plugin.createFullSnapshot(); }));
             menu.addItem((item) => item.setTitle('🗑️ 清理旧版本').setIcon('trash').onClick(async () => { await this.cleanupOldVersions(file); }));
             menu.showAtMouseEvent(e as MouseEvent);
         });
@@ -1696,7 +1696,7 @@ class VersionHistoryView extends ItemView {
                 const saveTypeLabel = this.plugin.getSaveTypeLabel(version.message);
                 let tagClass = 'version-tag-auto';
                 if (saveTypeLabel === '手动保存') tagClass = 'version-tag-manual';
-                else if (saveTypeLabel === '全库快照') tagClass = 'version-tag-snapshot';
+                else if (saveTypeLabel === '全库版本') tagClass = 'version-tag-snapshot';
                 else if (saveTypeLabel === '恢复前备份') tagClass = 'version-tag-backup';
                 
                 messageEl.createEl('span', { text: saveTypeLabel, cls: `version-tag ${tagClass}` });
@@ -1772,8 +1772,8 @@ class VersionHistoryView extends ItemView {
     }
 
     async renderModifiedFiles(container: HTMLElement) {
-        container.createEl('h3', { text: '📝 已修改但未快照的文件' });
-        container.createEl('p', { text: '以下文件自上次快照后已有新的修改:', cls: 'vc-desc' });
+        container.createEl('h3', { text: '📝 已修改但未保存的文件' });
+        container.createEl('p', { text: '以下文件自上次保存版本后已有新的修改:', cls: 'vc-desc' });
 
         const loading = container.createEl('div', { text: '正在扫描...' });
         
@@ -1782,18 +1782,18 @@ class VersionHistoryView extends ItemView {
             loading.remove();
 
             if (modifiedFiles.length === 0) {
-                this.renderEmptyState(container, '所有文件均已包含最新快照 ✅');
+                this.renderEmptyState(container, '所有文件均已包含最新版本 ✅');
                 return;
             }
 
             const batchBar = container.createEl('div', { cls: 'vc-batch-bar' });
-            const snapshotAllBtn = batchBar.createEl('button', { text: '全部创建快照', cls: 'mod-cta' });
+            const snapshotAllBtn = batchBar.createEl('button', { text: '全部保存版本', cls: 'mod-cta' });
             snapshotAllBtn.addEventListener('click', async () => {
-                new Notice(`开始为 ${modifiedFiles.length} 个文件创建快照...`);
+                new Notice(`开始为 ${modifiedFiles.length} 个文件保存版本...`);
                 for (const item of modifiedFiles) {
                     await this.plugin.createVersion(item.file, '[Batch Save] 批量保存', false);
                 }
-                new Notice('批量快照完成');
+                new Notice('批量保存完成');
                 this.refresh();
             });
 
@@ -1816,7 +1816,7 @@ class VersionHistoryView extends ItemView {
                 const modifiedStr = this.plugin.getRelativeTime(file.stat.mtime);
                 
                 metaRow.createEl('small', { 
-                    text: `上次快照: ${lastSaveStr} | 最近修改: ${modifiedStr}`,
+                    text: `上次保存: ${lastSaveStr} | 最近修改: ${modifiedStr}`,
                     attr: { style: 'color: var(--text-muted);' }
                 });
 
@@ -1824,7 +1824,7 @@ class VersionHistoryView extends ItemView {
                 
                 if (lastVersionTime > 0) {
                     const diffBtn = actions.createEl('button', { text: '对比', cls: 'version-btn' });
-                    diffBtn.setAttribute('title', '对比当前内容与最新快照');
+                    diffBtn.setAttribute('title', '对比当前内容与最新版本');
                     diffBtn.addEventListener('click', async () => {
                         const versions = await this.plugin.getAllVersions(file.path);
                         if (versions.length > 0) {
@@ -1835,7 +1835,7 @@ class VersionHistoryView extends ItemView {
                     });
                 }
 
-                const saveBtn = actions.createEl('button', { text: '快照', cls: 'version-btn' });
+                const saveBtn = actions.createEl('button', { text: '保存', cls: 'version-btn' });
                 saveBtn.addEventListener('click', async () => {
                     saveBtn.setText('保存中...');
                     saveBtn.disabled = true;
@@ -4206,7 +4206,7 @@ class VersionControlSettingTab extends PluginSettingTab {
 
         new Setting(containerEl)
             .setName('启用自动保存')
-            .setDesc('自动创建版本快照')
+            .setDesc('自动保存版本')
             .addToggle(toggle => toggle
                 .setValue(this.plugin.settings.autoSave)
                 .onChange(async (value) => {
