@@ -1330,6 +1330,9 @@ class VersionHistoryView extends ItemView {
     
     currentViewMode: ViewMode = 'current';
 
+    // 锁，防止重复刷新
+    isRefreshing: boolean = false;
+
     constructor(leaf: WorkspaceLeaf, plugin: VersionControlPlugin) {
         super(leaf);
         this.plugin = plugin;
@@ -1350,7 +1353,9 @@ class VersionHistoryView extends ItemView {
     async onOpen() {
         this.registerEvent(
             this.app.workspace.on('active-leaf-change', () => {
+                // 如果当前视图不可见或不是 'current' 模式，可以减少不必要的刷新
                 if (this.currentViewMode === 'current') {
+                    // 这里可以加入简单的防抖逻辑，但 refresh 内部已有锁
                     this.currentPage = 0;
                     this.refresh();
                 }
@@ -1366,11 +1371,14 @@ class VersionHistoryView extends ItemView {
         if (!document.getElementById('vc-tab-styles')) {
             const style = document.createElement('style');
             style.id = 'vc-tab-styles';
+            // 使用 Flex 布局固定头部，内容区域自适应滚动，防止外部容器高度抖动
             style.textContent = `
-                .vc-tab-bar { display: flex; justify-content: flex-start; border-bottom: 1px solid var(--background-modifier-border); margin-bottom: 10px; padding-bottom: 5px; gap: 10px; }
+                .version-history-view { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+                .vc-tab-bar { flex-shrink: 0; display: flex; justify-content: flex-start; border-bottom: 1px solid var(--background-modifier-border); margin-bottom: 10px; padding-bottom: 5px; gap: 10px; }
                 .vc-tab-btn { background: transparent; border: none; border-bottom: 2px solid transparent; cursor: pointer; padding: 6px 12px; font-weight: bold; color: var(--text-muted); }
                 .vc-tab-btn:hover { color: var(--text-normal); }
                 .vc-tab-btn.mod-cta { color: var(--text-accent); border-bottom-color: var(--text-accent); background-color: var(--background-secondary); }
+                .vc-content-area { flex-grow: 1; overflow-y: auto; padding-right: 5px; } /* 内容独立滚动 */
                 .vc-batch-bar { display: flex; justify-content: flex-end; padding: 4px; background: var(--background-secondary); border-radius: 4px; margin-bottom: 10px; }
                 .internal-link { color: var(--text-accent); text-decoration: none; cursor: pointer; }
                 .internal-link:hover { text-decoration: underline; }
@@ -1382,7 +1390,7 @@ class VersionHistoryView extends ItemView {
     updateRelativeTimes() {
         if (!this.plugin.settings.useRelativeTime) return;
 
-        const container = this.containerEl;
+        const container = this.contentEl; // Use contentEl
         const timeElements = container.querySelectorAll('.version-time');
 
         timeElements.forEach(el => {
@@ -1460,20 +1468,40 @@ class VersionHistoryView extends ItemView {
 
 
     async refresh() {
-        const container = this.containerEl.children[1] as HTMLElement;
-        container.empty();
-        container.addClass('version-history-view');
+        // 防止重复刷新
+        if (this.isRefreshing) return;
+        this.isRefreshing = true;
 
-        this.renderTabs(container);
+        const realContainer = this.contentEl;
 
-        const contentContainer = container.createEl('div', { cls: 'vc-content-area' });
-        
-        if (this.currentViewMode === 'current') {
-            await this.renderCurrentFileHistory(contentContainer);
-        } else if (this.currentViewMode === 'modified') {
-            await this.renderModifiedFiles(contentContainer);
-        } else if (this.currentViewMode === 'global') {
-            await this.renderGlobalHistory(contentContainer);
+        try {
+            // 离屏渲染：创建一个内存中的缓冲区
+            const buffer = createDiv();
+            buffer.addClass('version-history-view');
+
+            this.renderTabs(buffer);
+
+            const contentContainer = buffer.createEl('div', { cls: 'vc-content-area' });
+            
+            // 异步加载数据到缓冲区
+            if (this.currentViewMode === 'current') {
+                await this.renderCurrentFileHistory(contentContainer);
+            } else if (this.currentViewMode === 'modified') {
+                await this.renderModifiedFiles(contentContainer);
+            } else if (this.currentViewMode === 'global') {
+                await this.renderGlobalHistory(contentContainer);
+            }
+
+            // 数据加载完成，一次性替换 DOM，避免白屏闪烁
+            realContainer.empty();
+            realContainer.appendChild(buffer);
+
+        } catch (error) {
+            console.error("Version History Refresh Error:", error);
+            realContainer.empty();
+            realContainer.createEl('div', { text: '加载出错，请查看控制台。' });
+        } finally {
+            this.isRefreshing = false;
         }
     }
 
