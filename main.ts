@@ -2418,6 +2418,7 @@ class DiffModal extends Modal {
     enableMoveDetection: boolean = true;
     showWhitespace: boolean = false;
     isFullscreen: boolean = false; // 新增：全屏状态标记
+    isFocusMode: boolean = false; // 新增：专注模式状态标记
 
     private textDiffContainer: HTMLElement;
     private allVersions: VersionData[] = [];
@@ -2681,6 +2682,12 @@ class DiffModal extends Modal {
                     max-height: none !important;
                 }
 
+                /* 专注模式：隐藏头部元素 */
+                .diff-modal.focus-mode .diff-version-selector-container,
+                .diff-modal.focus-mode .diff-info-banner-compact {
+                    display: none !important;
+                }
+
                 /* 基础 Diff 行布局调整 (原有样式) */
                 .diff-line {
                     display: flex !important;
@@ -2907,6 +2914,16 @@ class DiffModal extends Modal {
                 }));
 
             menu.addSeparator();
+            
+            // 新增：专注模式开关
+            menu.addItem(item => item.setTitle('专注模式 (隐藏头部)')
+                .setChecked(this.isFocusMode)
+                .setIcon('eye-off')
+                .onClick(() => {
+                    this.toggleFocusMode();
+                }));
+
+            menu.addSeparator();
 
             const isLineBased = this.currentGranularity === 'line';
             const isWordCharBased = this.currentGranularity === 'char' || this.currentGranularity === 'word';
@@ -3030,6 +3047,18 @@ class DiffModal extends Modal {
             }
         }
         // 触发 resize 以重新计算分栏对齐
+        this.resizeHandler();
+    }
+
+    // 新增：切换专注模式的方法
+    toggleFocusMode() {
+        this.isFocusMode = !this.isFocusMode;
+        if (this.isFocusMode) {
+            this.contentEl.addClass('focus-mode');
+            new Notice("进入专注模式：头部已隐藏");
+        } else {
+            this.contentEl.removeClass('focus-mode');
+        }
         this.resizeHandler();
     }
 
