@@ -2417,6 +2417,7 @@ class DiffModal extends Modal {
     contextLines: number;
     enableMoveDetection: boolean = true;
     showWhitespace: boolean = false;
+    isFullscreen: boolean = false; // 新增：全屏状态标记
 
     private textDiffContainer: HTMLElement;
     private allVersions: VersionData[] = [];
@@ -2592,7 +2593,7 @@ class DiffModal extends Modal {
     }
 
     async onOpen() {
-        const { contentEl } = this;
+        const { contentEl, modalEl } = this; // 获取 modalEl 以便控制全屏类
         contentEl.addClass('diff-modal');
 
         const styleId = 'version-control-diff-styles';
@@ -2600,7 +2601,87 @@ class DiffModal extends Modal {
             const style = document.createElement('style');
             style.id = styleId;
             style.textContent = `
-                /* 基础 Diff 行布局调整 */
+                /* 标题栏布局 */
+                .diff-modal-header {
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: flex-start;
+                    margin-bottom: 12px;
+                    padding-bottom: 8px;
+                    border-bottom: 1px solid var(--background-modifier-border);
+                }
+                .diff-modal-title-group {
+                    display: flex;
+                    flex-direction: column;
+                    gap: 2px;
+                    flex-grow: 1;
+                    overflow: hidden;
+                }
+                .diff-modal-title {
+                    margin: 0 !important;
+                    line-height: 1.2;
+                }
+                .diff-file-path {
+                    font-size: 0.8em;
+                    color: var(--text-muted);
+                    font-family: var(--font-monospace);
+                    white-space: nowrap;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                }
+                .diff-header-actions {
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                    margin-left: 10px;
+                }
+                .diff-fullscreen-btn {
+                    background: transparent;
+                    border: none;
+                    box-shadow: none;
+                    padding: 4px 8px;
+                    cursor: pointer;
+                    opacity: 0.7;
+                    transition: opacity 0.2s;
+                    font-size: 1.2em;
+                }
+                .diff-fullscreen-btn:hover {
+                    opacity: 1;
+                    background-color: var(--background-modifier-hover);
+                    border-radius: 4px;
+                }
+
+                /* 全屏模式样式 */
+                .modal-container.mod-diff-fullscreen .modal {
+                    width: 100vw !important;
+                    height: 100vh !important;
+                    max-width: 100vw !important;
+                    max-height: 100vh !important;
+                    margin: 0 !important;
+                    border-radius: 0 !important;
+                    top: 0 !important;
+                    left: 0 !important;
+                    padding: 15px !important;
+                    display: flex;
+                    flex-direction: column;
+                }
+                .modal-container.mod-diff-fullscreen .modal-content {
+                    display: flex;
+                    flex-direction: column;
+                    height: 100%;
+                    padding: 0;
+                    margin: 0;
+                }
+                .modal-container.mod-diff-fullscreen .diff-main-container {
+                    flex-grow: 1;
+                    overflow: hidden; /* 让内部滚动 */
+                }
+                .modal-container.mod-diff-fullscreen .diff-container {
+                    height: 100%;
+                    max-height: none !important;
+                }
+
+                /* 基础 Diff 行布局调整 (原有样式) */
                 .diff-line {
                     display: flex !important;
                     align-items: stretch !important; /* 让高度拉伸以适应内容 */
@@ -2715,9 +2796,32 @@ class DiffModal extends Modal {
 
         window.addEventListener('resize', this.resizeHandler);
 
-        contentEl.createEl('h2', { text: '📊 版本差异对比' });
+        // --------------------------------------------------------
+        // 新增：构建自定义标题栏 (包含全屏按钮和文件路径)
+        // --------------------------------------------------------
+        const headerContainer = contentEl.createEl('div', { cls: 'diff-modal-header' });
+        
+        const titleGroup = headerContainer.createEl('div', { cls: 'diff-modal-title-group' });
+        titleGroup.createEl('h2', { text: '📊 版本差异对比', cls: 'diff-modal-title' });
+        // 添加文件路径显示
+        titleGroup.createEl('div', { text: this.file.path, cls: 'diff-file-path', attr: { title: this.file.path } });
 
-        const headerContainer = contentEl.createEl('div');
+        const headerActions = headerContainer.createEl('div', { cls: 'diff-header-actions' });
+        
+        // 添加全屏按钮
+        const fullscreenBtn = headerActions.createEl('button', { 
+            cls: 'diff-fullscreen-btn', 
+            attr: { 'aria-label': '切换全屏', 'title': '切换全屏' } 
+        });
+        fullscreenBtn.innerHTML = '⛶'; // 使用 Unicode 图标或 Obsidian Icon
+        fullscreenBtn.addEventListener('click', () => {
+            this.toggleFullscreen();
+            fullscreenBtn.innerHTML = this.isFullscreen ? '↙' : '⛶'; // 切换图标
+        });
+
+        // --------------------------------------------------------
+
+        const controlsContainer = contentEl.createEl('div');
         const mainContainer = contentEl.createEl('div', { cls: 'diff-main-container' });
         this.textDiffContainer = mainContainer.createEl('div', { cls: 'diff-container' });
 
@@ -2732,11 +2836,11 @@ class DiffModal extends Modal {
             return;
         }
 
-        this.renderVersionSelectors(headerContainer);
+        this.renderVersionSelectors(controlsContainer);
         
-        this.infoBannerContainer = headerContainer.createEl('div', { cls: 'diff-info-banner-compact' });
+        this.infoBannerContainer = controlsContainer.createEl('div', { cls: 'diff-info-banner-compact' });
 
-        const toolbar = headerContainer.createEl('div', { cls: 'diff-toolbar-redesigned' });
+        const toolbar = controlsContainer.createEl('div', { cls: 'diff-toolbar-redesigned' });
         
         const navGroup = toolbar.createEl('div', { cls: 'diff-toolbar-group', attr: { id: 'diff-nav-group' } });
         const firstDiffBtn = navGroup.createEl('button', { text: '«', attr: { 'aria-label': '第一个差异' } });
@@ -2792,7 +2896,7 @@ class DiffModal extends Modal {
             const modeSelect = this.containerEl.querySelector('.diff-select[aria-label="视图模式"]') as HTMLSelectElement;
             menu.addItem(item => item.setTitle('统一视图').setChecked(modeSelect.value === 'unified').onClick(() => { modeSelect.value = 'unified'; modeSelect.dispatchEvent(new Event('change')); }));
             menu.addItem(item => item.setTitle('左右分栏').setChecked(modeSelect.value === 'split').onClick(() => { modeSelect.value = 'split'; modeSelect.dispatchEvent(new Event('change')); }));
-            
+
             menu.addItem(item => item.setTitle('紧凑型统一视图')
                 .setChecked(this.plugin.settings.compactUnifiedDiff)
                 .setDisabled(modeSelect.value !== 'unified')
@@ -2877,7 +2981,7 @@ class DiffModal extends Modal {
             menu.showAtMouseEvent(e as MouseEvent);
         });
         
-        const modeSelect = headerContainer.createEl('select', { cls: 'diff-select', attr: { 'aria-label': '视图模式', 'style': 'display: none;' } });
+        const modeSelect = controlsContainer.createEl('select', { cls: 'diff-select', attr: { 'aria-label': '视图模式', 'style': 'display: none;' } });
         modeSelect.createEl('option', { text: '统一视图', value: 'unified' });
         modeSelect.createEl('option', { text: '左右分栏', value: 'split' });
         modeSelect.value = this.plugin.settings.diffViewMode;
@@ -2910,6 +3014,23 @@ class DiffModal extends Modal {
         });
 
         await this.updateDiffView();
+    }
+
+    // 新增：切换全屏状态的方法
+    toggleFullscreen() {
+        this.isFullscreen = !this.isFullscreen;
+        // 获取 Modal 的最外层容器（通常是 .modal-container 或 .modal-bg 的父级，或者直接控制 .modal-container）
+        // 在 Obsidian 中，Modal 通常被包裹在 .modal-container 中
+        const container = this.modalEl.parentElement; 
+        if (container) {
+            if (this.isFullscreen) {
+                container.addClass('mod-diff-fullscreen');
+            } else {
+                container.removeClass('mod-diff-fullscreen');
+            }
+        }
+        // 触发 resize 以重新计算分栏对齐
+        this.resizeHandler();
     }
 
     updateGranularity(granularity: 'char' | 'word' | 'line') {
@@ -4071,6 +4192,10 @@ class DiffModal extends Modal {
 
     onClose() {
         window.removeEventListener('resize', this.resizeHandler);
+        // 移除全屏类，防止影响其他 Modal（虽然 Modal 销毁后 container 通常也会被移除，但为了安全起见）
+        if (this.modalEl.parentElement) {
+            this.modalEl.parentElement.removeClass('mod-diff-fullscreen');
+        }
         const { contentEl } = this;
         contentEl.empty();
     }
