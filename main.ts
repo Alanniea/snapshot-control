@@ -3905,7 +3905,7 @@ class DiffModal extends Modal {
                         const newLine = rightLines[j];
                         const lineDiff = secondaryDiffFn(oldLine, newLine);
                         
-                        const leftFrag = createHighlightedFragment(lineDiff.filter(p => !p.added), false);
+                        const leftFrag = createHighlightedFragment(lineDiff.filter(p => !p.added), true);
                         renderLine(leftFrag, 'removed', leftLineNum++, null);
                         
                         const rightFrag = createHighlightedFragment(lineDiff.filter(p => !p.removed), false);
@@ -4221,10 +4221,6 @@ class DiffModal extends Modal {
 
     onClose() {
         window.removeEventListener('resize', this.resizeHandler);
-        // 移除全屏类，防止影响其他 Modal（虽然 Modal 销毁后 container 通常也会被移除，但为了安全起见）
-        if (this.modalEl.parentElement) {
-            this.modalEl.parentElement.removeClass('mod-diff-fullscreen');
-        }
         const { contentEl } = this;
         contentEl.empty();
     }
