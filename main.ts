@@ -2792,6 +2792,15 @@ class DiffModal extends Modal {
             const modeSelect = this.containerEl.querySelector('.diff-select[aria-label="视图模式"]') as HTMLSelectElement;
             menu.addItem(item => item.setTitle('统一视图').setChecked(modeSelect.value === 'unified').onClick(() => { modeSelect.value = 'unified'; modeSelect.dispatchEvent(new Event('change')); }));
             menu.addItem(item => item.setTitle('左右分栏').setChecked(modeSelect.value === 'split').onClick(() => { modeSelect.value = 'split'; modeSelect.dispatchEvent(new Event('change')); }));
+            
+            menu.addItem(item => item.setTitle('紧凑型统一视图')
+                .setChecked(this.plugin.settings.compactUnifiedDiff)
+                .setDisabled(modeSelect.value !== 'unified')
+                .onClick(async () => {
+                    this.plugin.settings.compactUnifiedDiff = !this.plugin.settings.compactUnifiedDiff;
+                    await this.plugin.saveSettings();
+                    this.renderTextDiff();
+                }));
 
             menu.addSeparator();
 
@@ -4515,16 +4524,6 @@ class VersionControlSettingTab extends PluginSettingTab {
                 .setValue(this.plugin.settings.inlineDiffAlgorithm)
                 .onChange(async (value: 'word' | 'char') => {
                     this.plugin.settings.inlineDiffAlgorithm = value;
-                    await this.plugin.saveSettings();
-                }));
-        
-        new Setting(containerEl)
-            .setName('启用紧凑型统一视图')
-            .setDesc('开启后，在统一视图模式下，修改的行将只显示为一行（隐藏删除的文字），只高亮显示最终结果中的新增部分。')
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.compactUnifiedDiff)
-                .onChange(async (value) => {
-                    this.plugin.settings.compactUnifiedDiff = value;
                     await this.plugin.saveSettings();
                 }));
 
