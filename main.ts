@@ -64,7 +64,7 @@ interface VersionControlSettings {
     enableStatusBarDiff: boolean;
     showLastSaveTimeInStatusBar: boolean;
 
-    // inlineDiffAlgorithm removed
+    inlineDiffAlgorithm: 'word' | 'char' | 'line';
     // smartWordDiff: boolean; // Removed
     diffContextLines: number;
     compactUnifiedDiff: boolean; 
@@ -102,7 +102,7 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
     enableStatusBarDiff: true,
     showLastSaveTimeInStatusBar: true,
     
-    // inlineDiffAlgorithm removed (defaulted to word behavior in logic)
+    inlineDiffAlgorithm: 'word',
     // smartWordDiff: true, // Removed
     diffContextLines: 3,
     compactUnifiedDiff: false, 
@@ -2819,7 +2819,23 @@ class DiffModal extends Modal {
             menu.addItem(item => item.setTitle('行').setChecked(this.currentGranularity === 'line').onClick(() => this.updateGranularity('line')));
 
             // Removed Smart Word Mode menu item
-            // Removed Inline Diff Algorithm menu items
+
+            menu.addItem(item => item.setTitle('行内差异算法').setDisabled(true));
+            menu.addItem(item => item.setTitle('按单词').setChecked(this.plugin.settings.inlineDiffAlgorithm === 'word').onClick(async () => {
+                this.plugin.settings.inlineDiffAlgorithm = 'word';
+                await this.plugin.saveSettings();
+                this.renderTextDiff();
+            }));
+            menu.addItem(item => item.setTitle('按字符').setChecked(this.plugin.settings.inlineDiffAlgorithm === 'char').onClick(async () => {
+                this.plugin.settings.inlineDiffAlgorithm = 'char';
+                await this.plugin.saveSettings();
+                this.renderTextDiff();
+            }));
+            menu.addItem(item => item.setTitle('按行').setChecked(this.plugin.settings.inlineDiffAlgorithm === 'line').onClick(async () => {
+                this.plugin.settings.inlineDiffAlgorithm = 'line';
+                await this.plugin.saveSettings();
+                this.renderTextDiff();
+            }));
 
             menu.addSeparator();
             menu.addItem(item => item.setTitle('视图模式').setDisabled(true));
@@ -3656,12 +3672,23 @@ class DiffModal extends Modal {
         
         const useCompactView = this.plugin.settings.compactUnifiedDiff;
 
-        // Hardcoded secondary diff function since setting is removed
-        const secondaryDiffFn = Diff.diffWordsWithSpace;
+        // 修改 secondaryDiffFn 的获取逻辑，添加类型转换和默认处理
+        const secondaryDiffFn = (text1: string, text2: string): Diff.Change[] => {
+             if (this.plugin.settings.inlineDiffAlgorithm === 'line') {
+                 return Diff.diffLines(text1, text2);
+             } else if (this.plugin.settings.inlineDiffAlgorithm === 'char') {
+                 // @ts-ignore: Fix TS2554 expecting options/callback
+                 return Diff.diffChars(text1, text2);
+             } else {
+                 // @ts-ignore: Fix TS2554
+                 return Diff.diffWordsWithSpace(text1, text2);
+             }
+        };
 
         const createHighlightedFragment = (diffParts: Diff.Change[], includeRemoved: boolean = true): DocumentFragment => {
             const fragment = document.createDocumentFragment();
-            diffParts.forEach(part => {
+            // 确保 diffParts 是数组
+            (diffParts || []).forEach((part: Diff.Change) => {
                 const className = part.added ? 'diff-word-added' : (part.removed ? 'diff-word-removed' : '');
                 const processedText = this.showWhitespace ? this.visualizeWhitespace(part.value) : part.value;
                 
@@ -3826,10 +3853,11 @@ class DiffModal extends Modal {
                         const newLine = rightLines[j];
                         const lineDiff = secondaryDiffFn(oldLine, newLine);
                         
-                        const leftFrag = createHighlightedFragment(lineDiff.filter(p => !p.added), true);
+                        // 显式类型处理，避免隐式 any 和 undefined 错误
+                        const leftFrag = createHighlightedFragment((lineDiff || []).filter((p: Diff.Change) => !p.added), true);
                         renderLine(leftFrag, 'removed', leftLineNum++, null);
                         
-                        const rightFrag = createHighlightedFragment(lineDiff.filter(p => !p.removed), false);
+                        const rightFrag = createHighlightedFragment((lineDiff || []).filter((p: Diff.Change) => !p.removed), false);
                         renderLine(rightFrag, 'added', null, rightLineNum++, undefined, oldLine);
                     }
                 } else {
@@ -3875,7 +3903,6 @@ class DiffModal extends Modal {
                         else if (part.removed) renderLine(line, 'removed', leftLineNum++, null);
                     }
                 }
-                i++;
             }
         }
     }
@@ -3931,12 +3958,23 @@ class DiffModal extends Modal {
         let rightLineNum = 1;
         let diffIdx = 0;
 
-        // Hardcoded secondary diff function since setting is removed
-        const secondaryDiffFn = Diff.diffWordsWithSpace;
+        // 修改 secondaryDiffFn 的获取逻辑，添加类型转换和默认处理
+        const secondaryDiffFn = (text1: string, text2: string): Diff.Change[] => {
+            if (this.plugin.settings.inlineDiffAlgorithm === 'line') {
+                return Diff.diffLines(text1, text2);
+            } else if (this.plugin.settings.inlineDiffAlgorithm === 'char') {
+                // @ts-ignore: Fix TS2554 expecting options/callback
+                return Diff.diffChars(text1, text2);
+            } else {
+                // @ts-ignore: Fix TS2554
+                return Diff.diffWordsWithSpace(text1, text2);
+            }
+        };
     
         const createHighlightedFragment = (diffParts: Diff.Change[]): DocumentFragment => {
             const fragment = document.createDocumentFragment();
-            diffParts.forEach(part => {
+            // 确保 diffParts 是数组
+            (diffParts || []).forEach((part: Diff.Change) => {
                 const className = part.added ? 'diff-word-added' : part.removed ? 'diff-word-removed' : '';
                 const processedText = this.showWhitespace ? this.visualizeWhitespace(part.value) : part.value;
                 
@@ -4042,8 +4080,9 @@ class DiffModal extends Modal {
     
                     if (leftLine !== undefined && rightLine !== undefined) {
                         const lineDiff = secondaryDiffFn(leftLine, rightLine);
-                        const leftFrag = createHighlightedFragment(lineDiff.filter(p => !p.added));
-                        const rightFrag = createHighlightedFragment(lineDiff.filter(p => !p.removed));
+                        // 显式类型处理
+                        const leftFrag = createHighlightedFragment((lineDiff || []).filter((p: Diff.Change) => !p.added));
+                        const rightFrag = createHighlightedFragment((lineDiff || []).filter((p: Diff.Change) => !p.removed));
                         renderLine(leftPanel, leftFrag, 'modified', leftLineNum++);
                         renderLine(rightPanel, rightFrag, 'modified', rightLineNum++, undefined, leftLine);
                     } else if (leftLine !== undefined) {
@@ -4575,7 +4614,18 @@ class VersionControlSettingTab extends PluginSettingTab {
                     }
                 }));
 
-        // inlineDiffAlgorithm setting removed
+        new Setting(containerEl)
+            .setName('行内差异算法')
+            .setDesc('当使用“行级”对比时，指定行内高亮的算法。')
+            .addDropdown(dropdown => dropdown
+                .addOption('word', '按单词（推荐）')
+                .addOption('char', '按字符（更精确）')
+                .addOption('line', '按行')
+                .setValue(this.plugin.settings.inlineDiffAlgorithm)
+                .onChange(async (value: 'word' | 'char' | 'line') => {
+                    this.plugin.settings.inlineDiffAlgorithm = value;
+                    await this.plugin.saveSettings();
+                }));
 
         containerEl.createEl('h3', { text: '🛠️ 维护操作' });
 
