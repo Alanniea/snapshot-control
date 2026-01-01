@@ -65,7 +65,7 @@ interface VersionControlSettings {
     showLastSaveTimeInStatusBar: boolean;
 
     inlineDiffAlgorithm: 'word' | 'char';
-    smartWordDiff: boolean;
+    // smartWordDiff: boolean; // Removed
     diffContextLines: number;
     compactUnifiedDiff: boolean; 
 }
@@ -103,7 +103,7 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
     showLastSaveTimeInStatusBar: true,
     
     inlineDiffAlgorithm: 'word',
-    smartWordDiff: true,
+    // smartWordDiff: true, // Removed
     diffContextLines: 3,
     compactUnifiedDiff: false, 
 };
@@ -2531,68 +2531,6 @@ class DiffModal extends Modal {
         return text.replace(/\t/g, '→   ').replace(/ /g, '·');
     }
 
-    private smartDiffWords(oldStr: string, newStr: string): Diff.Change[] {
-        if (typeof Intl !== 'undefined' && (Intl as any).Segmenter) {
-            try {
-                const segmenter = new (Intl as any).Segmenter(undefined, { granularity: 'word' });
-                const tokenize = (input: string) => Array.from(segmenter.segment(input)).map((s: any) => s.segment);
-                
-                const oldTokens = tokenize(oldStr);
-                const newTokens = tokenize(newStr);
-                
-                const diffResult = Diff.diffArrays(oldTokens, newTokens);
-                
-                const result: Diff.Change[] = [];
-                diffResult.forEach(part => {
-                    const value = part.value.join('');
-                    if (result.length > 0) {
-                        const last = result[result.length - 1];
-                        if (last.added === part.added && last.removed === part.removed) {
-                            last.value += value;
-                            last.count = (last.count || 0) + (part.count || 0);
-                            return;
-                        }
-                    }
-                    result.push({
-                        value: value,
-                        added: part.added,
-                        removed: part.removed,
-                        count: part.count
-                    });
-                });
-                return result;
-            } catch (e) {
-                console.warn("Intl.Segmenter failed, falling back to regex", e);
-            }
-        }
-
-        const splitRegex = /(\w+|[^\w]+)/g;
-        const oldTokens = oldStr.match(splitRegex) || [];
-        const newTokens = newStr.match(splitRegex) || [];
-
-        const diffResult = Diff.diffArrays(oldTokens, newTokens);
-
-        const result: Diff.Change[] = [];
-        diffResult.forEach(part => {
-            const value = part.value.join('');
-            if (result.length > 0) {
-                const last = result[result.length - 1];
-                if (last.added === part.added && last.removed === part.removed) {
-                    last.value += value;
-                    last.count = (last.count || 0) + (part.count || 0);
-                    return;
-                }
-            }
-            result.push({
-                value: value,
-                added: part.added,
-                removed: part.removed,
-                count: part.count
-            });
-        });
-        return result;
-    }
-
     async onOpen() {
         const { contentEl, modalEl } = this; // 获取 modalEl 以便控制全屏类
         contentEl.addClass('diff-modal');
@@ -2880,12 +2818,8 @@ class DiffModal extends Modal {
             menu.addItem(item => item.setTitle('单词').setChecked(this.currentGranularity === 'word').onClick(() => this.updateGranularity('word')));
             menu.addItem(item => item.setTitle('行').setChecked(this.currentGranularity === 'line').onClick(() => this.updateGranularity('line')));
 
-            menu.addItem(item => item.setTitle('智能对比').setDisabled(true).setSection('diff-settings-group-label'));
-            menu.addItem(item => item.setTitle('智能单词模式').setChecked(this.plugin.settings.smartWordDiff).onClick(async () => {
-                this.plugin.settings.smartWordDiff = !this.plugin.settings.smartWordDiff;
-                await this.plugin.saveSettings();
-                this.renderTextDiff();
-            }));
+            // Removed Smart Word Mode menu item
+
             menu.addItem(item => item.setTitle('行内差异算法').setDisabled(true));
             menu.addItem(item => item.setTitle('按单词').setChecked(this.plugin.settings.inlineDiffAlgorithm === 'word').onClick(async () => {
                 this.plugin.settings.inlineDiffAlgorithm = 'word';
@@ -3694,7 +3628,7 @@ class DiffModal extends Modal {
         if (this.currentGranularity === 'char' || this.currentGranularity === 'word') {
             const diffFn = this.currentGranularity === 'char'
                 ? Diff.diffChars
-                : (this.plugin.settings.smartWordDiff ? this.smartDiffWords : Diff.diffWordsWithSpace);
+                : Diff.diffWordsWithSpace;
             
             const diffResult = diffFn(left, right);
             
@@ -3734,7 +3668,7 @@ class DiffModal extends Modal {
         const useCompactView = this.plugin.settings.compactUnifiedDiff;
 
         const getSecondaryDiffFn = () => {
-            return this.plugin.settings.inlineDiffAlgorithm === 'char' ? Diff.diffChars : (this.plugin.settings.smartWordDiff ? this.smartDiffWords : Diff.diffWordsWithSpace);
+            return this.plugin.settings.inlineDiffAlgorithm === 'char' ? Diff.diffChars : Diff.diffWordsWithSpace;
         };
         const secondaryDiffFn = getSecondaryDiffFn();
 
@@ -3975,7 +3909,7 @@ class DiffModal extends Modal {
         if (this.currentGranularity === 'char' || this.currentGranularity === 'word') {
             const diffFn = this.currentGranularity === 'char'
                 ? Diff.diffChars
-                : (this.plugin.settings.smartWordDiff ? this.smartDiffWords : Diff.diffWordsWithSpace);
+                : Diff.diffWordsWithSpace;
             
             const diffResult = diffFn(leftText, rightText);
             let diffIdx = 0;
@@ -4010,7 +3944,7 @@ class DiffModal extends Modal {
         let diffIdx = 0;
 
         const getSecondaryDiffFn = () => {
-            return this.plugin.settings.inlineDiffAlgorithm === 'char' ? Diff.diffChars : (this.plugin.settings.smartWordDiff ? this.smartDiffWords : Diff.diffWordsWithSpace);
+            return this.plugin.settings.inlineDiffAlgorithm === 'char' ? Diff.diffChars : Diff.diffWordsWithSpace;
         };
         const secondaryDiffFn = getSecondaryDiffFn();
     
@@ -4653,16 +4587,6 @@ class VersionControlSettingTab extends PluginSettingTab {
                         this.plugin.settings.diffContextLines = num;
                         await this.plugin.saveSettings();
                     }
-                }));
-
-        new Setting(containerEl)
-            .setName('启用智能单词对比')
-            .setDesc('开启后，“单词级”对比会更智能地处理标点符号，减少误报。')
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.smartWordDiff)
-                .onChange(async (value) => {
-                    this.plugin.settings.smartWordDiff = value;
-                    await this.plugin.saveSettings();
                 }));
 
         new Setting(containerEl)
