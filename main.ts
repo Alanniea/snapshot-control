@@ -64,7 +64,7 @@ interface VersionControlSettings {
     enableStatusBarDiff: boolean;
     showLastSaveTimeInStatusBar: boolean;
 
-    inlineDiffAlgorithm: 'word' | 'char';
+    // inlineDiffAlgorithm removed
     // smartWordDiff: boolean; // Removed
     diffContextLines: number;
     compactUnifiedDiff: boolean; 
@@ -102,7 +102,7 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
     enableStatusBarDiff: true,
     showLastSaveTimeInStatusBar: true,
     
-    inlineDiffAlgorithm: 'word',
+    // inlineDiffAlgorithm removed (defaulted to word behavior in logic)
     // smartWordDiff: true, // Removed
     diffContextLines: 3,
     compactUnifiedDiff: false, 
@@ -2819,18 +2819,7 @@ class DiffModal extends Modal {
             menu.addItem(item => item.setTitle('行').setChecked(this.currentGranularity === 'line').onClick(() => this.updateGranularity('line')));
 
             // Removed Smart Word Mode menu item
-
-            menu.addItem(item => item.setTitle('行内差异算法').setDisabled(true));
-            menu.addItem(item => item.setTitle('按单词').setChecked(this.plugin.settings.inlineDiffAlgorithm === 'word').onClick(async () => {
-                this.plugin.settings.inlineDiffAlgorithm = 'word';
-                await this.plugin.saveSettings();
-                this.renderTextDiff();
-            }));
-            menu.addItem(item => item.setTitle('按字符').setChecked(this.plugin.settings.inlineDiffAlgorithm === 'char').onClick(async () => {
-                this.plugin.settings.inlineDiffAlgorithm = 'char';
-                await this.plugin.saveSettings();
-                this.renderTextDiff();
-            }));
+            // Removed Inline Diff Algorithm menu items
 
             menu.addSeparator();
             menu.addItem(item => item.setTitle('视图模式').setDisabled(true));
@@ -3667,10 +3656,8 @@ class DiffModal extends Modal {
         
         const useCompactView = this.plugin.settings.compactUnifiedDiff;
 
-        const getSecondaryDiffFn = () => {
-            return this.plugin.settings.inlineDiffAlgorithm === 'char' ? Diff.diffChars : Diff.diffWordsWithSpace;
-        };
-        const secondaryDiffFn = getSecondaryDiffFn();
+        // Hardcoded secondary diff function since setting is removed
+        const secondaryDiffFn = Diff.diffWordsWithSpace;
 
         const createHighlightedFragment = (diffParts: Diff.Change[], includeRemoved: boolean = true): DocumentFragment => {
             const fragment = document.createDocumentFragment();
@@ -3888,6 +3875,7 @@ class DiffModal extends Modal {
                         else if (part.removed) renderLine(line, 'removed', leftLineNum++, null);
                     }
                 }
+                i++;
             }
         }
     }
@@ -3943,10 +3931,8 @@ class DiffModal extends Modal {
         let rightLineNum = 1;
         let diffIdx = 0;
 
-        const getSecondaryDiffFn = () => {
-            return this.plugin.settings.inlineDiffAlgorithm === 'char' ? Diff.diffChars : Diff.diffWordsWithSpace;
-        };
-        const secondaryDiffFn = getSecondaryDiffFn();
+        // Hardcoded secondary diff function since setting is removed
+        const secondaryDiffFn = Diff.diffWordsWithSpace;
     
         const createHighlightedFragment = (diffParts: Diff.Change[]): DocumentFragment => {
             const fragment = document.createDocumentFragment();
@@ -4589,17 +4575,7 @@ class VersionControlSettingTab extends PluginSettingTab {
                     }
                 }));
 
-        new Setting(containerEl)
-            .setName('行内差异算法')
-            .setDesc('当使用“行级”对比时，指定行内高亮的算法。')
-            .addDropdown(dropdown => dropdown
-                .addOption('word', '按单词（推荐）')
-                .addOption('char', '按字符（更精确）')
-                .setValue(this.plugin.settings.inlineDiffAlgorithm)
-                .onChange(async (value: 'word' | 'char') => {
-                    this.plugin.settings.inlineDiffAlgorithm = value;
-                    await this.plugin.saveSettings();
-                }));
+        // inlineDiffAlgorithm setting removed
 
         containerEl.createEl('h3', { text: '🛠️ 维护操作' });
 
