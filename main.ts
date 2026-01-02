@@ -1684,14 +1684,6 @@ class VersionHistoryView extends ItemView {
                 const timeEl = timeRow.createEl('span', { text: this.plugin.formatTime(version.timestamp), cls: 'version-time', attr: { title: absoluteTimeStr } });
                 timeEl.dataset.timestamp = String(version.timestamp);
 
-                if (this.plugin.settings.useRelativeTime) {
-                    timeRow.createEl('small', {
-                        text: new Date(version.timestamp).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-                        cls: 'version-time-absolute',
-                        attr: { style: 'margin-left: 6px; color: var(--text-muted); font-size: 0.8em;' }
-                    });
-                }
-                
                 const messageEl = info.createEl('div', { cls: 'version-message-row' });
                 const saveTypeLabel = this.plugin.getSaveTypeLabel(version.message);
                 let tagClass = 'version-tag-auto';
