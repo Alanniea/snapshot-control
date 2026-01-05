@@ -2790,23 +2790,6 @@ class DiffModal extends Modal {
         spacer.style.flexGrow = '1';
 
         const actionsGroup = toolbar.createEl('div', { cls: 'diff-toolbar-group' });
-
-        // --- 修改处：添加保存按钮 ---
-        const saveVersionBtn = actionsGroup.createEl('button', { text: '💾 保存', attr: { 'aria-label': '保存当前文件为新版本' } });
-        saveVersionBtn.addEventListener('click', () => {
-            new VersionMessageModal(this.app, this.plugin.settings, async (message, tags) => {
-                await this.plugin.createVersion(this.file, message, true, tags, true);
-                
-                // 刷新内部版本列表缓存，以便选择器中能看到新版本
-                this.allVersions = await this.plugin.getAllVersions(this.file.path);
-                
-                // 更新界面元素
-                this.updateSelectorButtonLabels(); 
-                this.plugin.updateStatusBar();
-            }).open();
-        });
-        // ---------------------------
-
         const actionsBtn = actionsGroup.createEl('button', { text: '操作 ...', attr: { 'aria-label': '更多操作' } });
         actionsBtn.addEventListener('click', (e) => {
             const menu = new Menu();
