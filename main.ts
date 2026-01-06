@@ -2745,6 +2745,29 @@ class DiffModal extends Modal {
 
         const headerActions = headerContainer.createEl('div', { cls: 'diff-header-actions' });
         
+        // ==================== [新增代码: 添加保存新版本按钮] ====================
+        const saveNewVersionBtn = headerActions.createEl('button', { 
+            cls: 'diff-fullscreen-btn', // 复用全屏按钮的样式保持一致
+            attr: { 'aria-label': '保存当前文件为新版本', 'title': '保存新版本' } 
+        });
+        saveNewVersionBtn.innerHTML = '💾'; // 使用软盘图标
+        saveNewVersionBtn.addEventListener('click', () => {
+            // 打开输入备注的弹窗
+            new VersionMessageModal(this.app, this.plugin.settings, async (message, tags) => {
+                // 执行创建版本逻辑
+                await this.plugin.createVersion(this.file, message, true, tags, true);
+                
+                // 关键：创建版本后，刷新当前 Modal 内部缓存的版本列表
+                try {
+                    this.allVersions = await this.plugin.getAllVersions(this.file.path);
+                    new Notice("新版本已保存并更新列表");
+                } catch (e) {
+                    console.error("刷新版本列表失败", e);
+                }
+            }).open();
+        });
+        // ==================== [新增代码结束] ====================
+
         // 添加全屏按钮
         const fullscreenBtn = headerActions.createEl('button', { 
             cls: 'diff-fullscreen-btn', 
