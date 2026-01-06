@@ -2760,7 +2760,6 @@ class DiffModal extends Modal {
                 // 关键：创建版本后，刷新当前 Modal 内部缓存的版本列表
                 try {
                     this.allVersions = await this.plugin.getAllVersions(this.file.path);
-                    new Notice("新版本已保存并更新列表");
                 } catch (e) {
                     console.error("刷新版本列表失败", e);
                 }
