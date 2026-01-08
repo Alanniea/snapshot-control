@@ -4236,22 +4236,13 @@ class VersionControlSettingTab extends PluginSettingTab {
         containerEl.createEl('h3', { text: '⚙️ 基础设置' });
 
         new Setting(containerEl)
-            .setName('在状态栏显示上次保存时间')
-            .setDesc('开启后，状态栏将显示相对的上次保存时间；关闭则显示通用状态。')
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.showLastSaveTimeInStatusBar)
-                .onChange(async (value) => {
-                    this.plugin.settings.showLastSaveTimeInStatusBar = value;
-                    await this.plugin.saveSettings();
-                }));
-
-        new Setting(containerEl)
-            .setName('启用状态栏快速对比')
-            .setDesc('点击状态栏可快速对比当前文件与最新版本')
+            .setName('状态栏：显示时间与快速对比')
+            .setDesc('在状态栏显示上次保存的相对时间，点击即可快速对比。关闭后仅显示状态图标。')
             .addToggle(toggle => toggle
                 .setValue(this.plugin.settings.enableStatusBarDiff)
                 .onChange(async (value) => {
                     this.plugin.settings.enableStatusBarDiff = value;
+                    this.plugin.settings.showLastSaveTimeInStatusBar = value;
                     await this.plugin.saveSettings();
                     
                     if (value) {
@@ -4259,6 +4250,7 @@ class VersionControlSettingTab extends PluginSettingTab {
                     } else {
                         this.plugin.statusBarItem.removeClass('version-control-statusbar-clickable');
                     }
+                    this.plugin.updateStatusBar();
                 }));
 
         new Setting(containerEl)
