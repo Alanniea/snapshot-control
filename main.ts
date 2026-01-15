@@ -278,7 +278,7 @@ export default class VersionControlPlugin extends Plugin {
         return (hash >>> 0).toString(16);
     }
 
-    // --- 修改开始：文件名处理逻辑 ---
+    // --- 文件名处理逻辑 ---
 
     /**
      * 新的获取路径方法：允许中文字符，只替换文件系统非法字符
@@ -795,76 +795,109 @@ export default class VersionControlPlugin extends Plugin {
         return originalCount - versionFile.versions.length;
     }
 
-    // --- 修改：增加自动迁移逻辑 ---
+    // --- 修改：增加智能迁移与合并逻辑 ---
     async loadVersionFile(filePath: string): Promise<VersionFile> {
         if (this.versionCache.has(filePath)) {
             return this.versionCache.get(filePath)!;
         }
 
         const adapter = this.app.vault.adapter;
-        
-        // 1. 尝试获取新的（中文）路径
-        let versionPath = this.getVersionFilePath(filePath);
-        
-        // 2. 如果新路径不存在，检查旧的（下划线）路径，如果存在则重命名迁移
-        if (!await adapter.exists(versionPath)) {
-            const strictPath = this.getStrictAsciiVersionFilePath(filePath);
-            if (await adapter.exists(strictPath)) {
+        const versionPath = this.getVersionFilePath(filePath); // 最终目标文件（中文名）
+        let loadedContent: string | null = null;
+        let finalVersionFile: VersionFile;
+
+        // 1. 尝试加载目标文件 (New File)
+        if (await adapter.exists(versionPath)) {
+            try {
+                loadedContent = await this.readCompressedOrRaw(versionPath);
+                finalVersionFile = JSON.parse(loadedContent) as VersionFile;
+            } catch (e) {
+                console.error("Failed to load new version file, will try to recover.", e);
+                // 如果新文件坏了，我们重新开始
+                finalVersionFile = { filePath, versions: [], lastModified: Date.now() };
+            }
+        } else {
+            finalVersionFile = { filePath, versions: [], lastModified: Date.now() };
+        }
+
+        // 2. 定义辅助函数：处理旧文件的迁移/合并
+        const processOldFile = async (oldPath: string) => {
+            if (await adapter.exists(oldPath)) {
                 try {
-                    console.log(`[VersionControl] Migrating version file: ${strictPath} -> ${versionPath}`);
-                    await adapter.rename(strictPath, versionPath);
-                    // 迁移成功，versionPath 现在指向文件了
-                } catch(e) {
-                    console.error("Migration failed:", e);
-                    // 如果重命名失败，尝试读取旧文件
-                    versionPath = strictPath;
-                }
-            } else {
-                // 3. 检查更老的 Legacy 路径
-                const legacyPath = this.getLegacyVersionFilePath(filePath);
-                if (await adapter.exists(legacyPath)) {
-                    versionPath = legacyPath;
-                }
-            }
-        }
-
-        try {
-            if (await adapter.exists(versionPath)) {
-                let content: string;
-                
-                if (this.settings.enableCompression) {
-                    try {
-                        const rawData = await adapter.readBinary(versionPath);
-                        const decompressed = pako.ungzip(new Uint8Array(rawData), { to: 'string' });
-                        content = decompressed;
-                    } catch (e) {
-                        content = await adapter.read(versionPath);
+                    const oldContent = await this.readCompressedOrRaw(oldPath);
+                    const oldData = JSON.parse(oldContent) as VersionFile;
+                    
+                    if (finalVersionFile.versions.length === 0) {
+                        // Case A: 只有旧文件，没有新文件 -> 直接接管旧数据
+                        console.log(`[VersionControl] Migrating (Rename): ${oldPath} -> ${versionPath}`);
+                        finalVersionFile = oldData;
+                        finalVersionFile.filePath = filePath;
+                        // 标记为需要保存（稍后统一保存）
+                    } else {
+                        // Case B: 新旧文件共存 -> 合并旧数据到新文件
+                        console.log(`[VersionControl] Merging legacy file: ${oldPath} into ${versionPath}`);
+                        const existingIds = new Set(finalVersionFile.versions.map(v => v.id));
+                        let mergedCount = 0;
+                        for (const v of oldData.versions) {
+                            if (!existingIds.has(v.id)) {
+                                finalVersionFile.versions.push(v);
+                                mergedCount++;
+                            }
+                        }
+                        if (mergedCount > 0) {
+                            // 重新排序
+                            finalVersionFile.versions.sort((a, b) => b.timestamp - a.timestamp);
+                            new Notice(`已合并 ${mergedCount} 条旧版本记录`);
+                        }
                     }
-                } else {
-                    content = await adapter.read(versionPath);
+                    
+                    // 保存新文件并删除旧文件
+                    this.buildVersionIndex(finalVersionFile);
+                    await this.saveVersionFile(filePath, finalVersionFile);
+                    await adapter.remove(oldPath); // 安全删除旧文件
+                    console.log(`[VersionControl] Deleted legacy file: ${oldPath}`);
+
+                } catch (e) {
+                    console.error(`[VersionControl] Error processing legacy file ${oldPath}`, e);
                 }
-                
-                const versionFile = JSON.parse(content) as VersionFile;
-                versionFile.filePath = filePath; 
-                
-                if (!versionFile.versionIndex) {
-                    this.buildVersionIndex(versionFile);
-                }
-                
-                this.versionCache.set(filePath, versionFile);
-                return versionFile;
             }
-        } catch (error) {
-            console.error('加载版本文件失败:', error);
+        };
+
+        // 3. 执行检查 - 检查“纯下划线”旧文件 (Strict ASCII)
+        const strictPath = this.getStrictAsciiVersionFilePath(filePath);
+        if (strictPath !== versionPath) { // 防止路径相同时重复处理
+            await processOldFile(strictPath);
         }
 
-        const newVersionFile: VersionFile = {
-            filePath,
-            versions: [],
-            lastModified: Date.now()
-        };
-        this.versionCache.set(filePath, newVersionFile);
-        return newVersionFile;
+        // 4. 执行检查 - 检查“旧路径命名”文件 (Legacy Path, 你的截图中那种)
+        const legacyPath = this.getLegacyVersionFilePath(filePath);
+        if (legacyPath !== versionPath && legacyPath !== strictPath) {
+            await processOldFile(legacyPath);
+        }
+
+        // 5. 完成加载
+        if (!finalVersionFile.versionIndex) {
+            this.buildVersionIndex(finalVersionFile);
+        }
+        
+        this.versionCache.set(filePath, finalVersionFile);
+        return finalVersionFile;
+    }
+
+    // 辅助方法：读取压缩或未压缩内容
+    async readCompressedOrRaw(path: string): Promise<string> {
+        const adapter = this.app.vault.adapter;
+        if (this.settings.enableCompression) {
+            try {
+                const rawData = await adapter.readBinary(path);
+                return pako.ungzip(new Uint8Array(rawData), { to: 'string' });
+            } catch (e) {
+                // 如果解压失败，尝试直接读取（可能是未压缩的旧文件）
+                return await adapter.read(path);
+            }
+        } else {
+            return await adapter.read(path);
+        }
     }
 
     async saveVersionFile(filePath: string, versionFile: VersionFile) {
