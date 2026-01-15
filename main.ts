@@ -378,9 +378,21 @@ export default class VersionControlPlugin extends Plugin {
     }
 
     async updateStatusBar() {
-        if (!this.settings.autoSave) { this.statusBarItem.setText('⏸ 版本控制: 已暂停'); this.statusBarItem.title = '自动保存已暂停'; return; }
+        if (!this.settings.autoSave) { 
+            this.statusBarItem.setText('⏸ 版本控制: 已暂停'); 
+            this.statusBarItem.title = '自动保存已暂停'; 
+            return; 
+        }
+        
         const file = this.app.workspace.getActiveFile();
-        if (!this.settings.showLastSaveTimeInStatusBar || !file) { this.statusBarItem.setText('⏱ 版本控制: 已启用'); this.statusBarItem.title = '点击可快速对比当前文件与最新版本'; return; }
+        
+        // 如果未开启显示时间/快速对比，或者没有打开文件，清空状态栏
+        if (!this.settings.showLastSaveTimeInStatusBar || !file) { 
+            this.statusBarItem.setText(''); 
+            this.statusBarItem.title = ''; 
+            return; 
+        }
+        
         const versions = await this.getAllVersions(file.path);
         if (versions.length > 0) {
             const lastVersion = versions[0];
@@ -391,9 +403,10 @@ export default class VersionControlPlugin extends Plugin {
             this.statusBarItem.setText(`${saveTypeLabel}: ${relativeTime}`);
             this.statusBarItem.title = `${saveTypeLabel}于 ${new Date(lastSaveTime).toLocaleString('zh-CN')}. 点击可快速对比。`;
         } else {
+            // 没有历史版本，也不显示通用文字，保持清爽
             this.lastModifiedTime.delete(file.path);
-            this.statusBarItem.setText('⏱ 版本控制: 已启用');
-            this.statusBarItem.title = '当前文件无历史版本。点击可快速对比。';
+            this.statusBarItem.setText(''); 
+            this.statusBarItem.title = '';
         }
     }
 
