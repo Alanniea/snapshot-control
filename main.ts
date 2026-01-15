@@ -1123,6 +1123,7 @@ export default class VersionControlPlugin extends Plugin {
     
     /**
      * 获取所有已修改但未创建快照的文件
+     * 修改说明：增加了 Hash 比对逻辑，防止“修改后撤销”或“假修改”导致文件出现在列表中
      */
     async getModifiedFiles(): Promise<{ file: TFile, lastVersionTime: number }[]> {
         const files = this.app.vault.getMarkdownFiles();
@@ -1143,8 +1144,24 @@ export default class VersionControlPlugin extends Plugin {
                     const versionFile = await this.loadVersionFile(file.path);
                     if (versionFile.versions && versionFile.versions.length > 0) {
                         const lastVersion = versionFile.versions[0];
+                        
+                        // 1. 先检查时间戳（快速筛选），允许 2 秒误差
                         if (file.stat.mtime > lastVersion.timestamp + 2000) {
-                            modifiedFiles.push({ file, lastVersionTime: lastVersion.timestamp });
+                            // 2. 进一步读取内容计算 Hash（精确筛选）
+                            // 只有当内容 Hash 不一致时，才认为是真的修改了
+                            try {
+                                const rawContent = await this.app.vault.read(file);
+                                const content = this.normalizeText(rawContent);
+                                const currentHash = this.hashContent(content);
+
+                                // 如果上一个版本没有 hash (旧数据) 或者 hash 不匹配，则加入列表
+                                if (!lastVersion.hash || lastVersion.hash !== currentHash) {
+                                    modifiedFiles.push({ file, lastVersionTime: lastVersion.timestamp });
+                                }
+                            } catch (e) {
+                                // 如果读取失败，为了安全起见，还是认为是修改过的
+                                modifiedFiles.push({ file, lastVersionTime: lastVersion.timestamp });
+                            }
                         }
                     }
                 } catch (e) {
