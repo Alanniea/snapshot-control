@@ -278,7 +278,23 @@ export default class VersionControlPlugin extends Plugin {
         return (hash >>> 0).toString(16);
     }
 
+    // --- 修改开始：文件名处理逻辑 ---
+
+    /**
+     * 新的获取路径方法：允许中文字符，只替换文件系统非法字符
+     */
     getVersionFilePath(filePath: string): string {
+        const hash = this.stringHash(filePath);
+        const fileName = filePath.split('/').pop() || 'file';
+        // 修改点：只替换 Windows/Linux/Unix 文件系统中的非法字符
+        const safeName = fileName.replace(/[\\/:*?"<>|]/g, '_');
+        return `${this.settings.versionFolder}/${safeName}_${hash}.json`;
+    }
+
+    /**
+     * 旧的严格路径方法：用于查找旧的 ____.json 文件
+     */
+    getStrictAsciiVersionFilePath(filePath: string): string {
         const hash = this.stringHash(filePath);
         const fileName = filePath.split('/').pop() || 'file';
         const safeName = fileName.replace(/[^a-zA-Z0-9.\-_]/g, '_');
@@ -294,9 +310,19 @@ export default class VersionControlPlugin extends Plugin {
         await this.withLock(oldPath, async () => {
             const adapter = this.app.vault.adapter;
             
+            // 尝试查找旧文件的各种可能名称
             let oldVersionPath = this.getVersionFilePath(oldPath);
             if (!await adapter.exists(oldVersionPath)) {
-                oldVersionPath = this.getLegacyVersionFilePath(oldPath);
+                // 检查旧的严格下划线命名
+                const strictPath = this.getStrictAsciiVersionFilePath(oldPath);
+                if (await adapter.exists(strictPath)) {
+                    oldVersionPath = strictPath;
+                } else {
+                    const legacyPath = this.getLegacyVersionFilePath(oldPath);
+                    if (await adapter.exists(legacyPath)) {
+                        oldVersionPath = legacyPath;
+                    }
+                }
             }
 
             if (await adapter.exists(oldVersionPath)) {
@@ -338,7 +364,12 @@ export default class VersionControlPlugin extends Plugin {
             let versionPath = this.getVersionFilePath(filePath);
             
             if (!await adapter.exists(versionPath)) {
-                versionPath = this.getLegacyVersionFilePath(filePath);
+                const strictPath = this.getStrictAsciiVersionFilePath(filePath);
+                if (await adapter.exists(strictPath)) {
+                    versionPath = strictPath;
+                } else {
+                    versionPath = this.getLegacyVersionFilePath(filePath);
+                }
             }
 
             if (await adapter.exists(versionPath)) {
@@ -349,6 +380,8 @@ export default class VersionControlPlugin extends Plugin {
             }
         });
     }
+
+    // --- 修改结束 ---
 
     async loadSettings() { this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData()); }
     async saveSettings() { await this.saveData(this.settings); this.updateStatusBar(); }
@@ -762,6 +795,7 @@ export default class VersionControlPlugin extends Plugin {
         return originalCount - versionFile.versions.length;
     }
 
+    // --- 修改：增加自动迁移逻辑 ---
     async loadVersionFile(filePath: string): Promise<VersionFile> {
         if (this.versionCache.has(filePath)) {
             return this.versionCache.get(filePath)!;
@@ -769,12 +803,28 @@ export default class VersionControlPlugin extends Plugin {
 
         const adapter = this.app.vault.adapter;
         
+        // 1. 尝试获取新的（中文）路径
         let versionPath = this.getVersionFilePath(filePath);
         
+        // 2. 如果新路径不存在，检查旧的（下划线）路径，如果存在则重命名迁移
         if (!await adapter.exists(versionPath)) {
-            const legacyPath = this.getLegacyVersionFilePath(filePath);
-            if (await adapter.exists(legacyPath)) {
-                versionPath = legacyPath;
+            const strictPath = this.getStrictAsciiVersionFilePath(filePath);
+            if (await adapter.exists(strictPath)) {
+                try {
+                    console.log(`[VersionControl] Migrating version file: ${strictPath} -> ${versionPath}`);
+                    await adapter.rename(strictPath, versionPath);
+                    // 迁移成功，versionPath 现在指向文件了
+                } catch(e) {
+                    console.error("Migration failed:", e);
+                    // 如果重命名失败，尝试读取旧文件
+                    versionPath = strictPath;
+                }
+            } else {
+                // 3. 检查更老的 Legacy 路径
+                const legacyPath = this.getLegacyVersionFilePath(filePath);
+                if (await adapter.exists(legacyPath)) {
+                    versionPath = legacyPath;
+                }
             }
         }
 
@@ -902,15 +952,22 @@ export default class VersionControlPlugin extends Plugin {
 
     async verifyVersionFileIntegrity(filePath: string): Promise<boolean> { const errors = await this.verifyFileVersion(filePath); return errors.length === 0; }
     
+    // --- 修改：verifyFileVersion 增加旧文件兼容性 ---
     async verifyFileVersion(filePath: string): Promise<string[]> {
         const errors: string[] = [];
         let versionPath = this.getVersionFilePath(filePath);
         const adapter = this.app.vault.adapter;
         
         if (!await adapter.exists(versionPath)) {
-            versionPath = this.getLegacyVersionFilePath(filePath);
-            if (!await adapter.exists(versionPath)) {
-                return []; 
+            const strictPath = this.getStrictAsciiVersionFilePath(filePath);
+            if (await adapter.exists(strictPath)) {
+                versionPath = strictPath;
+            } else {
+                const legacyPath = this.getLegacyVersionFilePath(filePath);
+                if (!await adapter.exists(legacyPath)) {
+                    return []; 
+                }
+                versionPath = legacyPath;
             }
         }
 
@@ -1137,6 +1194,11 @@ export default class VersionControlPlugin extends Plugin {
             const adapter = this.app.vault.adapter;
 
             let exists = await adapter.exists(versionPath);
+            if (!exists) {
+                // Check strict path if standard path not found
+                const strictPath = this.getStrictAsciiVersionFilePath(file.path);
+                exists = await adapter.exists(strictPath);
+            }
             if (!exists) exists = await adapter.exists(legacyPath);
 
             if (exists) {
