@@ -1348,6 +1348,21 @@ class QuickPreviewModal extends Modal {
     async onOpen() {
         const { contentEl } = this;
         contentEl.addClass('quick-preview-modal');
+        
+        // --- 修复：注入 CSS 允许文本选择 ---
+        const style = document.createElement('style');
+        style.textContent = `
+            .quick-preview-modal .preview-content-container,
+            .quick-preview-modal pre,
+            .quick-preview-modal code,
+            .quick-preview-modal .preview-rendered-content {
+                user-select: text !important;
+                -webkit-user-select: text !important;
+                cursor: text;
+            }
+        `;
+        contentEl.appendChild(style);
+        // ---------------------------------
 
         try {
             this.versionContent = await this.plugin.getVersionContent(this.file.path, this.versionId);
@@ -2763,7 +2778,8 @@ class DiffModal extends Modal {
                     border-right: 1px solid var(--background-modifier-border);
                     margin-right: 8px;
                     flex-shrink: 0;
-                    user-select: none;
+                    user-select: none !important;
+                    -webkit-user-select: none !important;
                 }
 
                 /* 第一排：行号 */
@@ -2805,19 +2821,37 @@ class DiffModal extends Modal {
                 }
 
                 /* 内容区域微调，使其垂直居中或顶部对齐 */
+                /* === 修改：添加允许选择属性 === */
                 .diff-line .line-content {
                     padding-top: 4px; 
                     padding-bottom: 4px;
                     flex-grow: 1;
                     word-break: break-all;
+                    user-select: text !important;
+                    -webkit-user-select: text !important;
+                    cursor: text;
                 }
                 
+                /* 确保高亮的单词也可以被选择，并移除删除线 */
+                .diff-word-added, .diff-word-removed {
+                    user-select: text !important;
+                    -webkit-user-select: text !important;
+                    text-decoration: none !important; /* Fix: remove strikethrough */
+                }
+                
+                /* 确保整行删除的内容也没有删除线 */
+                .diff-line-bg-removed .line-content {
+                     text-decoration: none !important;
+                }
+
                 /* 标记符号 (+/-) 的位置 */
                 .diff-line .diff-marker {
                     margin-right: 6px;
                     opacity: 0.5;
                     font-family: var(--font-monospace);
                     align-self: center;
+                    user-select: none !important;
+                    -webkit-user-select: none !important;
                 }
             `;
             contentEl.appendChild(style);
