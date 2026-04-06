@@ -307,6 +307,107 @@ export default class VersionControlPlugin extends Plugin {
     stringHash(str: string): string { return this.cyrb53(str).toString(36); }
     hashContent(content: string): string { return this.cyrb53(content).toString(36); }
 
+    // 高级 Diff 压缩算法，解决因空行导致的块分离问题
+    getCompactDiffLines(left: string, right: string, ignoreWhitespace: boolean): Diff.Change[] {
+        const rawDiff = Diff.diffLines(left, right, { ignoreWhitespace });
+        const result: Diff.Change[] = [];
+        let i = 0;
+        while (i < rawDiff.length) {
+            let part = rawDiff[i]!;
+            if (part.added || part.removed) {
+                let leftValue = ''; let rightValue = '';
+                let leftCount = 0; let rightCount = 0;
+                let j = i;
+                while (j < rawDiff.length) {
+                    const p = rawDiff[j]!;
+                    if (p.added) {
+                        rightValue += p.value; rightCount += p.count || 0; j++;
+                    } else if (p.removed) {
+                        leftValue += p.value; leftCount += p.count || 0; j++;
+                    } else {
+                        let nextChangeIdx = -1;
+                        for (let k = j + 1; k < rawDiff.length; k++) {
+                            if (rawDiff[k]!.added || rawDiff[k]!.removed) { nextChangeIdx = k; break; }
+                        }
+                        let canMerge = false;
+                        if (nextChangeIdx !== -1) {
+                            let purelyMergeable = true;
+                            for (let k = j; k < nextChangeIdx; k++) {
+                                const ctx = rawDiff[k]!;
+                                const isWhitespace = ctx.value.trim() === '';
+                                const isShort = ctx.count !== undefined && ctx.count <= 2;
+                                if (!isWhitespace && !isShort) { purelyMergeable = false; break; }
+                            }
+                            canMerge = purelyMergeable;
+                        }
+                        if (canMerge) {
+                            leftValue += p.value; leftCount += p.count || 0;
+                            rightValue += p.value; rightCount += p.count || 0;
+                            j++;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                if (leftCount > 0) result.push({ removed: true, added: false, value: leftValue, count: leftCount });
+                if (rightCount > 0) result.push({ added: true, removed: false, value: rightValue, count: rightCount });
+                i = j;
+            } else {
+                result.push(part); i++;
+            }
+        }
+        return result;
+    }
+
+    calculateSimilarity(text1: string, text2: string): number {
+        if (!text1 && !text2) return 100;
+        if (!text1 || !text2) return 0;
+        const diff = Diff.diffChars(text1, text2);
+        let commonLength = 0;
+        diff.forEach(part => {
+            if (!part.added && !part.removed) {
+                commonLength += part.value.length;
+            }
+        });
+        const maxLen = Math.max(text1.length, text2.length);
+        if (maxLen === 0) return 100;
+        return (commonLength / maxLen) * 100;
+    }
+
+    // 独立计算块内真正修改、增加、删除的行数
+    calculateCompactBlockStats(leftLines: string[], rightLines: string[]): { mods: number, adds: number, rems: number } {
+        let mods = 0; let adds = 0; let rems = 0;
+        if (leftLines.length === rightLines.length) {
+            for (let j = 0; j < leftLines.length; j++) {
+                if (leftLines[j] !== rightLines[j]) mods++;
+            }
+        } else {
+            let lIndex = 0; let rIndex = 0;
+            while (lIndex < leftLines.length || rIndex < rightLines.length) {
+                const lLine = leftLines[lIndex]; const rLine = rightLines[rIndex];
+                if (lLine === undefined) { adds++; rIndex++; continue; }
+                if (rLine === undefined) { rems++; lIndex++; continue; }
+                
+                const currentSim = this.calculateSimilarity(lLine, rLine);
+                const nextRightLine = rightLines[rIndex + 1];
+                const insertionSim = nextRightLine !== undefined ? this.calculateSimilarity(lLine, nextRightLine) : 0;
+                const nextLeftLine = leftLines[lIndex + 1];
+                const deletionSim = nextLeftLine !== undefined ? this.calculateSimilarity(nextLeftLine, rLine) : 0;
+
+                const threshold = 30;
+                if (insertionSim > currentSim + threshold) {
+                    adds++; rIndex++;
+                } else if (deletionSim > currentSim + threshold) {
+                    rems++; lIndex++;
+                } else {
+                    if (lLine !== rLine) mods++;
+                    lIndex++; rIndex++;
+                }
+            }
+        }
+        return { mods, adds, rems };
+    }
+
     // --- 文件名处理与兼容逻辑 ---
 
     // 1. 新版路径获取 (使用新 Hash)
@@ -1733,18 +1834,28 @@ class VersionHistoryView extends ItemView {
                 // 强制附加 \n 确保底层统计换行符不出错
                 const safePrev = previousContent + '\n';
                 const safeCurr = currentContent + '\n';
-                const diffResult = Diff.diffLines(safePrev, safeCurr, { ignoreWhitespace: true });
+                
+                // 使用自带的紧凑算法计算
+                const diffResult = this.plugin.getCompactDiffLines(safePrev, safeCurr, true);
                 
                 for (let i = 0; i < diffResult.length; i++) {
                     const part = diffResult[i]!;
                     const nextPart = diffResult[i + 1];
-                    if (part.removed && nextPart?.added) {
-                        const remCount = part.count || 0;
-                        const addCount = nextPart.count || 0;
-                        const overlap = Math.min(remCount, addCount);
-                        modified += overlap;
-                        removed += (remCount - overlap);
-                        added += (addCount - overlap);
+
+                    const isRemoveAdd = part.removed && nextPart?.added;
+                    const isAddRemove = part.added && nextPart?.removed;
+
+                    if (isRemoveAdd || isAddRemove) {
+                        const removedPart = isRemoveAdd ? part : nextPart!;
+                        const addedPart = isRemoveAdd ? nextPart! : part;
+                        
+                        const leftLines = removedPart.value.replace(/\n$/, '').split('\n');
+                        const rightLines = addedPart.value.replace(/\n$/, '').split('\n');
+                        const stats = this.plugin.calculateCompactBlockStats(leftLines, rightLines);
+                        
+                        modified += stats.mods;
+                        removed += stats.rems;
+                        added += stats.adds;
                         i++; 
                     } else {
                         if (part.added) added += part.count || 0;
@@ -2754,22 +2865,6 @@ class DiffModal extends Modal {
         return text.replace(/\t/g, '→   ').replace(/ /g, '·');
     }
 
-    calculateSimilarity(text1: string, text2: string): number {
-        const diff = Diff.diffChars(text1, text2);
-        let commonLength = 0;
-        
-        diff.forEach(part => {
-            if (!part.added && !part.removed) {
-                commonLength += part.value.length;
-            }
-        });
-        
-        const maxLen = Math.max(text1.length, text2.length);
-        if (maxLen === 0) return 100;
-        
-        return (commonLength / maxLen) * 100;
-    }
-
     diffWordsCJK(text1: string, text2: string): Diff.Change[] {
         // 以空格、制表符、换行、常见中英文标点为界限进行切块
         // 保留分隔符，以便还原完整字符串
@@ -2785,8 +2880,8 @@ class DiffModal extends Modal {
             const textValue = part.value ? part.value.join('') : '';
             return {
                 count: textValue.length,
-                added: part.added,
-                removed: part.removed,
+                added: part.added || false,
+                removed: part.removed || false,
                 value: textValue
             };
         }) as Diff.Change[];
@@ -3469,27 +3564,34 @@ class DiffModal extends Modal {
         // 强制无条件追加 \n 确保底层统计不出错
         const safeLeft = leftProcessed + '\n';
         const safeRight = rightProcessed + '\n';
-        const diffResult = Diff.diffLines(safeLeft, safeRight, { ignoreWhitespace: this.ignoreWhitespace });
+        
+        const useCompact = this.plugin.settings.compactUnifiedDiff; 
+        const diffResult = useCompact 
+            ? this.plugin.getCompactDiffLines(safeLeft, safeRight, this.ignoreWhitespace)
+            : Diff.diffLines(safeLeft, safeRight, { ignoreWhitespace: this.ignoreWhitespace });
         
         let addedLines = 0;
         let removedLines = 0;
         let modifiedLines = 0; 
 
-        const useCompact = this.plugin.settings.compactUnifiedDiff; 
-
         for (let i = 0; i < diffResult.length; i++) {
             const part = diffResult[i]!;
             const nextPart = diffResult[i + 1];
 
-            if (useCompact && part.removed && nextPart?.added) {
-                 const remCount = part.count || 0;
-                 const addCount = nextPart.count || 0;
+            const isRemoveAdd = part.removed && nextPart?.added;
+            const isAddRemove = part.added && nextPart?.removed;
+
+            if (useCompact && (isRemoveAdd || isAddRemove)) {
+                 const removedPart = isRemoveAdd ? part : nextPart!;
+                 const addedPart = isRemoveAdd ? nextPart! : part;
                  
-                 const overlap = Math.min(remCount, addCount);
+                 const leftLines = removedPart.value.replace(/\n$/, '').split('\n');
+                 const rightLines = addedPart.value.replace(/\n$/, '').split('\n');
+                 const stats = this.plugin.calculateCompactBlockStats(leftLines, rightLines);
                  
-                 modifiedLines += overlap;
-                 removedLines += (remCount - overlap); 
-                 addedLines += (addCount - overlap);   
+                 modifiedLines += stats.mods;
+                 removedLines += stats.rems; 
+                 addedLines += stats.adds;   
                  
                  i++; 
             } else {
@@ -3551,7 +3653,11 @@ class DiffModal extends Modal {
     showDetailedStats() {
         const safeLeft = this.leftContent + '\n';
         const safeRight = this.rightContent + '\n';
-        const diffResult = Diff.diffLines(safeLeft, safeRight, { ignoreWhitespace: this.ignoreWhitespace });
+        const useCompact = this.plugin.settings.compactUnifiedDiff;
+        
+        const diffResult = useCompact
+            ? this.plugin.getCompactDiffLines(safeLeft, safeRight, this.ignoreWhitespace)
+            : Diff.diffLines(safeLeft, safeRight, { ignoreWhitespace: this.ignoreWhitespace });
         
         let addedLines = 0;
         let removedLines = 0;
@@ -3559,23 +3665,27 @@ class DiffModal extends Modal {
         let addedChars = 0;
         let removedChars = 0;
 
-        const useCompact = this.plugin.settings.compactUnifiedDiff;
-
         for (let i = 0; i < diffResult.length; i++) {
             const part = diffResult[i]!;
             const nextPart = diffResult[i + 1];
 
-             if (useCompact && part.removed && nextPart?.added) {
-                const remCount = part.count || 0;
-                const addCount = nextPart.count || 0;
+            const isRemoveAdd = part.removed && nextPart?.added;
+            const isAddRemove = part.added && nextPart?.removed;
+
+            if (useCompact && (isRemoveAdd || isAddRemove)) {
+                const removedPart = isRemoveAdd ? part : nextPart!;
+                const addedPart = isRemoveAdd ? nextPart! : part;
+
+                const leftLines = removedPart.value.replace(/\n$/, '').split('\n');
+                const rightLines = addedPart.value.replace(/\n$/, '').split('\n');
+                const stats = this.plugin.calculateCompactBlockStats(leftLines, rightLines);
                 
-                const overlap = Math.min(remCount, addCount);
-                modifiedLines += overlap;
-                removedLines += (remCount - overlap);
-                addedLines += (addCount - overlap);
+                modifiedLines += stats.mods;
+                removedLines += stats.rems;
+                addedLines += stats.adds;
                 
-                removedChars += part.value.length;
-                addedChars += nextPart.value.length;
+                removedChars += removedPart.value.length;
+                addedChars += addedPart.value.length;
 
                 i++;
             } else {
@@ -3591,7 +3701,7 @@ class DiffModal extends Modal {
         
         const leftLines = this.leftContent.split('\n').length;
         const rightLines = this.rightContent.split('\n').length;
-        const similarity = this.calculateSimilarity(this.leftContent, this.rightContent);
+        const similarity = this.plugin.calculateSimilarity(this.leftContent, this.rightContent);
         
         let statsMsg = '📊 详细统计\n\n' +
             `左侧版本: ${leftLines} 行, ${this.leftContent.length} 字符\n` +
@@ -3783,16 +3893,18 @@ class DiffModal extends Modal {
 
         const safeLeft = left + '\n';
         const safeRight = right + '\n';
-        const diffResult = Diff.diffLines(safeLeft, safeRight, { ignoreWhitespace: this.ignoreWhitespace });
         
-        const processedDiff: ProcessedDiff[] = diffResult.map(part => ({ ...part, type: (part.added ? 'added' : part.removed ? 'removed' : 'context') as any }));
+        const useCompactView = this.plugin.settings.compactUnifiedDiff;
+        const rawDiff = useCompactView
+            ? this.plugin.getCompactDiffLines(safeLeft, safeRight, this.ignoreWhitespace)
+            : Diff.diffLines(safeLeft, safeRight, { ignoreWhitespace: this.ignoreWhitespace });
+        
+        const processedDiff: ProcessedDiff[] = rawDiff.map(part => ({ ...part, type: (part.added ? 'added' : part.removed ? 'removed' : 'context') as any }));
 
         let leftLineNum = 1;
         let rightLineNum = 1;
         let diffIdx = 0;
         
-        const useCompactView = this.plugin.settings.compactUnifiedDiff;
-
         const secondaryDiffFn = (text1: string, text2: string): Diff.Change[] => {
              if (this.plugin.settings.inlineDiffAlgorithm === 'line') {
                  return Diff.diffLines(text1, text2);
@@ -3885,60 +3997,80 @@ class DiffModal extends Modal {
             const part = processedDiff[i]!;
             const nextPart = processedDiff[i + 1];
 
-            if (part.removed && nextPart?.added) {
-                const leftLines = part.value.replace(/\n$/, '').split('\n');
-                const rightLines = nextPart.value.replace(/\n$/, '').split('\n');
+            const isRemoveAdd = part.removed && nextPart?.added;
+            const isAddRemove = part.added && nextPart?.removed;
+
+            if (isRemoveAdd || isAddRemove) {
+                const removedPart = isRemoveAdd ? part : nextPart!;
+                const addedPart = isRemoveAdd ? nextPart! : part;
+
+                const leftLines = removedPart.value.replace(/\n$/, '').split('\n');
+                const rightLines = addedPart.value.replace(/\n$/, '').split('\n');
 
                 if (useCompactView) {
-                    let lIndex = 0;
-                    let rIndex = 0;
-
-                    while (lIndex < leftLines.length || rIndex < rightLines.length) {
-                        const lLine = leftLines[lIndex];
-                        const rLine = rightLines[rIndex];
-
-                        if (lLine === undefined) {
-                            renderLine(rLine!, 'added', null, rightLineNum++);
-                            rIndex++;
-                            continue;
+                    if (leftLines.length === rightLines.length) {
+                        for (let j = 0; j < leftLines.length; j++) {
+                            const lLine = leftLines[j]!;
+                            const rLine = rightLines[j]!;
+                            if (lLine === rLine) {
+                                renderLine(lLine, 'context', leftLineNum++, rightLineNum++);
+                            } else {
+                                const lineDiff = secondaryDiffFn(lLine, rLine);
+                                const combinedFrag = createHighlightedFragment(lineDiff, true);
+                                renderLine(combinedFrag, 'modified', leftLineNum++, rightLineNum++, lLine);
+                            }
                         }
+                    } else {
+                        let lIndex = 0;
+                        let rIndex = 0;
 
-                        if (rLine === undefined) {
-                            renderLine(lLine!, 'removed', leftLineNum++, null);
-                            lIndex++;
-                            continue;
-                        }
+                        while (lIndex < leftLines.length || rIndex < rightLines.length) {
+                            const lLine = leftLines[lIndex];
+                            const rLine = rightLines[rIndex];
 
-                        const currentSim = this.calculateSimilarity(lLine, rLine);
+                            if (lLine === undefined) {
+                                renderLine(rLine!, 'added', null, rightLineNum++);
+                                rIndex++;
+                                continue;
+                            }
 
-                        const nextRightLine = rightLines[rIndex + 1];
-                        const insertionSim = nextRightLine ? this.calculateSimilarity(lLine, nextRightLine) : 0;
+                            if (rLine === undefined) {
+                                renderLine(lLine!, 'removed', leftLineNum++, null);
+                                lIndex++;
+                                continue;
+                            }
 
-                        const nextLeftLine = leftLines[lIndex + 1];
-                        const deletionSim = nextLeftLine ? this.calculateSimilarity(nextLeftLine, rLine) : 0;
+                            const currentSim = this.plugin.calculateSimilarity(lLine, rLine);
 
-                        const threshold = 30; 
+                            const nextRightLine = rightLines[rIndex + 1];
+                            const insertionSim = nextRightLine !== undefined ? this.plugin.calculateSimilarity(lLine, nextRightLine) : 0;
 
-                        if (insertionSim > currentSim + threshold) {
-                            renderLine(rLine!, 'added', null, rightLineNum++);
-                            rIndex++;
-                        } else if (deletionSim > currentSim + threshold) {
-                            renderLine(lLine!, 'removed', leftLineNum++, null);
-                            lIndex++;
-                        } else {
-                            const lineDiff = secondaryDiffFn(lLine!, rLine!);
-                            
-                            const combinedFrag = createHighlightedFragment(lineDiff, true);
-                            
-                            renderLine(combinedFrag, 'modified', leftLineNum++, rightLineNum++, lLine);
-                            lIndex++;
-                            rIndex++;
+                            const nextLeftLine = leftLines[lIndex + 1];
+                            const deletionSim = nextLeftLine !== undefined ? this.plugin.calculateSimilarity(nextLeftLine, rLine) : 0;
+
+                            const threshold = 30; 
+
+                            if (insertionSim > currentSim + threshold) {
+                                renderLine(rLine!, 'added', null, rightLineNum++);
+                                rIndex++;
+                            } else if (deletionSim > currentSim + threshold) {
+                                renderLine(lLine!, 'removed', leftLineNum++, null);
+                                lIndex++;
+                            } else {
+                                if (lLine === rLine) {
+                                    renderLine(lLine, 'context', leftLineNum++, rightLineNum++);
+                                } else {
+                                    const lineDiff = secondaryDiffFn(lLine!, rLine!);
+                                    const combinedFrag = createHighlightedFragment(lineDiff, true);
+                                    renderLine(combinedFrag, 'modified', leftLineNum++, rightLineNum++, lLine);
+                                }
+                                lIndex++;
+                                rIndex++;
+                            }
                         }
                     }
-                }
-                else if (leftLines.length === rightLines.length) {
-                    const minLen = Math.min(leftLines.length, rightLines.length);
-                    for (let j = 0; j < minLen; j++) {
+                } else if (leftLines.length === rightLines.length) {
+                    for (let j = 0; j < leftLines.length; j++) {
                         const oldLine = leftLines[j]!;
                         const newLine = rightLines[j]!;
                         const lineDiff = secondaryDiffFn(oldLine, newLine);
@@ -3953,7 +4085,7 @@ class DiffModal extends Modal {
                     leftLines.forEach(line => renderLine(line, 'removed', leftLineNum++, null));
                     rightLines.forEach(line => renderLine(line, 'added', null, rightLineNum++));
                 }
-                i++; 
+                i++; // 跳过下一个已处理的 part
             } else { 
                 const lines = part.value.replace(/\n$/, '').split('\n');
                 
@@ -4036,7 +4168,11 @@ class DiffModal extends Modal {
 
         const safeLeft = leftText + '\n';
         const safeRight = rightText + '\n';
-        const rawDiff = Diff.diffLines(safeLeft, safeRight, { ignoreWhitespace: this.ignoreWhitespace });
+
+        const useCompactView = this.plugin.settings.compactUnifiedDiff;
+        const rawDiff = useCompactView
+            ? this.plugin.getCompactDiffLines(safeLeft, safeRight, this.ignoreWhitespace)
+            : Diff.diffLines(safeLeft, safeRight, { ignoreWhitespace: this.ignoreWhitespace });
         
         const diff: ProcessedDiff[] = rawDiff.map(p => ({ ...p, type: (p.added ? 'added' : p.removed ? 'removed' : 'context') as any }));
 
@@ -4122,30 +4258,110 @@ class DiffModal extends Modal {
             const part = diff[i]!;
             const nextPart = diff[i + 1];
     
-            if (part.removed && nextPart?.added) {
-                const leftLines = part.value.replace(/\n$/, '').split('\n');
-                const rightLines = nextPart.value.replace(/\n$/, '').split('\n');
-                const maxLines = Math.max(leftLines.length, rightLines.length);
-    
-                for (let j = 0; j < maxLines; j++) {
-                    const leftLine = leftLines[j];
-                    const rightLine = rightLines[j];
-    
-                    if (leftLine !== undefined && rightLine !== undefined) {
-                        const lineDiff = secondaryDiffFn(leftLine, rightLine);
+            const isRemoveAdd = part.removed && nextPart?.added;
+            const isAddRemove = part.added && nextPart?.removed;
+
+            if (isRemoveAdd || isAddRemove) {
+                const removedPart = isRemoveAdd ? part : nextPart!;
+                const addedPart = isRemoveAdd ? nextPart! : part;
+
+                const leftLines = removedPart.value.replace(/\n$/, '').split('\n');
+                const rightLines = addedPart.value.replace(/\n$/, '').split('\n');
+
+                if (useCompactView) {
+                    if (leftLines.length === rightLines.length) {
+                        for (let j = 0; j < leftLines.length; j++) {
+                            const lLine = leftLines[j]!;
+                            const rLine = rightLines[j]!;
+                            if (lLine === rLine) {
+                                renderLine(leftPanel, lLine, 'context', leftLineNum++);
+                                renderLine(rightPanel, rLine, 'context', rightLineNum++);
+                            } else {
+                                const lineDiff = secondaryDiffFn(lLine, rLine);
+                                const leftFrag = createHighlightedFragment((lineDiff || []).filter((p: Diff.Change) => !p.added));
+                                const rightFrag = createHighlightedFragment((lineDiff || []).filter((p: Diff.Change) => !p.removed));
+                                renderLine(leftPanel, leftFrag, 'modified', leftLineNum++);
+                                renderLine(rightPanel, rightFrag, 'modified', rightLineNum++, lLine);
+                            }
+                        }
+                    } else {
+                        let lIndex = 0;
+                        let rIndex = 0;
+
+                        while (lIndex < leftLines.length || rIndex < rightLines.length) {
+                            const lLine = leftLines[lIndex];
+                            const rLine = rightLines[rIndex];
+
+                            if (lLine === undefined) {
+                                renderLine(leftPanel, '', 'placeholder', null);
+                                renderLine(rightPanel, rLine!, 'added', rightLineNum++);
+                                rIndex++;
+                                continue;
+                            }
+
+                            if (rLine === undefined) {
+                                renderLine(leftPanel, lLine!, 'removed', leftLineNum++);
+                                renderLine(rightPanel, '', 'placeholder', null);
+                                lIndex++;
+                                continue;
+                            }
+
+                            const currentSim = this.plugin.calculateSimilarity(lLine, rLine);
+
+                            const nextRightLine = rightLines[rIndex + 1];
+                            const insertionSim = nextRightLine !== undefined ? this.plugin.calculateSimilarity(lLine, nextRightLine) : 0;
+
+                            const nextLeftLine = leftLines[lIndex + 1];
+                            const deletionSim = nextLeftLine !== undefined ? this.plugin.calculateSimilarity(nextLeftLine, rLine) : 0;
+
+                            const threshold = 30; 
+
+                            if (insertionSim > currentSim + threshold) {
+                                renderLine(leftPanel, '', 'placeholder', null);
+                                renderLine(rightPanel, rLine!, 'added', rightLineNum++);
+                                rIndex++;
+                            } else if (deletionSim > currentSim + threshold) {
+                                renderLine(leftPanel, lLine!, 'removed', leftLineNum++);
+                                renderLine(rightPanel, '', 'placeholder', null);
+                                lIndex++;
+                            } else {
+                                if (lLine === rLine) {
+                                    renderLine(leftPanel, lLine, 'context', leftLineNum++);
+                                    renderLine(rightPanel, rLine, 'context', rightLineNum++);
+                                } else {
+                                    const lineDiff = secondaryDiffFn(lLine!, rLine!);
+                                    const leftFrag = createHighlightedFragment((lineDiff || []).filter((p: Diff.Change) => !p.added));
+                                    const rightFrag = createHighlightedFragment((lineDiff || []).filter((p: Diff.Change) => !p.removed));
+                                    renderLine(leftPanel, leftFrag, 'modified', leftLineNum++);
+                                    renderLine(rightPanel, rightFrag, 'modified', rightLineNum++, lLine);
+                                }
+                                lIndex++;
+                                rIndex++;
+                            }
+                        }
+                    }
+                } else if (leftLines.length === rightLines.length) {
+                    for (let j = 0; j < leftLines.length; j++) {
+                        const oldLine = leftLines[j]!;
+                        const newLine = rightLines[j]!;
+                        const lineDiff = secondaryDiffFn(oldLine, newLine);
+                        
                         const leftFrag = createHighlightedFragment((lineDiff || []).filter((p: Diff.Change) => !p.added));
                         const rightFrag = createHighlightedFragment((lineDiff || []).filter((p: Diff.Change) => !p.removed));
-                        renderLine(leftPanel, leftFrag, 'modified', leftLineNum++);
-                        renderLine(rightPanel, rightFrag, 'modified', rightLineNum++, leftLine);
-                    } else if (leftLine !== undefined) {
-                        renderLine(leftPanel, leftLine, 'removed', leftLineNum++);
-                        renderLine(rightPanel, '', 'placeholder', null);
-                    } else if (rightLine !== undefined) {
-                        renderLine(leftPanel, '', 'placeholder', null);
-                        renderLine(rightPanel, rightLine, 'added', rightLineNum++);
+                        renderLine(leftPanel, leftFrag, 'removed', leftLineNum++);
+                        renderLine(rightPanel, rightFrag, 'added', rightLineNum++);
                     }
+                } else {
+                    leftLines.forEach(line => {
+                        renderLine(leftPanel, line, 'removed', leftLineNum++);
+                        renderLine(rightPanel, '', 'placeholder', null);
+                    });
+                    rightLines.forEach(line => {
+                        renderLine(leftPanel, '', 'placeholder', null);
+                        renderLine(rightPanel, line, 'added', rightLineNum++);
+                    });
                 }
-                i++;
+                i++; // 跳过下一个已处理的 part
             } else if (part.added) {
                 const lines = part.value.replace(/\n$/, '').split('\n');
                 for (const line of lines) {
