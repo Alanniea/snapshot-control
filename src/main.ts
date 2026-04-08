@@ -500,6 +500,8 @@ export default class VersionControlPlugin extends Plugin {
         if (pendingOld) {
             clearTimeout(pendingOld);
             this.pendingSaves.delete(oldPath);
+            // [FIX 3] 为新文件续上自动保存任务，防止重命名丢失缓存
+            this.handleFileModify(file);
         }
 
         const pendingNew = this.pendingSaves.get(file.path);
@@ -1047,23 +1049,41 @@ export default class VersionControlPlugin extends Plugin {
         return finalVersionFile;
     }
 
+    // [FIX 1] 修复关闭压缩后旧历史版本的读取
     async readCompressedOrRaw(path: string): Promise<string> {
         const adapter = this.app.vault.adapter;
         if (!await adapter.exists(path)) return "";
         
-        if (this.settings.enableCompression) {
-            try {
+        try {
+            if (this.settings.enableCompression) {
+                try {
+                    const rawData = await adapter.readBinary(path);
+                    return pako.ungzip(new Uint8Array(rawData), { to: 'string' });
+                } catch (e: any) {
+                    if (e.message && e.message.includes('incorrect header check')) {
+                        // 如果不是压缩文件，尝试直接读取
+                        return await adapter.read(path);
+                    }
+                    throw e; 
+                }
+            } else {
+                try {
+                    // 先尝试普通文本读取
+                    const text = await adapter.read(path);
+                    // 简单校验是否为预期的 JSON 文本
+                    if (text && (text.trim().startsWith('{') || text.includes('"versions"'))) {
+                        return text;
+                    }
+                } catch (e) {
+                    // 读取文本失败（可能是乱码导致），忽略并在下方处理二进制解压
+                }
+                
+                // Fallback：尝试按压缩文件格式读取并解压
                 const rawData = await adapter.readBinary(path);
                 return pako.ungzip(new Uint8Array(rawData), { to: 'string' });
-            } catch (e: any) {
-                if (e.message && e.message.includes('incorrect header check')) {
-                    // 如果不是压缩文件，尝试直接读取
-                    return await adapter.read(path);
-                }
-                throw e; 
             }
-        } else {
-            return await adapter.read(path);
+        } catch (error) {
+            throw new Error(`无法读取或解压历史文件: ${path}`);
         }
     }
 
@@ -1086,7 +1106,9 @@ export default class VersionControlPlugin extends Plugin {
             
             if (this.settings.enableCompression) {
                 const compressed = pako.gzip(content);
-                await adapter.writeBinary(versionPath, compressed.buffer);
+                // [FIX 4] 截取准确的字节长度写入，防止底层写入大量空白缓冲浪费磁盘空间
+                const safeBuffer = compressed.buffer.slice(compressed.byteOffset, compressed.byteOffset + compressed.byteLength);
+                await adapter.writeBinary(versionPath, safeBuffer);
             } else {
                 await adapter.write(versionPath, content);
             }
@@ -3320,8 +3342,9 @@ class DiffModal extends Modal {
 
     updateNavState() {
         const statsEl = this.containerEl.querySelector('.diff-stats') as HTMLElement;
-        const navButtons = this.containerEl.querySelectorAll('.diff-toolbar-group button');
-        const [firstBtn, prevBtn, , nextBtn, lastBtn] = Array.from(navButtons) as HTMLButtonElement[];
+        // [FIX 2] 精准定位到特定的按钮组，防止影响其他菜单按钮
+        const navButtons = this.containerEl.querySelectorAll('#diff-nav-group button');
+        const [firstBtn, prevBtn, nextBtn, lastBtn] = Array.from(navButtons) as HTMLButtonElement[];
 
         if (this.totalDiffs > 0) {
             statsEl.setText(`${this.currentDiffIndex + 1} / ${this.totalDiffs}`);
