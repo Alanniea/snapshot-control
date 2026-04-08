@@ -2968,17 +2968,6 @@ class DiffModal extends Modal {
         const spacer = toolbar.createEl('div');
         spacer.style.flexGrow = '1';
 
-        const actionsGroup = toolbar.createEl('div', { cls: 'diff-toolbar-group' });
-        const actionsBtn = actionsGroup.createEl('button', { text: '操作 ...', attr: { 'aria-label': '更多操作' } });
-        actionsBtn.addEventListener('click', (e) => {
-            const menu = new Menu();
-            menu.addItem(item => item.setTitle('🔍 搜索').setIcon('search').onClick(() => this.showSearchBox()));
-            menu.addItem(item => item.setTitle('📋 复制差异').setIcon('copy').onClick(() => this.copyDiffToClipboard()));
-            menu.addItem(item => item.setTitle('💾 导出报告').setIcon('download').onClick(() => this.exportDiffReport()));
-            menu.addItem(item => item.setTitle('📊 查看统计').setIcon('bar-chart').onClick(() => this.showDetailedStats()));
-            menu.showAtMouseEvent(e as MouseEvent);
-        });
-
         const settingsGroup = toolbar.createEl('div', { cls: 'diff-toolbar-group' });
         const settingsBtn = settingsGroup.createEl('button', { text: '设置 ⚙️', attr: { 'aria-label': '视图设置' } });
         settingsBtn.addEventListener('click', (e) => {
