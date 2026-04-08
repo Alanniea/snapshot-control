@@ -1,5 +1,5 @@
 
-import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, Modal, ItemView, WorkspaceLeaf, Menu, TextComponent, MarkdownRenderer, Platform, TFolder, setIcon } from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, Modal, ItemView, WorkspaceLeaf, Menu, TextComponent, MarkdownRenderer, Platform, TFolder, setIcon, moment, normalizePath, debounce } from 'obsidian';
 import * as Diff from 'diff';
 import * as pako from 'pako';
 
@@ -117,14 +117,16 @@ export default class VersionControlPlugin extends Plugin {
     settings: VersionControlSettings;
     autoSaveTimer: number | null = null;
     lastModifiedTime: Map<string, number> = new Map();
-    pendingSaves: Map<string, NodeJS.Timeout> = new Map();
+    debouncedSaves: Map<string, Function> = new Map();
     statusBarItem: HTMLElement;
     versionCache: Map<string, VersionFile> = new Map();
 
     fileLocks: Map<string, Promise<void>> = new Map();
     isRestoring: boolean = false; 
+    isUnloaded: boolean = false;
 
     async onload() {
+        this.isUnloaded = false;
         await this.loadSettings();
 
         this.statusBarItem = this.addStatusBarItem();
@@ -254,12 +256,16 @@ export default class VersionControlPlugin extends Plugin {
     }
 
     onunload() {
+        this.isUnloaded = true;
         if (this.autoSaveTimer) {
             window.clearInterval(this.autoSaveTimer);
         }
-        this.pendingSaves.forEach(timeout => clearTimeout(timeout));
-        this.pendingSaves.clear();
+        this.debouncedSaves.clear();
         this.versionCache.clear();
+        
+        // 清理此前动态注入的 CSS，防止重复挂载和污染
+        const styleEl = document.getElementById('vc-tab-styles');
+        if (styleEl) styleEl.remove();
     }
 
     // 执行带锁的异步操作，确保任务完毕后清理锁释放内存
@@ -410,34 +416,30 @@ export default class VersionControlPlugin extends Plugin {
 
     // --- 文件名处理与兼容逻辑 ---
 
-    // 1. 新版路径获取 (使用新 Hash)
     getVersionFilePath(filePath: string): string {
         const hash = this.stringHash(filePath);
         const fileName = filePath.split('/').pop() || 'file';
         const safeName = fileName.replace(/[\\/:*?"<>|]/g, '_');
-        return `${this.settings.versionFolder}/${safeName}_${hash}.json`;
+        return normalizePath(`${this.settings.versionFolder}/${safeName}_${hash}.json`);
     }
 
-    // 2. 旧版路径获取 (使用旧 Hash 和新过滤规则)
     getLegacyHashVersionFilePath(filePath: string): string {
         const hash = this.legacyStringHash(filePath);
         const fileName = filePath.split('/').pop() || 'file';
         const safeName = fileName.replace(/[\\/:*?"<>|]/g, '_');
-        return `${this.settings.versionFolder}/${safeName}_${hash}.json`;
+        return normalizePath(`${this.settings.versionFolder}/${safeName}_${hash}.json`);
     }
 
-    // 3. 更旧版的严格 ASCII 过滤路径
     getLegacyStrictAsciiVersionFilePath(filePath: string): string {
         const hash = this.legacyStringHash(filePath);
         const fileName = filePath.split('/').pop() || 'file';
         const safeName = fileName.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-        return `${this.settings.versionFolder}/${safeName}_${hash}.json`;
+        return normalizePath(`${this.settings.versionFolder}/${safeName}_${hash}.json`);
     }
 
-    // 4. 最早的纯路径过滤 (无 Hash)
     getLegacyVersionFilePath(filePath: string): string {
         const sanitized = this.sanitizeFileName(filePath);
-        return `${this.settings.versionFolder}/${sanitized}.json`;
+        return normalizePath(`${this.settings.versionFolder}/${sanitized}.json`);
     }
 
     // 核心寻址函数：按优先级依次查找，确保旧历史文件不丢
@@ -496,18 +498,16 @@ export default class VersionControlPlugin extends Plugin {
             }
         });
         
-        const pendingOld = this.pendingSaves.get(oldPath);
-        if (pendingOld) {
-            clearTimeout(pendingOld);
-            this.pendingSaves.delete(oldPath);
-            // [FIX 3] 为新文件续上自动保存任务，防止重命名丢失缓存
+        const oldDebouncer = this.debouncedSaves.get(oldPath);
+        if (oldDebouncer) {
+            this.debouncedSaves.delete(oldPath);
+            // 为新文件续上自动保存任务，防止重命名丢失缓存
             this.handleFileModify(file);
         }
 
-        const pendingNew = this.pendingSaves.get(file.path);
-        if (pendingNew) {
-            clearTimeout(pendingNew);
-            this.pendingSaves.delete(file.path);
+        const newDebouncer = this.debouncedSaves.get(file.path);
+        if (newDebouncer) {
+            this.debouncedSaves.delete(file.path);
             this.handleFileModify(file); 
         }
     }
@@ -526,7 +526,7 @@ export default class VersionControlPlugin extends Plugin {
                 await adapter.remove(versionPath);
                 this.versionCache.delete(filePath);
                 this.lastModifiedTime.delete(filePath);
-                this.pendingSaves.delete(filePath);
+                this.debouncedSaves.delete(filePath);
             }
         });
     }
@@ -613,22 +613,36 @@ export default class VersionControlPlugin extends Plugin {
     }
 
     startAutoSave() { 
-        if (this.autoSaveTimer) { window.clearInterval(this.autoSaveTimer); this.autoSaveTimer = null; }
-        if (this.settings.autoSaveOnInterval) { this.autoSaveTimer = window.setInterval(() => { this.autoSaveAllModifiedFiles(); }, this.settings.autoSaveInterval * 60 * 1000); }
+        if (this.autoSaveTimer) { 
+            window.clearInterval(this.autoSaveTimer); 
+            this.autoSaveTimer = null; 
+        }
+        if (this.settings.autoSaveOnInterval) { 
+            this.autoSaveTimer = window.setInterval(() => { this.autoSaveAllModifiedFiles(); }, this.settings.autoSaveInterval * 60 * 1000);
+            this.registerInterval(this.autoSaveTimer);
+        }
     }
 
     scheduleSave(file: TFile, delay: number, message: string) { 
         if (this.isExcluded(file.path)) { return; }
-        const existingTimeout = this.pendingSaves.get(file.path);
-        if (existingTimeout) { clearTimeout(existingTimeout); }
-        if (delay === 0) { this.autoSaveFile(file, message); this.pendingSaves.delete(file.path); return; }
-        const timeout = setTimeout(() => { this.autoSaveFile(file, message); this.pendingSaves.delete(file.path); }, delay * 1000);
-        this.pendingSaves.set(file.path, timeout);
+        if (delay === 0) { 
+            this.autoSaveFile(file, message); 
+            return; 
+        }
+        
+        let debouncer = this.debouncedSaves.get(file.path);
+        if (!debouncer) {
+            debouncer = debounce((f: TFile, msg: string) => { 
+                if (this.isUnloaded) return;
+                this.autoSaveFile(f, msg); 
+            }, delay * 1000, true);
+            this.debouncedSaves.set(file.path, debouncer);
+        }
+        debouncer(file, message);
     }
 
     async autoSaveFile(file: TFile, message: string) {
         if (!file || !this.app.vault.getAbstractFileByPath(file.path)) {
-            this.pendingSaves.delete(file.path);
             return;
         }
 
@@ -697,10 +711,9 @@ export default class VersionControlPlugin extends Plugin {
             return;
         }
 
-        const existingTimeout = this.pendingSaves.get(file.path);
-        if (existingTimeout) {
-            clearTimeout(existingTimeout);
-            this.pendingSaves.delete(file.path);
+        const existingDebouncer = this.debouncedSaves.get(file.path);
+        if (existingDebouncer) {
+            this.debouncedSaves.delete(file.path);
         }
 
         new VersionMessageModal(this.app, this.settings, async (message, tags) => {
@@ -1049,7 +1062,6 @@ export default class VersionControlPlugin extends Plugin {
         return finalVersionFile;
     }
 
-    // [FIX 1] 修复关闭压缩后旧历史版本的读取
     async readCompressedOrRaw(path: string): Promise<string> {
         const adapter = this.app.vault.adapter;
         if (!await adapter.exists(path)) return "";
@@ -1106,7 +1118,6 @@ export default class VersionControlPlugin extends Plugin {
             
             if (this.settings.enableCompression) {
                 const compressed = pako.gzip(content);
-                // [FIX 4] 截取准确的字节长度写入，防止底层写入大量空白缓冲浪费磁盘空间
                 const safeBuffer = compressed.buffer.slice(compressed.byteOffset, compressed.byteOffset + compressed.byteLength);
                 await adapter.writeBinary(versionPath, safeBuffer);
             } else {
@@ -1427,8 +1438,31 @@ export default class VersionControlPlugin extends Plugin {
     async createFullSnapshot() { const files = this.app.vault.getMarkdownFiles(); const total = files.length; let count = 0; let skipped = 0; const progressNotice = new Notice(`正在准备全库版本... (0/${total})`, 0); const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms)); for (let i = 0; i < total; i++) { const file = files[i]!; if (i % 10 === 0) { progressNotice.setMessage(`正在保存全库版本... (${i + 1}/${total})`); await sleep(10); } if (this.isExcluded(file.path)) { skipped++; continue; } try { await this.createVersion(file!, '[Full Snapshot]', false, [], true); count++; } catch (error: any) { console.error(`创建版本失败: ${file.path}`, error); } } progressNotice.hide(); if (this.settings.showNotifications) { setTimeout(() => { new Notice(`✅ 全库版本创建完成\n处理: ${count} 个文件${skipped > 0 ? `\n跳过: ${skipped} 个文件` : ''}`); }, 500); } }
     async optimizeAllVersionFiles() { const progressNotice = new Notice('正在优化存储...', 0); try { const adapter = this.app.vault.adapter; const versionFolder = this.settings.versionFolder; if (!await adapter.exists(versionFolder)) { progressNotice.hide(); new Notice('版本文件夹不存在'); return; } const files = await adapter.list(versionFolder); let optimized = 0; let savedBytes = 0; for (const file of files.files) { if (file.endsWith('.json')) { try { const oldSize = (await adapter.stat(file))?.size || 0; const filePath = file.replace(this.settings.versionFolder + '/', '').replace('.json', ''); const versionFile = await this.loadVersionFile(filePath); this.buildVersionIndex(versionFile); await this.saveVersionFile(versionFile.filePath, versionFile); const newSize = (await adapter.stat(file))?.size || 0; savedBytes += (oldSize - newSize); optimized++; } catch (error: any) { console.error('优化文件失败:', file, error); } } } progressNotice.hide(); new Notice(`✅ 优化完成\n处理: ${optimized} 个文件\n节省: ${this.formatFileSize(savedBytes)}`); } catch (error: any) { progressNotice.hide(); console.error('优化失败:', error); new Notice('❌ 优化失败'); } }
     async getStorageStats(): Promise<{ totalSize: number; versionCount: number; fileCount: number; compressionRatio: number; starredCount: number; taggedCount: number }> { const adapter = this.app.vault.adapter; const versionFolder = this.settings.versionFolder; try { if (!await adapter.exists(versionFolder)) { return { totalSize: 0, versionCount: 0, fileCount: 0, compressionRatio: 0, starredCount: 0, taggedCount: 0 }; } const files = await adapter.list(versionFolder); let totalSize = 0; let versionCount = 0; let fileCount = 0; let totalOriginalSize = 0; let starredCount = 0; let taggedCount = 0; for (const file of files.files) { if (file.endsWith('.json')) { try { const stat = await adapter.stat(file); const fileSize = stat?.size || 0; totalSize += fileSize; let versionFile: VersionFile; if (this.settings.enableCompression) { try { const rawData = await adapter.readBinary(file); const decompressed = pako.ungzip(new Uint8Array(rawData), { to: 'string' }); versionFile = JSON.parse(decompressed) as VersionFile; } catch (e: any) { const content = await adapter.read(file); versionFile = JSON.parse(content) as VersionFile; } } else { const content = await adapter.read(file); versionFile = JSON.parse(content) as VersionFile; } if (versionFile.versions && Array.isArray(versionFile.versions)) { versionCount += versionFile.versions.length; versionFile.versions.forEach(v => { if (v.content) { totalOriginalSize += v.content.length; } else if (v.diff) { totalOriginalSize += v.diff.length; } if (v.starred) starredCount++; if (v.tags && v.tags.length > 0) taggedCount++; }); fileCount++; } } catch (error: any) { console.error('读取版本文件失败:', file, error); } } } const compressionRatio = totalOriginalSize > 0 ? ((1 - totalSize / totalOriginalSize) * 100) : 0; return { totalSize, versionCount, fileCount, compressionRatio, starredCount, taggedCount }; } catch (error: any) { console.error('获取存储统计失败:', error); return { totalSize: 0, versionCount: 0, fileCount: 0, compressionRatio: 0, starredCount: 0, taggedCount: 0 }; } }
-    async exportVersions(filePath: string): Promise<void> { try { const versionFile = await this.loadVersionFile(filePath); const exportPath = `${this.settings.versionFolder}/export_${this.sanitizeFileName(filePath)}_${Date.now()}.json`; await this.app.vault.adapter.write(exportPath, JSON.stringify(versionFile, null, 2)); new Notice(`✅ 版本已导出到: ${exportPath}`); } catch (error: any) { console.error('导出版本失败:', error); new Notice('❌ 导出失败'); } }
-    async exportVersionAsFile(filePath: string, versionId: string): Promise<void> { try { const content = await this.getVersionContent(filePath, versionId); const fileName = filePath.replace(/\.[^/.]+$/, ''); const exportPath = `${fileName}_v${versionId.substring(0,8)}.md`; await this.app.vault.create(exportPath, content); new Notice(`✅ 版本已导出为: ${exportPath}`); } catch (error: any) { console.error('导出版本为文件失败:', error); new Notice('❌ 导出失败'); } }
+    
+    async exportVersions(filePath: string): Promise<void> { 
+        try { 
+            const versionFile = await this.loadVersionFile(filePath); 
+            const exportPath = normalizePath(`${this.settings.versionFolder}/export_${this.sanitizeFileName(filePath)}_${Date.now()}.json`); 
+            await this.app.vault.adapter.write(exportPath, JSON.stringify(versionFile, null, 2)); 
+            new Notice(`✅ 版本已导出到: ${exportPath}`); 
+        } catch (error: any) { 
+            console.error('导出版本失败:', error); 
+            new Notice('❌ 导出失败'); 
+        } 
+    }
+    
+    async exportVersionAsFile(filePath: string, versionId: string): Promise<void> { 
+        try { 
+            const content = await this.getVersionContent(filePath, versionId); 
+            const fileName = filePath.replace(/\.[^/.]+$/, ''); 
+            const exportPath = normalizePath(`${fileName}_v${versionId.substring(0,8)}.md`); 
+            await this.app.vault.create(exportPath, content); 
+            new Notice(`✅ 版本已导出为: ${exportPath}`); 
+        } catch (error: any) { 
+            console.error('导出版本为文件失败:', error); 
+            new Notice('❌ 导出失败'); 
+        } 
+    }
     
     // 移除全库文件内容读取，改用 mtime 快速比对，交出主线程防止卡顿
     async getModifiedFiles(): Promise<{ file: TFile, lastVersionTime: number }[]> {
@@ -1530,8 +1564,17 @@ export default class VersionControlPlugin extends Plugin {
         return cjkCount + westernCount;
     }
 
-    formatTime(timestamp: number): string { if (this.settings.useRelativeTime) { return this.getRelativeTime(timestamp); } return new Date(timestamp).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
-    getRelativeTime(timestamp: number): string { const diff = Date.now() - timestamp; const seconds = Math.floor(diff / 1000); const minutes = Math.floor(seconds / 60); const hours = Math.floor(minutes / 60); const days = Math.floor(hours / 24); const months = Math.floor(days / 30); const years = Math.floor(days / 365); if (years > 0) return `${years} 年前`; if (months > 0) return `${months} 个月前`; if (days > 0) return `${days} 天前`; if (hours > 0) return `${hours} 小时前`; if (minutes > 0) return `${minutes} 分钟前`; if (seconds < 10) return '刚刚'; return `${seconds} 秒前`; }
+    formatTime(timestamp: number): string { 
+        if (this.settings.useRelativeTime) { 
+            return moment(timestamp).fromNow(); 
+        } 
+        return moment(timestamp).format('YYYY-MM-DD HH:mm:ss'); 
+    }
+    
+    getRelativeTime(timestamp: number): string { 
+        return moment(timestamp).fromNow(); 
+    }
+    
     refreshVersionHistoryView() { const leaves = this.app.workspace.getLeavesOfType('version-history'); leaves.forEach(leaf => { if (leaf.view instanceof VersionHistoryView) { leaf.view.refresh(); } }); }
 }
 
@@ -3342,7 +3385,6 @@ class DiffModal extends Modal {
 
     updateNavState() {
         const statsEl = this.containerEl.querySelector('.diff-stats') as HTMLElement;
-        // [FIX 2] 精准定位到特定的按钮组，防止影响其他菜单按钮
         const navButtons = this.containerEl.querySelectorAll('#diff-nav-group button');
         const [firstBtn, prevBtn, nextBtn, lastBtn] = Array.from(navButtons) as HTMLButtonElement[];
 
