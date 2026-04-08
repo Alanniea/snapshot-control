@@ -1,3 +1,5 @@
+--- START OF FILE Paste April 08, 2026 - 9:58PM ---
+
 
 /* ======================================================================= */
 /* ======================== 快速预览模态框 (QuickPreviewModal) =========== */
@@ -73,8 +75,6 @@
 .preview-toolbar button:hover { background: var(--interactive-hover); }
 .preview-toolbar button.mod-cta { background: var(--interactive-accent); color: var(--text-on-accent); }
 
-.preview-line-numbers { padding: 10px 8px; background: var(--background-secondary); border-right: 1px solid var(--background-modifier-border); text-align: right; font-family: var(--font-monospace); font-size: 12px; color: var(--text-faint); user-select: none; overflow-y: hidden; }
-.preview-line-numbers .line-number { line-height: 1.6; }
 .preview-raw-container pre { flex: 1; margin: 0; padding: 10px; overflow: auto; font-family: var(--font-monospace); font-size: 13px; line-height: 1.6; }
 .preview-raw-container pre code { background: none; padding: 0; }
 .preview-rendered-content { height: 100%; overflow-y: auto; padding: 15px 20px; }
@@ -118,11 +118,7 @@
 .version-header-actions button:hover { background: var(--interactive-hover); }
 .version-header-actions button.mod-cta { background: var(--interactive-accent); color: var(--text-on-accent); border-color: var(--interactive-accent); }
 .version-header-actions button.mod-cta:hover { background: var(--interactive-accent-hover); }
-.version-diff-banner { display: flex; align-items: center; gap: 12px; padding: 12px 15px; margin-bottom: 15px; background: rgba(255, 165, 0, 0.1); border-left: 3px solid orange; border-radius: 4px; font-size: 13px; }
-.version-diff-banner .diff-stats { font-weight: 600; color: var(--text-accent); }
-.version-diff-banner button { margin-left: auto; padding: 5px 10px; background: var(--interactive-normal); color: var(--text-normal); border: 1px solid var(--background-modifier-border); border-radius: 4px; cursor: pointer; font-size: 12px; }
-.version-diff-banner button:hover { background: var(--interactive-hover); }
-.version-diff-banner button.mod-cta { background: var(--interactive-accent); color: var(--text-on-accent); }
+
 .version-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 10px; background: var(--background-secondary); border-radius: 6px; margin-bottom: 15px; }
 .version-toolbar button { padding: 6px 12px; background: var(--interactive-normal); color: var(--text-normal); border: 1px solid var(--background-modifier-border); border-radius: 4px; cursor: pointer; font-size: 13px; }
 .version-toolbar button:hover { background: var(--interactive-hover); }
@@ -198,12 +194,6 @@
 /* 移动端 Diff 适配 */
 .is-mobile .diff-line.actions-visible .line-number-container { width: auto !important; min-width: 45px !important; display: flex !important; flex-direction: row !important; align-items: center !important; justify-content: flex-start !important; background: var(--background-primary); z-index: 5; }
 .is-mobile .diff-line.actions-visible .line-number { display: inline-block !important; opacity: 1 !important; margin-right: 4px !important; font-size: 0.7em !important; }
-.diff-modal.is-mobile .diff-line .diff-line-action-btn,
-.diff-modal.is-mobile .diff-line .diff-line-history-btn { visibility: hidden; opacity: 0; transition: opacity 0.2s ease-in-out; }
-.diff-modal.is-mobile .diff-line:hover .diff-line-action-btn,
-.diff-modal.is-mobile .diff-line:hover .diff-line-history-btn { visibility: hidden; opacity: 0; }
-.diff-modal.is-mobile .diff-line.actions-visible .diff-line-action-btn,
-.diff-modal.is-mobile .diff-line.actions-visible .diff-line-history-btn { visibility: visible; opacity: 1; }
 
 .diff-modal .modal-content { display: flex; flex-direction: column; height: 100%; }
 .diff-main-container { flex: 1; overflow: hidden; position: relative; display: flex; }
@@ -214,13 +204,6 @@
 .diff-selector-btn:hover { background-color: var(--background-modifier-hover); border-color: var(--interactive-accent); }
 .diff-swap-btn { background: none; border: none; cursor: pointer; font-size: 1.2em; padding: 0 10px; opacity: 0.7; }
 .diff-swap-btn:hover { opacity: 1; color: var(--interactive-accent); }
-.diff-view-switcher { display: flex; padding: 2px; background-color: var(--background-primary); border-radius: 6px; margin-right: auto; }
-.diff-view-switcher button { padding: 6px 12px; font-size: 12px; font-weight: 500; border: none; background-color: transparent; border-radius: 4px; transition: all 0.2s ease; }
-.diff-view-switcher button.active { background-color: var(--interactive-accent); color: var(--text-on-accent); box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-.rendered-diff-container { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; height: 100%; padding: 10px; background-color: var(--background-secondary); }
-.rendered-diff-panel { display: flex; flex-direction: column; border: 1px solid var(--background-modifier-border); border-radius: 6px; overflow: hidden; background-color: var(--background-primary); }
-.rendered-diff-panel h3 { margin: 0; padding: 10px 15px; background: var(--background-secondary); border-bottom: 1px solid var(--background-modifier-border); font-size: 13px; font-weight: 600; position: sticky; top: 0; z-index: 5; opacity: 0.98; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05); }
-.rendered-diff-content { flex: 1; overflow-y: auto; padding: 15px 20px; }
 
 /* 差异信息横幅 */
 .diff-info-banner-compact { display: flex; align-items: center; gap: 10px; padding: 6px 12px; margin-bottom: 10px; background: var(--background-secondary); border-radius: 4px; font-size: 11px; flex-wrap: wrap; }
@@ -234,7 +217,6 @@
 
 /* 工具栏 */
 .diff-toolbar { display: flex; align-items: center; gap: 10px; padding: 10px; background: var(--background-secondary); border-radius: 6px; margin-bottom: 15px; flex-wrap: wrap; }
-.diff-nav-group, .diff-view-group, .diff-action-group { display: flex; align-items: center; gap: 6px; padding: 4px 8px; background: var(--background-primary); border-radius: 4px; border: 1px solid var(--background-modifier-border); }
 .diff-toolbar button, .diff-toolbar select, .diff-toolbar input[type="number"] { padding: 6px 12px; background: var(--interactive-normal); color: var(--text-normal); border: 1px solid var(--background-modifier-border); border-radius: 4px; cursor: pointer; font-size: 12px; transition: all 0.2s ease; position: relative; }
 .diff-toolbar button:hover::after, .diff-toolbar select:hover::after { content: attr(aria-label); position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); padding: 4px 8px; background: var(--background-modifier-border); color: var(--text-normal); border-radius: 4px; font-size: 11px; white-space: nowrap; pointer-events: none; margin-bottom: 5px; z-index: 1000; animation: tooltipFade 0.2s ease; }
 @keyframes tooltipFade { from { opacity: 0; transform: translateX(-50%) translateY(-5px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
@@ -244,7 +226,7 @@
 .diff-toolbar button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 .diff-toolbar button:disabled:hover::after { display: none; }
 .diff-toolbar button.active { background: var(--interactive-accent); color: var(--text-on-accent); border-color: var(--interactive-accent); }
-.diff-context-toggle.active, .diff-toolbar button.active { box-shadow: 0 0 0 2px var(--interactive-accent-hover); }
+.diff-toolbar button.active { box-shadow: 0 0 0 2px var(--interactive-accent-hover); }
 .diff-select { background: var(--background-primary); font-size: 12px; }
 .diff-select:hover { border-color: var(--interactive-accent); }
 .diff-stats { padding: 6px 12px; background: var(--background-primary); border-radius: 4px; font-size: 12px; font-weight: 600; color: var(--text-accent); min-width: 80px; text-align: center; }
@@ -275,7 +257,6 @@
 .diff-container:not(.diff-wrap-lines) .line-content { white-space: pre; overflow-x: auto; }
 .diff-line { display: flex; padding: 2px 8px; margin: 1px 0; border-radius: 3px; transition: all 0.2s ease; position: relative; }
 .diff-line:hover { background: var(--background-secondary-alt) !important; transform: translateX(2px); }
-.diff-line .line-number { display: inline-block; width: 50px; text-align: right; margin-right: 15px; color: var(--text-faint); user-select: none; flex-shrink: 0; font-weight: 500; }
 .diff-line .diff-marker { display: inline-block; width: 20px; text-align: center; margin-right: 10px; font-weight: bold; flex-shrink: 0; }
 .diff-line .line-content { flex: 1; white-space: pre; overflow-x: auto; }
 
@@ -292,13 +273,10 @@
 .diff-modified .diff-marker { color: #d29922; }
 .diff-modified:hover { background: rgba(219, 174, 14, 0.25) !important; }
 .diff-modified .line-content span { display: inline; }
-.diff-modified .diff-char-added, .diff-modified .diff-char-removed { padding: 1px 2px; }
 
 /* 具体的文字高亮 (兼容紧凑模式) */
 .diff-word-added { background-color: rgba(100, 255, 100, 0.25); color: var(--text-normal); border-radius: 2px; padding: 0 3px; font-weight: 600; box-shadow: 0 0 0 1px rgba(46, 160, 67, 0.3); }
 .diff-word-removed { background-color: rgba(255, 100, 100, 0.25); color: var(--text-muted); border-bottom: 1px solid rgba(244, 67, 54, 0.4); text-decoration: line-through !important; border-radius: 2px; opacity: 0.85; padding: 0 3px; font-weight: 600; box-shadow: 0 0 0 1px rgba(248, 81, 73, 0.3); }
-.diff-char-added { background: rgba(46, 160, 67, 0.6) !important; padding: 1px 3px; border-radius: 3px; font-weight: 600; box-shadow: 0 0 0 1px rgba(46, 160, 67, 0.3); }
-.diff-char-removed { background: rgba(248, 81, 73, 0.6) !important; padding: 1px 3px; border-radius: 3px; opacity: 0.85; font-weight: 600; box-shadow: 0 0 0 1px rgba(248, 81, 73, 0.3); }
 
 /* 其他行状态 */
 .diff-context { background: transparent; }
@@ -320,8 +298,6 @@
 .theme-dark .diff-added, .theme-dark .diff-line-bg-added { background: rgba(46, 160, 67, 0.2); border-left-color: #3fb950; }
 .theme-dark .diff-removed, .theme-dark .diff-line-bg-removed { background: rgba(248, 81, 73, 0.2); border-left-color: #f85149; }
 .theme-dark .diff-modified, .theme-dark .diff-line-bg-modified { background: rgba(210, 153, 34, 0.15); border-left-color: #d29922; }
-.theme-dark .diff-char-added { background: rgba(46, 160, 67, 0.5); box-shadow: 0 0 0 1px rgba(46, 160, 67, 0.5); }
-.theme-dark .diff-char-removed { background: rgba(248, 81, 73, 0.5); box-shadow: 0 0 0 1px rgba(248, 81, 73, 0.5); }
 .theme-dark .diff-word-removed { background-color: rgba(180, 50, 50, 0.4); }
 .theme-dark .diff-word-added { background-color: rgba(40, 150, 40, 0.4); }
 .theme-dark .diff-line.diff-modified { background-color: rgba(150, 120, 0, 0.15); }
@@ -336,17 +312,11 @@
 
 /* 空白字符显示 */
 .diff-container.show-whitespace-active .line-content { color: var(--text-faint); }
-.diff-container.show-whitespace-active .diff-char-added, .diff-container.show-whitespace-active .diff-char-removed, .diff-container.show-whitespace-active .diff-word-added, .diff-container.show-whitespace-active .diff-word-removed { color: var(--text-normal); }
+.diff-container.show-whitespace-active .diff-word-added, .diff-container.show-whitespace-active .diff-word-removed { color: var(--text-normal); }
 
 /* 行号容器与操作按钮 */
 .line-number-container { display: flex; align-items: center; justify-content: flex-end; width: 80px; text-align: right; margin-right: 15px; color: var(--text-faint); user-select: none; flex-shrink: 0; background-color: var(--background-primary-alt); border-right: 1px solid var(--background-modifier-border); margin-right: 8px; padding-right: 10px; opacity: 0.8; }
 .diff-container:not(.diff-split) .line-number-container { background-color: transparent; border-right: 1px solid var(--background-modifier-border); display: flex; justify-content: flex-end; min-width: 80px;}
-.line-number-container .line-number { flex-grow: 1; }
-.diff-container:not(.diff-split) .line-number { display: inline-block; width: 35px; padding-right: 5px; text-align: right; color: var(--text-faint); }
-
-/* 双击跳转高亮 & 统一视图行号对齐 */
-.diff-line-highlight { animation: highlight-fade 2s ease-out; }
-@keyframes highlight-fade { 0% { background-color: var(--text-highlight-bg); } 100% { background-color: transparent; } }
 
 /* ======================================================================= */
 /* ======================== 其他组件样式 ================================= */
@@ -404,7 +374,7 @@
 /* ======================================================================= */
 
 /* 字体与排版优化 */
-.diff-container, .diff-content, .preview-content pre, .structured-diff-container { font-family: 'JetBrains Mono', 'Fira Code', 'Source Code Pro', 'Menlo', 'Consolas', 'Roboto Mono', monospace; line-height: 1.65; -webkit-font-smoothing: antialiased; font-variant-ligatures: normal; }
+.diff-container, .diff-content, .preview-raw-container pre { font-family: 'JetBrains Mono', 'Fira Code', 'Source Code Pro', 'Menlo', 'Consolas', 'Roboto Mono', monospace; line-height: 1.65; -webkit-font-smoothing: antialiased; font-variant-ligatures: normal; }
 
 /* 模态框进入动画 */
 .diff-modal .modal-content, .quick-preview-modal .modal-content, .integrity-report-modal .modal-content { animation: modal-pop-in 0.25s cubic-bezier(0.2, 0.9, 0.4, 1.1); transform-origin: center center; }
@@ -415,18 +385,18 @@
 .diff-toolbar-redesigned button:active, .version-btn:active, .modal-button-container button:active { transform: scale(0.96); }
 
 /* 统一滚动条样式 */
-.version-history-view::-webkit-scrollbar, .preview-content pre::-webkit-scrollbar, .version-select-list::-webkit-scrollbar,
-.diff-container::-webkit-scrollbar, .diff-content::-webkit-scrollbar, .diff-line-content::-webkit-scrollbar, .rendered-diff-content::-webkit-scrollbar { width: 8px; height: 8px; }
-.version-history-view::-webkit-scrollbar-track, .preview-content pre::-webkit-scrollbar-track, .version-select-list::-webkit-scrollbar-track,
-.diff-container::-webkit-scrollbar-track, .diff-content::-webkit-scrollbar-track, .diff-line-content::-webkit-scrollbar-track, .rendered-diff-content::-webkit-scrollbar-track { background: var(--background-secondary); border-radius: 4px; }
-.version-history-view::-webkit-scrollbar-thumb, .preview-content pre::-webkit-scrollbar-thumb, .version-select-list::-webkit-scrollbar-thumb,
-.diff-container::-webkit-scrollbar-thumb, .diff-content::-webkit-scrollbar-thumb, .diff-line-content::-webkit-scrollbar-thumb, .rendered-diff-content::-webkit-scrollbar-thumb { background: var(--background-modifier-border-hover); border-radius: 4px; }
-.version-history-view::-webkit-scrollbar-thumb:hover, .preview-content pre::-webkit-scrollbar-thumb:hover, .version-select-list::-webkit-scrollbar-thumb:hover,
-.diff-container::-webkit-scrollbar-thumb:hover, .diff-content::-webkit-scrollbar-thumb:hover, .diff-line-content::-webkit-scrollbar-thumb:hover, .rendered-diff-content::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+.version-history-view::-webkit-scrollbar, .preview-raw-container pre::-webkit-scrollbar, .version-select-list::-webkit-scrollbar,
+.diff-container::-webkit-scrollbar, .diff-content::-webkit-scrollbar, .line-content::-webkit-scrollbar { width: 8px; height: 8px; }
+.version-history-view::-webkit-scrollbar-track, .preview-raw-container pre::-webkit-scrollbar-track, .version-select-list::-webkit-scrollbar-track,
+.diff-container::-webkit-scrollbar-track, .diff-content::-webkit-scrollbar-track, .line-content::-webkit-scrollbar-track { background: var(--background-secondary); border-radius: 4px; }
+.version-history-view::-webkit-scrollbar-thumb, .preview-raw-container pre::-webkit-scrollbar-thumb, .version-select-list::-webkit-scrollbar-thumb,
+.diff-container::-webkit-scrollbar-thumb, .diff-content::-webkit-scrollbar-thumb, .line-content::-webkit-scrollbar-thumb { background: var(--background-modifier-border-hover); border-radius: 4px; }
+.version-history-view::-webkit-scrollbar-thumb:hover, .preview-raw-container pre::-webkit-scrollbar-thumb:hover, .version-select-list::-webkit-scrollbar-thumb:hover,
+.diff-container::-webkit-scrollbar-thumb:hover, .diff-content::-webkit-scrollbar-thumb:hover, .line-content::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 
 @media (max-width: 1024px) {
     .diff-toolbar { gap: 6px; }
-    .diff-nav-group, .diff-view-group, .diff-action-group { gap: 4px; padding: 3px 6px; }
+    .diff-toolbar-group { gap: 4px; padding: 3px 6px; }
     .diff-toolbar button, .diff-toolbar select { padding: 5px 10px; font-size: 11px; }
     .diff-info-banner-compact { font-size: 10px; padding: 5px 10px; gap: 8px; }
 }
@@ -436,7 +406,7 @@
     .version-actions { width: 100%; justify-content: flex-end; }
     .diff-split { grid-template-columns: 1fr; gap: 10px; }
     .diff-toolbar { flex-direction: column; align-items: stretch; }
-    .diff-nav-group, .diff-view-group, .diff-action-group { justify-content: center; }
+    .diff-toolbar-group { justify-content: center; }
     .diff-info-banner-compact { flex-direction: column; align-items: flex-start; gap: 5px; }
     .diff-info-percent { margin-left: 0; }
     .diff-toolbar button:hover::after, .diff-toolbar select:hover::after { display: none; }

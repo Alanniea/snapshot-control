@@ -956,10 +956,7 @@ export default class VersionControlPlugin extends Plugin {
             if (v.diff && v.baseVersionId) {
                 if (!proposedKeepSet.has(v.baseVersionId)) {
                     try {
-                        console.log(`[VersionControl] 版本 ${v.id} 的基准将被清理，正在将其转换为完整版本...`);
-                        
                         const fullContent = this.resolveContentFromList(versionFile.versions, v.id);
-                        
                         v.content = fullContent;
                         v.diff = undefined;
                         v.baseVersionId = undefined;
@@ -1008,11 +1005,9 @@ export default class VersionControlPlugin extends Plugin {
                     const oldData = JSON.parse(oldContent) as VersionFile;
                     
                     if (finalVersionFile.versions.length === 0) {
-                        console.log(`[VersionControl] Migrating (Rename): ${oldPath} -> ${versionPath}`);
                         finalVersionFile = oldData;
                         finalVersionFile.filePath = filePath;
                     } else {
-                        console.log(`[VersionControl] Merging legacy file: ${oldPath} into ${versionPath}`);
                         const existingIds = new Set(finalVersionFile.versions.map(v => v.id));
                         let mergedCount = 0;
                         for (const v of oldData.versions) {
@@ -1030,7 +1025,6 @@ export default class VersionControlPlugin extends Plugin {
                     this.buildVersionIndex(finalVersionFile);
                     await this.saveVersionFile(filePath, finalVersionFile);
                     await adapter.remove(oldPath); 
-                    console.log(`[VersionControl] Deleted legacy file: ${oldPath}`);
 
                 } catch (e: any) {
                     console.error(`[VersionControl] Error processing legacy file ${oldPath}`, e);
@@ -2799,7 +2793,6 @@ class DiffModal extends Modal {
     currentDiffIndex: number = 0;
     totalDiffs: number = 0;
     diffElements: HTMLElement[] = [];
-    collapsedSections: Set<number> = new Set();
     ignoreWhitespace: boolean = true;
     showLineNumbers: boolean = true;
     wrapLines: boolean = true;
@@ -3085,7 +3078,7 @@ class DiffModal extends Modal {
         modeSelect.createEl('option', { text: '统一视图', value: 'unified' });
         modeSelect.createEl('option', { text: '左右分栏', value: 'split' });
         modeSelect.value = this.plugin.settings.diffViewMode;
-        modeSelect.addEventListener('change', () => { this.collapsedSections.clear(); this.renderTextDiff(); });
+        modeSelect.addEventListener('change', () => { this.renderTextDiff(); });
 
         prevBtn.addEventListener('click', () => this.navigateDiff(-1));
         nextBtn.addEventListener('click', () => this.navigateDiff(1));
@@ -3101,7 +3094,6 @@ class DiffModal extends Modal {
 
     updateGranularity(granularity: 'char' | 'word' | 'line') {
         this.currentGranularity = granularity;
-        this.collapsedSections.clear();
         this.renderTextDiff();
     }
 
@@ -3747,7 +3739,7 @@ class DiffModal extends Modal {
             return fragment;
         };
 
-        const renderLine = (content: string | DocumentFragment, type: ProcessedDiff['type'], lineNumLeft: number | null, lineNumRight: number | null, oldContentForRevert: string | null = null) => {
+        const renderLine = (content: string | DocumentFragment, type: ProcessedDiff['type'], lineNumLeft: number | null, lineNumRight: number | null) => {
             const lineEl = container.createEl('div', { cls: `diff-line diff-${type}` });
             
             if (type === 'added') lineEl.addClass('diff-line-bg-added');
@@ -3821,7 +3813,7 @@ class DiffModal extends Modal {
                             } else {
                                 const lineDiff = secondaryDiffFn(lLine, rLine);
                                 const combinedFrag = createHighlightedFragment(lineDiff, true);
-                                renderLine(combinedFrag, 'modified', leftLineNum++, rightLineNum++, lLine);
+                                renderLine(combinedFrag, 'modified', leftLineNum++, rightLineNum++);
                             }
                         }
                     } else {
@@ -3866,7 +3858,7 @@ class DiffModal extends Modal {
                                 } else {
                                     const lineDiff = secondaryDiffFn(lLine!, rLine!);
                                     const combinedFrag = createHighlightedFragment(lineDiff, true);
-                                    renderLine(combinedFrag, 'modified', leftLineNum++, rightLineNum++, lLine);
+                                    renderLine(combinedFrag, 'modified', leftLineNum++, rightLineNum++);
                                 }
                                 lIndex++;
                                 rIndex++;
@@ -3883,7 +3875,7 @@ class DiffModal extends Modal {
                         renderLine(leftFrag, 'removed', leftLineNum++, null);
                         
                         const rightFrag = createHighlightedFragment((lineDiff || []).filter((p: Diff.Change) => !p.removed), false);
-                        renderLine(rightFrag, 'added', null, rightLineNum++, oldLine);
+                        renderLine(rightFrag, 'added', null, rightLineNum++);
                     }
                 } else {
                     leftLines.forEach(line => renderLine(line, 'removed', leftLineNum++, null));
@@ -4018,7 +4010,7 @@ class DiffModal extends Modal {
             return fragment;
         };
     
-        const renderLine = (panel: HTMLElement, content: string | DocumentFragment, type: string, lineNum: number | null, oldContentForRevert: string | null = null) => {
+        const renderLine = (panel: HTMLElement, content: string | DocumentFragment, type: string, lineNum: number | null) => {
             const lineEl = panel.createEl('div', { cls: `diff-line diff-${type}` });
 
             if (type === 'added') lineEl.addClass('diff-line-bg-added');
@@ -4085,7 +4077,7 @@ class DiffModal extends Modal {
                                 const leftFrag = createHighlightedFragment((lineDiff || []).filter((p: Diff.Change) => !p.added));
                                 const rightFrag = createHighlightedFragment((lineDiff || []).filter((p: Diff.Change) => !p.removed));
                                 renderLine(leftPanel, leftFrag, 'modified', leftLineNum++);
-                                renderLine(rightPanel, rightFrag, 'modified', rightLineNum++, lLine);
+                                renderLine(rightPanel, rightFrag, 'modified', rightLineNum++);
                             }
                         }
                     } else {
@@ -4137,7 +4129,7 @@ class DiffModal extends Modal {
                                     const leftFrag = createHighlightedFragment((lineDiff || []).filter((p: Diff.Change) => !p.added));
                                     const rightFrag = createHighlightedFragment((lineDiff || []).filter((p: Diff.Change) => !p.removed));
                                     renderLine(leftPanel, leftFrag, 'modified', leftLineNum++);
-                                    renderLine(rightPanel, rightFrag, 'modified', rightLineNum++, lLine);
+                                    renderLine(rightPanel, rightFrag, 'modified', rightLineNum++);
                                 }
                                 lIndex++;
                                 rIndex++;
