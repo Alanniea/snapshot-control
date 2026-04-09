@@ -188,7 +188,7 @@
 .diff-line-bg-removed .line-content { text-decoration: none !important; }
 .diff-line .diff-marker { margin-right: 6px; opacity: 0.5; font-family: var(--font-monospace); align-self: center; user-select: none !important; -webkit-user-select: none !important; }
 
-/* 移动端 Diff 适配 */
+/* 移动端 Diff 适配基础 */
 .is-mobile .diff-line.actions-visible .line-number-container { width: auto !important; min-width: 45px !important; display: flex !important; flex-direction: row !important; align-items: center !important; justify-content: flex-start !important; background: var(--background-primary); z-index: 5; }
 .is-mobile .diff-line.actions-visible .line-number { display: inline-block !important; opacity: 1 !important; margin-right: 4px !important; font-size: 0.7em !important; }
 
@@ -402,13 +402,29 @@
     .version-item { flex-direction: column; align-items: flex-start; }
     .version-actions { width: 100%; justify-content: flex-end; }
     .diff-split { grid-template-columns: 1fr; gap: 10px; }
-    .diff-toolbar { flex-direction: column; align-items: stretch; }
+    
+    /* 工具栏排版优化：强制不换行，左右分布 */
+    .diff-toolbar-redesigned { justify-content: space-between; flex-wrap: nowrap; }
     .diff-toolbar-group { justify-content: center; }
-    .diff-info-banner-compact { flex-direction: column; align-items: flex-start; gap: 5px; }
-    .diff-info-percent { margin-left: 0; }
+    
+    /* 版本选择器：上下排列防截断 */
+    .diff-version-selector-container { flex-direction: column; align-items: stretch; gap: 8px; }
+    .diff-version-selector { justify-content: space-between; }
+    .diff-selector-btn { max-width: 75%; } /* 让按钮更宽以显示时间 */
+    .diff-swap-btn { transform: rotate(90deg); align-self: center; padding: 2px; }
+    
+    /* 统计信息面板：紧凑排列 */
+    .diff-info-banner-compact { flex-direction: row; flex-wrap: wrap; gap: 6px; }
+    .diff-info-item { width: 100%; margin-left: 0 !important; }
+    .diff-info-added, .diff-info-removed, .diff-info-changed { width: auto; margin-left: 0; }
+    .diff-info-percent { margin-left: auto; }
+    
     .diff-toolbar button:hover::after, .diff-toolbar select:hover::after { display: none; }
-    .diff-modal { width: 95vw; height: 85vh; }
-    .quick-preview-modal { width: 95vw; height: 85vh; }
+    
+    /* 增大模态框在移动端的显示区域 */
+    .diff-modal { width: 96vw; height: 92vh; }
+    .quick-preview-modal { width: 96vw; height: 92vh; }
+    
     .version-header-actions { flex-direction: column; }
     .version-search { width: 100%; }
 }
