@@ -403,91 +403,133 @@
     .version-actions { width: 100%; justify-content: flex-end; }
     .diff-split { grid-template-columns: 1fr; gap: 10px; }
     
-    /* === 1. 扁平化版本选择器（去除多余框线，文字靠左） === */
+    /* 增大模态框，榨干手机屏幕空间 */
+    .diff-modal { width: 96vw; height: 94vh; }
+    .diff-modal .modal-content { padding: 12px 10px; }
+    .quick-preview-modal { width: 96vw; height: 94vh; }
+    
+    /* 标题栏紧凑化 */
+    .diff-modal-header { margin-bottom: 8px; padding-bottom: 6px; }
+    .diff-modal-title { font-size: 16px !important; }
+
+    /* === 1. 彻底重构版本选择器（类似机票/翻译App样式） === */
     .diff-version-selector-container { 
         flex-direction: column; 
         align-items: stretch; 
-        gap: 0; /* 消除间距，让背景融为一体 */
-        padding: 4px 8px;
-        background: transparent; /* 去除外层灰色背景 */
-        border-bottom: 1px solid var(--background-modifier-border);
+        padding: 8px; 
+        background: var(--background-secondary); 
+        border: 1px solid var(--background-modifier-border);
+        border-radius: 8px;
+        margin-bottom: 12px;
+        gap: 0; /* 移除缝隙 */
     }
     .diff-version-selector { 
-        justify-content: flex-start; 
-        background: var(--background-secondary); /* 移到行级别 */
+        background: var(--background-primary); /* 卡片底色为白 */
+        padding: 10px 12px;
+        justify-content: space-between; /* 左右对齐 */
         border-radius: 6px;
-        padding: 4px 8px;
-        margin-bottom: 4px;
+        border: 1px solid var(--background-modifier-border);
+        margin: 0;
     }
     .diff-selector-label { 
-        min-width: 48px; 
-        font-size: 11px;
+        font-size: 12px;
         color: var(--text-muted);
     }
     .diff-selector-btn { 
-        flex: 1; 
-        max-width: none; 
-        text-align: left; /* 文本靠左，更易阅读 */
-        padding: 4px 6px; 
-        background: transparent; /* 去除按钮自身的背景 */
-        border: none; /* 去除按钮边框 */
-        box-shadow: none;
-        color: var(--text-accent); /* 用颜色区分可点击 */
-        font-weight: 600;
+        flex: unset; 
+        background: transparent !important; /* 去除按钮背景 */
+        border: none !important; /* 去除按钮边框 */
+        padding: 0 !important; 
+        font-size: 13px !important; 
+        font-family: var(--font-monospace);
+        color: var(--text-accent); /* 文字高亮表示可点击 */
+        text-align: right;
     }
-    .diff-selector-btn:hover { background: rgba(var(--interactive-accent-rgb), 0.1); }
+    /* 精确修复中间的悬浮交换按钮 */
     .diff-swap-btn { 
+        position: static; /* 移除之前的绝对定位 */
         transform: rotate(90deg); 
-        align-self: center; 
-        padding: 0; 
-        margin: -2px 0; 
-        font-size: 14px;
-        color: var(--text-muted);
+        align-self: center; /* 居中对齐 */
+        background: var(--background-secondary); /* 和外层背景一致 */
+        border: 1px solid var(--background-modifier-border);
+        border-radius: 50%;
+        width: 28px;
+        height: 28px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        margin: -6px 0; /* 利用负边距卡在上下卡片的中间 */
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        z-index: 2;
+        color: var(--text-normal);
     }
-    
-    /* === 2. 修复数据截断，采用弹性流式布局 === */
+
+    /* === 2. 统计面板：微调边距和圆角 === */
     .diff-info-banner-compact { 
         flex-direction: row; 
-        flex-wrap: wrap; /* 允许换行 */
-        gap: 6px 10px; 
-        padding: 8px 10px;
-        margin-bottom: 8px;
+        flex-wrap: wrap; 
+        gap: 6px 8px; 
+        padding: 10px;
+        margin-bottom: 12px;
+        border-radius: 8px;
+        border: 1px solid var(--background-modifier-border); /* 加上极细边框增加质感 */
     }
     .diff-info-item { 
-        width: auto !important; /* 取消强制宽度限制 */
-        flex: 1 1 auto; /* 根据内容自然伸缩 */
+        width: calc(50% - 4px) !important; 
         margin: 0 !important; 
-        font-size: 10.5px; 
-        white-space: nowrap; /* 保持单行显示 */
+        font-size: 11px; 
+        white-space: nowrap; 
     }
-    .diff-info-added, .diff-info-removed { padding: 1px 4px; font-size: 10px; border-radius: 4px; }
+    .diff-info-item:nth-child(3) { width: 100% !important; }
+    .diff-info-added, .diff-info-removed { padding: 1px 6px; font-size: 10px; border-radius: 12px; }
     .diff-info-percent { margin-left: auto; font-size: 11px; }
 
-    /* === 3. 底部工具栏与导航按钮优化 === */
+    /* === 3. 重构底部工具栏：经典分段控制器(Segmented Control) === */
     .diff-toolbar-redesigned { 
         justify-content: space-between; 
         flex-wrap: nowrap; 
-        padding: 0; /* 彻底去掉外边距，最大化空间 */
-        background: transparent; /* 去除灰色背景 */
-        margin-bottom: 8px;
+        padding: 0; 
+        background: transparent;
+        margin-bottom: 10px;
     }
-    .diff-toolbar-group { 
-        justify-content: center; 
+    /* 将导航按钮捏合在一起 */
+    #diff-nav-group { 
+        background: var(--background-secondary);
+        border: 1px solid var(--background-modifier-border);
         border-radius: 6px;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.05); /* 增加一点轻微阴影提升质感 */
+        gap: 0; /* 去除按钮间的空隙 */
+        overflow: hidden; /* 保证圆角不被破坏 */
     }
-    .diff-toolbar-redesigned button, 
+    #diff-nav-group button { 
+        background: transparent !important;
+        border: none !important;
+        border-right: 1px solid var(--background-modifier-border) !important;
+        border-radius: 0 !important;
+        padding: 8px 12px; 
+        font-size: 14px;
+    }
+    #diff-nav-group button:last-child { border-right: none !important; }
+    /* 修正指示器（✅或进度）的样式，使其融入栏中 */
     .diff-toolbar-redesigned .diff-stats { 
-        padding: 6px 10px; /* 让手指更容易点按 */
+        border: none !important;
+        border-right: 1px solid var(--background-modifier-border) !important;
+        background: transparent !important;
+        padding: 8px 6px;
         font-size: 12px;
+        color: var(--text-normal); /* 取消高亮颜色，防止像按钮 */
+        min-width: 40px;
+    }
+    
+    /* 独立的设置按钮 */
+    .diff-toolbar-group:last-child button {
+        background: var(--background-secondary);
+        border: 1px solid var(--background-modifier-border) !important;
+        border-radius: 6px !important;
+        padding: 8px 14px;
     }
     
     .diff-toolbar button:hover::after, .diff-toolbar select:hover::after { display: none; }
-    
-    /* === 4. 增大模态框在移动端的显示区域 === */
-    .diff-modal { width: 96vw; height: 92vh; }
-    .quick-preview-modal { width: 96vw; height: 92vh; }
-    
     .version-header-actions { flex-direction: column; }
     .version-search { width: 100%; }
 }
