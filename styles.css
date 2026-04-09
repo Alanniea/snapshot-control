@@ -403,25 +403,88 @@
     .version-actions { width: 100%; justify-content: flex-end; }
     .diff-split { grid-template-columns: 1fr; gap: 10px; }
     
-    /* 工具栏排版优化：强制不换行，左右分布 */
-    .diff-toolbar-redesigned { justify-content: space-between; flex-wrap: nowrap; }
-    .diff-toolbar-group { justify-content: center; }
+    /* === 1. 扁平化版本选择器（去除多余框线，文字靠左） === */
+    .diff-version-selector-container { 
+        flex-direction: column; 
+        align-items: stretch; 
+        gap: 0; /* 消除间距，让背景融为一体 */
+        padding: 4px 8px;
+        background: transparent; /* 去除外层灰色背景 */
+        border-bottom: 1px solid var(--background-modifier-border);
+    }
+    .diff-version-selector { 
+        justify-content: flex-start; 
+        background: var(--background-secondary); /* 移到行级别 */
+        border-radius: 6px;
+        padding: 4px 8px;
+        margin-bottom: 4px;
+    }
+    .diff-selector-label { 
+        min-width: 48px; 
+        font-size: 11px;
+        color: var(--text-muted);
+    }
+    .diff-selector-btn { 
+        flex: 1; 
+        max-width: none; 
+        text-align: left; /* 文本靠左，更易阅读 */
+        padding: 4px 6px; 
+        background: transparent; /* 去除按钮自身的背景 */
+        border: none; /* 去除按钮边框 */
+        box-shadow: none;
+        color: var(--text-accent); /* 用颜色区分可点击 */
+        font-weight: 600;
+    }
+    .diff-selector-btn:hover { background: rgba(var(--interactive-accent-rgb), 0.1); }
+    .diff-swap-btn { 
+        transform: rotate(90deg); 
+        align-self: center; 
+        padding: 0; 
+        margin: -2px 0; 
+        font-size: 14px;
+        color: var(--text-muted);
+    }
     
-    /* 版本选择器：上下排列防截断 */
-    .diff-version-selector-container { flex-direction: column; align-items: stretch; gap: 8px; }
-    .diff-version-selector { justify-content: space-between; }
-    .diff-selector-btn { max-width: 75%; } /* 让按钮更宽以显示时间 */
-    .diff-swap-btn { transform: rotate(90deg); align-self: center; padding: 2px; }
-    
-    /* 统计信息面板：紧凑排列 */
-    .diff-info-banner-compact { flex-direction: row; flex-wrap: wrap; gap: 6px; }
-    .diff-info-item { width: 100%; margin-left: 0 !important; }
-    .diff-info-added, .diff-info-removed, .diff-info-changed { width: auto; margin-left: 0; }
-    .diff-info-percent { margin-left: auto; }
+    /* === 2. 修复数据截断，采用弹性流式布局 === */
+    .diff-info-banner-compact { 
+        flex-direction: row; 
+        flex-wrap: wrap; /* 允许换行 */
+        gap: 6px 10px; 
+        padding: 8px 10px;
+        margin-bottom: 8px;
+    }
+    .diff-info-item { 
+        width: auto !important; /* 取消强制宽度限制 */
+        flex: 1 1 auto; /* 根据内容自然伸缩 */
+        margin: 0 !important; 
+        font-size: 10.5px; 
+        white-space: nowrap; /* 保持单行显示 */
+    }
+    .diff-info-added, .diff-info-removed { padding: 1px 4px; font-size: 10px; border-radius: 4px; }
+    .diff-info-percent { margin-left: auto; font-size: 11px; }
+
+    /* === 3. 底部工具栏与导航按钮优化 === */
+    .diff-toolbar-redesigned { 
+        justify-content: space-between; 
+        flex-wrap: nowrap; 
+        padding: 0; /* 彻底去掉外边距，最大化空间 */
+        background: transparent; /* 去除灰色背景 */
+        margin-bottom: 8px;
+    }
+    .diff-toolbar-group { 
+        justify-content: center; 
+        border-radius: 6px;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05); /* 增加一点轻微阴影提升质感 */
+    }
+    .diff-toolbar-redesigned button, 
+    .diff-toolbar-redesigned .diff-stats { 
+        padding: 6px 10px; /* 让手指更容易点按 */
+        font-size: 12px;
+    }
     
     .diff-toolbar button:hover::after, .diff-toolbar select:hover::after { display: none; }
     
-    /* 增大模态框在移动端的显示区域 */
+    /* === 4. 增大模态框在移动端的显示区域 === */
     .diff-modal { width: 96vw; height: 92vh; }
     .quick-preview-modal { width: 96vw; height: 92vh; }
     
