@@ -2970,95 +2970,73 @@ class DiffModal extends Modal {
 
         const settingsGroup = toolbar.createEl('div', { cls: 'diff-toolbar-group' });
         const settingsBtn = settingsGroup.createEl('button', { text: '设置 ⚙️', attr: { 'aria-label': '视图设置' } });
+        
         settingsBtn.addEventListener('click', (e) => {
             const menu = new Menu();
-            
-            menu.addItem(item => item.setTitle('差异粒度').setDisabled(true));
-            menu.addItem(item => item.setTitle('字符').setChecked(this.currentGranularity === 'char').onClick(() => this.updateGranularity('char')));
-            menu.addItem(item => item.setTitle('单词').setChecked(this.currentGranularity === 'word').onClick(() => this.updateGranularity('word')));
-            menu.addItem(item => item.setTitle('行').setChecked(this.currentGranularity === 'line').onClick(() => this.updateGranularity('line')));
-
-            menu.addItem(item => item.setTitle('行内差异算法').setDisabled(true));
-            menu.addItem(item => item.setTitle('按单词').setChecked(this.plugin.settings.inlineDiffAlgorithm === 'word').onClick(async () => {
-                this.plugin.settings.inlineDiffAlgorithm = 'word';
-                await this.plugin.saveSettings();
-                this.renderTextDiff();
-            }));
-            menu.addItem(item => item.setTitle('按字符').setChecked(this.plugin.settings.inlineDiffAlgorithm === 'char').onClick(async () => {
-                this.plugin.settings.inlineDiffAlgorithm = 'char';
-                await this.plugin.saveSettings();
-                this.renderTextDiff();
-            }));
-            menu.addItem(item => item.setTitle('按行').setChecked(this.plugin.settings.inlineDiffAlgorithm === 'line').onClick(async () => {
-                this.plugin.settings.inlineDiffAlgorithm = 'line';
-                await this.plugin.saveSettings();
-                this.renderTextDiff();
-            }));
-
-            menu.addSeparator();
-            menu.addItem(item => item.setTitle('视图模式').setDisabled(true));
             const modeSelect = this.containerEl.querySelector('.diff-select[aria-label="视图模式"]') as HTMLSelectElement;
-            menu.addItem(item => item.setTitle('统一视图').setChecked(modeSelect.value === 'unified').onClick(() => { modeSelect.value = 'unified'; modeSelect.dispatchEvent(new Event('change')); }));
-            menu.addItem(item => item.setTitle('左右分栏').setChecked(modeSelect.value === 'split').onClick(() => { modeSelect.value = 'split'; modeSelect.dispatchEvent(new Event('change')); }));
+            const isLineBased = this.currentGranularity === 'line';
+            const isUnified = modeSelect.value === 'unified';
 
-            menu.addItem(item => item.setTitle('紧凑型统一视图')
-                .setChecked(this.plugin.settings.compactUnifiedDiff)
-                .setDisabled(modeSelect.value !== 'unified')
-                .onClick(async () => {
+            // --- 组 1：视图模式 ---
+            menu.addItem(item => item.setTitle('统一视图').setIcon('align-justify').setChecked(isUnified).onClick(() => { modeSelect.value = 'unified'; modeSelect.dispatchEvent(new Event('change')); }));
+            menu.addItem(item => item.setTitle('左右分栏').setIcon('columns').setChecked(!isUnified).onClick(() => { modeSelect.value = 'split'; modeSelect.dispatchEvent(new Event('change')); }));
+            
+            // 只有在统一视图下，才显示紧凑模式的开关
+            if (isUnified) {
+                menu.addItem(item => item.setTitle('开启紧凑型统一视图').setIcon('list-collapse').setChecked(this.plugin.settings.compactUnifiedDiff).onClick(async () => {
                     this.plugin.settings.compactUnifiedDiff = !this.plugin.settings.compactUnifiedDiff;
                     await this.plugin.saveSettings();
                     this.renderTextDiff();
                 }));
+            }
 
             menu.addSeparator();
 
-            const isLineBased = this.currentGranularity === 'line';
-            const isWordCharBased = this.currentGranularity === 'char' || this.currentGranularity === 'word';
+            // --- 组 2：基础粒度 ---
+            menu.addItem(item => item.setTitle('按字符对比').setChecked(this.currentGranularity === 'char').onClick(() => this.updateGranularity('char')));
+            menu.addItem(item => item.setTitle('按单词对比').setChecked(this.currentGranularity === 'word').onClick(() => this.updateGranularity('word')));
+            menu.addItem(item => item.setTitle('按行对比').setChecked(isLineBased).onClick(() => this.updateGranularity('line')));
 
-            const lineNumTitle = '显示行号' + (!isLineBased ? ' (仅行模式可用)' : '');
-            
-            let contextTitle = '上下文设置';
-            if (isWordCharBased) {
-                contextTitle += ' (不适用于字符/单词模式)';
-            } else if (isLineBased) {
-                contextTitle += ' (0=仅变更, N=显示N行)';
-            }
-
-            menu.addItem(item => item.setTitle('自动换行').setChecked(this.wrapLines).onClick(() => { this.wrapLines = !this.wrapLines; this.renderTextDiff(); }));
-            
-            menu.addItem(item => item
-                .setTitle(lineNumTitle)
-                .setChecked(this.showLineNumbers)
-                .setDisabled(!isLineBased)
-                .onClick(() => { 
-                    if (isLineBased) {
-                        this.showLineNumbers = !this.showLineNumbers; 
-                        this.renderTextDiff(); 
-                    }
+            // --- 组 3：行级专属的高级设置 (动态显示) ---
+            if (isLineBased) {
+                menu.addSeparator();
+                // 行内高亮算法
+                menu.addItem(item => item.setTitle('行内高亮: 按单词 (推荐)').setChecked(this.plugin.settings.inlineDiffAlgorithm === 'word').onClick(async () => {
+                    this.plugin.settings.inlineDiffAlgorithm = 'word';
+                    await this.plugin.saveSettings();
+                    this.renderTextDiff();
                 }));
-            
-            menu.addItem(item => item.setTitle('忽略空白').setChecked(this.ignoreWhitespace).onClick(() => { this.ignoreWhitespace = !this.ignoreWhitespace; this.renderTextDiff(); }));
-            menu.addItem(item => item.setTitle('显示空白').setChecked(this.showWhitespace).onClick(() => { this.showWhitespace = !this.showWhitespace; this.renderTextDiff(); }));
-            
-            menu.addItem(item => item
-                .setTitle(contextTitle)
-                .setDisabled(true)
-                .setSection('diff-settings-group-label'));
-            
-            if (isWordCharBased) {
-                menu.addItem(item => item
-                    .setTitle('字符/单词模式不使用上下文')
-                    .setDisabled(true));
-            } else {
-                menu.addItem(item => item
-                    .setTitle(`自定义上下文行数... (当前: ${this.contextLines >= 9999 ? '全部' : this.contextLines})`)
-                    .onClick(() => {
-                        new ContextLineInputModal(this.app, this.contextLines, (lines) => {
-                            this.contextLines = lines;
-                            this.renderTextDiff();
-                        }).open();
-                    }));
+                menu.addItem(item => item.setTitle('行内高亮: 按字符').setChecked(this.plugin.settings.inlineDiffAlgorithm === 'char').onClick(async () => {
+                    this.plugin.settings.inlineDiffAlgorithm = 'char';
+                    await this.plugin.saveSettings();
+                    this.renderTextDiff();
+                }));
+                menu.addItem(item => item.setTitle('行内高亮: 按行').setChecked(this.plugin.settings.inlineDiffAlgorithm === 'line').onClick(async () => {
+                    this.plugin.settings.inlineDiffAlgorithm = 'line';
+                    await this.plugin.saveSettings();
+                    this.renderTextDiff();
+                }));
+                
+                // 行号和上下文设置
+                menu.addSeparator();
+                menu.addItem(item => item.setTitle('显示行号').setIcon('list-ordered').setChecked(this.showLineNumbers).onClick(() => { 
+                    this.showLineNumbers = !this.showLineNumbers; 
+                    this.renderTextDiff(); 
+                }));
+                menu.addItem(item => item.setTitle(`修改上下文行数... (当前: ${this.contextLines >= 9999 ? '全部' : this.contextLines})`).setIcon('settings').onClick(() => {
+                    new ContextLineInputModal(this.app, this.contextLines, (lines) => {
+                        this.contextLines = lines;
+                        this.renderTextDiff();
+                    }).open();
+                }));
             }
+
+            menu.addSeparator();
+
+            // --- 组 4：通用开关 ---
+            menu.addItem(item => item.setTitle('自动换行').setIcon('wrap-text').setChecked(this.wrapLines).onClick(() => { this.wrapLines = !this.wrapLines; this.renderTextDiff(); }));
+            menu.addItem(item => item.setTitle('忽略空白字符').setChecked(this.ignoreWhitespace).onClick(() => { this.ignoreWhitespace = !this.ignoreWhitespace; this.renderTextDiff(); }));
+            menu.addItem(item => item.setTitle('显示空白字符').setChecked(this.showWhitespace).onClick(() => { this.showWhitespace = !this.showWhitespace; this.renderTextDiff(); }));
 
             menu.showAtMouseEvent(e as MouseEvent);
         });
