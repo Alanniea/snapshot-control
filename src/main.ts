@@ -2983,7 +2983,7 @@ class DiffModal extends Modal {
             
             // 只有在统一视图下，才显示紧凑模式的开关
             if (isUnified) {
-                menu.addItem(item => item.setTitle('开启紧凑型统一视图').setIcon('list-collapse').setChecked(this.plugin.settings.compactUnifiedDiff).onClick(async () => {
+                menu.addItem(item => item.setTitle('紧凑型统一视图').setIcon('shrink').setChecked(this.plugin.settings.compactUnifiedDiff).onClick(async () => {
                     this.plugin.settings.compactUnifiedDiff = !this.plugin.settings.compactUnifiedDiff;
                     await this.plugin.saveSettings();
                     this.renderTextDiff();
@@ -2992,26 +2992,26 @@ class DiffModal extends Modal {
 
             menu.addSeparator();
 
-            // --- 组 2：基础粒度 ---
-            menu.addItem(item => item.setTitle('按字符对比').setChecked(this.currentGranularity === 'char').onClick(() => this.updateGranularity('char')));
-            menu.addItem(item => item.setTitle('按单词对比').setChecked(this.currentGranularity === 'word').onClick(() => this.updateGranularity('word')));
-            menu.addItem(item => item.setTitle('按行对比').setChecked(isLineBased).onClick(() => this.updateGranularity('line')));
+            // --- 组 2：基础差异粒度 ---
+            menu.addItem(item => item.setTitle('字符级对比').setIcon('type').setChecked(this.currentGranularity === 'char').onClick(() => this.updateGranularity('char')));
+            menu.addItem(item => item.setTitle('单词级对比').setIcon('whole-word').setChecked(this.currentGranularity === 'word').onClick(() => this.updateGranularity('word')));
+            menu.addItem(item => item.setTitle('行级对比').setIcon('list').setChecked(isLineBased).onClick(() => this.updateGranularity('line')));
 
             // --- 组 3：行级专属的高级设置 (动态显示) ---
             if (isLineBased) {
                 menu.addSeparator();
                 // 行内高亮算法
-                menu.addItem(item => item.setTitle('行内高亮: 按单词 (推荐)').setChecked(this.plugin.settings.inlineDiffAlgorithm === 'word').onClick(async () => {
+                menu.addItem(item => item.setTitle('行内高亮: 按单词 (推荐)').setIcon('text-cursor').setChecked(this.plugin.settings.inlineDiffAlgorithm === 'word').onClick(async () => {
                     this.plugin.settings.inlineDiffAlgorithm = 'word';
                     await this.plugin.saveSettings();
                     this.renderTextDiff();
                 }));
-                menu.addItem(item => item.setTitle('行内高亮: 按字符').setChecked(this.plugin.settings.inlineDiffAlgorithm === 'char').onClick(async () => {
+                menu.addItem(item => item.setTitle('行内高亮: 按字符').setIcon('text-select').setChecked(this.plugin.settings.inlineDiffAlgorithm === 'char').onClick(async () => {
                     this.plugin.settings.inlineDiffAlgorithm = 'char';
                     await this.plugin.saveSettings();
                     this.renderTextDiff();
                 }));
-                menu.addItem(item => item.setTitle('行内高亮: 按行').setChecked(this.plugin.settings.inlineDiffAlgorithm === 'line').onClick(async () => {
+                menu.addItem(item => item.setTitle('行内高亮: 按行').setIcon('rows').setChecked(this.plugin.settings.inlineDiffAlgorithm === 'line').onClick(async () => {
                     this.plugin.settings.inlineDiffAlgorithm = 'line';
                     await this.plugin.saveSettings();
                     this.renderTextDiff();
@@ -3035,8 +3035,8 @@ class DiffModal extends Modal {
 
             // --- 组 4：通用开关 ---
             menu.addItem(item => item.setTitle('自动换行').setIcon('wrap-text').setChecked(this.wrapLines).onClick(() => { this.wrapLines = !this.wrapLines; this.renderTextDiff(); }));
-            menu.addItem(item => item.setTitle('忽略空白字符').setChecked(this.ignoreWhitespace).onClick(() => { this.ignoreWhitespace = !this.ignoreWhitespace; this.renderTextDiff(); }));
-            menu.addItem(item => item.setTitle('显示空白字符').setChecked(this.showWhitespace).onClick(() => { this.showWhitespace = !this.showWhitespace; this.renderTextDiff(); }));
+            menu.addItem(item => item.setTitle('忽略空白字符').setIcon('eye-off').setChecked(this.ignoreWhitespace).onClick(() => { this.ignoreWhitespace = !this.ignoreWhitespace; this.renderTextDiff(); }));
+            menu.addItem(item => item.setTitle('显示空白字符').setIcon('eye').setChecked(this.showWhitespace).onClick(() => { this.showWhitespace = !this.showWhitespace; this.renderTextDiff(); }));
 
             menu.showAtMouseEvent(e as MouseEvent);
         });
