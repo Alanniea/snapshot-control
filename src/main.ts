@@ -3370,9 +3370,6 @@ class DiffModal extends Modal {
         const leftLinesCount = this.leftContent.split('\n').length;
         const rightLinesCount = this.rightContent.split('\n').length;
         
-        const totalChangesCount = addedLines + removedLines + modifiedLines;
-        const changePercent = leftLinesCount > 0 ? ((totalChangesCount / leftLinesCount) * 100).toFixed(1) : '0';
-        
         const leftWordCountNum = this.plugin.countWords(this.leftContent);
         const rightWordCountNum = this.plugin.countWords(this.rightContent);
         
@@ -3406,7 +3403,6 @@ class DiffModal extends Modal {
 
         container.createEl('span', { text: `+${addedLines}`, cls: 'diff-info-added' });
         container.createEl('span', { text: `-${removedLines}`, cls: 'diff-info-removed' });
-        container.createEl('span', { text: `变化率: ${changePercent}%`, cls: 'diff-info-percent' });
 
         container.addClass('diff-info-updated');
         setTimeout(() => {
