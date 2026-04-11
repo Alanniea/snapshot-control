@@ -1,3 +1,10 @@
+```
+
+### 第二部分：完整的 `styles.css`
+
+请全选并替换你的 `styles.css` 文件：
+
+```css
 /* ======================================================================= */
 /* ======================== 快速预览模态框 (QuickPreviewModal) =========== */
 /* ======================================================================= */
@@ -158,11 +165,6 @@
 .version-pagination-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .version-pagination-info { font-size: 13px; color: var(--text-muted); }
 .version-footer { margin-top: 20px; padding-top: 15px; border-top: 1px solid var(--background-modifier-border); font-size: 12px; color: var(--text-muted); text-align: center; }
-.version-stats { padding: 15px; background: var(--background-secondary); border-radius: 6px; margin-bottom: 20px; border-left: 3px solid var(--interactive-accent); }
-.version-stats h3 { margin: 0 0 10px 0; font-size: 16px; }
-.stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-top: 10px; font-size: 13px; }
-.stats-grid div { padding: 8px; background: var(--background-primary); border-radius: 4px; }
-.version-stats button { margin-top: 10px; }
 
 /* ======================================================================= */
 /* ======================== 差异对比模态框 (DiffModal) =================== */
@@ -391,6 +393,79 @@
 .version-history-view::-webkit-scrollbar-thumb:hover, .preview-raw-container pre::-webkit-scrollbar-thumb:hover, .version-select-list::-webkit-scrollbar-thumb:hover,
 .diff-container::-webkit-scrollbar-thumb:hover, .diff-content::-webkit-scrollbar-thumb:hover, .line-content::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 
+/* ======================================================================= */
+/* ======================== 设置面板存储统计 UI 优化 ===================== */
+/* ======================================================================= */
+.version-stats { 
+    padding: 16px; 
+    background: var(--background-secondary); 
+    border-radius: 8px; 
+    margin-bottom: 24px; 
+    border: 1px solid var(--background-modifier-border); 
+}
+.stats-header { 
+    display: flex; 
+    justify-content: space-between; 
+    align-items: center; 
+    margin-bottom: 16px; 
+}
+.stats-header h3 { 
+    margin: 0 !important; 
+    font-size: 15px; 
+    color: var(--text-normal);
+}
+.stats-refresh-btn { 
+    background: transparent; 
+    box-shadow: none; 
+    padding: 4px 8px; 
+    height: auto; 
+    font-size: 12px;
+    color: var(--text-muted);
+}
+.stats-refresh-btn:hover {
+    color: var(--text-accent);
+    background: var(--background-modifier-hover);
+}
+
+.stats-grid { 
+    display: grid; 
+    grid-template-columns: repeat(3, 1fr); /* 电脑端默认3列 */
+    gap: 12px; 
+}
+
+.stat-card { 
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: var(--background-primary); 
+    border-radius: 8px; 
+    padding: 12px 8px; 
+    border: 1px solid var(--background-modifier-border-hover); 
+    transition: transform 0.2s ease, border-color 0.2s ease;
+}
+.stat-card:hover {
+    transform: translateY(-2px);
+    border-color: var(--interactive-accent);
+}
+.stat-value { 
+    font-size: 18px; 
+    font-weight: 600; 
+    color: var(--text-normal); 
+    font-family: var(--font-monospace); 
+    line-height: 1.2;
+}
+.stat-label { 
+    font-size: 11px; 
+    color: var(--text-muted); 
+    margin-top: 6px; 
+}
+
+
+/* ======================================================================= */
+/* ======================== 响应式适配 =================================== */
+/* ======================================================================= */
+
 @media (max-width: 1024px) {
     .diff-toolbar { gap: 6px; }
     .diff-toolbar-group { gap: 4px; padding: 3px 6px; }
@@ -423,7 +498,7 @@
     }
     .diff-version-selector { 
         background: var(--background-primary); 
-        padding: 6px 10px; /* 【大幅减少上下内边距】 */
+        padding: 6px 10px; 
         justify-content: space-between; 
         border-radius: 6px;
         border: 1px solid var(--background-modifier-border);
@@ -443,7 +518,6 @@
         color: var(--text-accent); 
         text-align: right;
     }
-    /* 调整中间悬浮按钮的位置 */
     .diff-swap-btn { 
         position: static; 
         transform: rotate(90deg); 
@@ -451,13 +525,13 @@
         background: var(--background-secondary); 
         border: 1px solid var(--background-modifier-border);
         border-radius: 50%;
-        width: 24px; /* 缩小一点更精致 */
+        width: 24px; 
         height: 24px;
         display: flex;
         align-items: center;
         justify-content: center;
         padding: 0;
-        margin: -4px 0; /* 卡得更紧凑 */
+        margin: -4px 0; 
         box-shadow: 0 1px 3px rgba(0,0,0,0.1);
         z-index: 2;
         color: var(--text-normal);
@@ -468,7 +542,7 @@
     .diff-info-banner-compact { 
         flex-direction: row; 
         flex-wrap: wrap; 
-        gap: 4px 10px; /* 减小行间距 */
+        gap: 4px 10px; 
         padding: 8px 10px;
         margin-bottom: 10px;
         border-radius: 8px;
@@ -477,7 +551,7 @@
     }
     .diff-info-item { 
         width: auto !important; 
-        flex: 1 1 45%; /* 自然两列，不会截断 */
+        flex: 1 1 45%; 
         margin: 0 !important; 
         font-size: 11px; 
         white-space: nowrap; 
@@ -496,9 +570,9 @@
     #diff-nav-group { 
         background: var(--background-secondary);
         border: 1px solid var(--background-modifier-border);
-        border-radius: 8px; /* 增加整体圆角 */
+        border-radius: 8px; 
         gap: 0; 
-        overflow: hidden; /* 【关键】防止内部按钮直角溢出 */
+        overflow: hidden; 
         display: flex;
     }
     #diff-nav-group button { 
@@ -508,7 +582,7 @@
         border-radius: 0 !important;
         padding: 6px 10px; 
         font-size: 14px;
-        margin: 0 !important; /* 消除意外边距 */
+        margin: 0 !important; 
     }
     #diff-nav-group button:last-child { border-right: none !important; }
     
@@ -536,4 +610,13 @@
     .diff-toolbar button:hover::after, .diff-toolbar select:hover::after { display: none; }
     .version-header-actions { flex-direction: column; }
     .version-search { width: 100%; }
+
+    /* === 4. 设置面板统计手机端双列适配 === */
+    .stats-grid { 
+        grid-template-columns: repeat(2, 1fr); 
+        gap: 10px;
+    } 
+    .stat-value {
+        font-size: 16px; 
+    }
 }

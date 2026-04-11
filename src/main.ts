@@ -3370,6 +3370,9 @@ class DiffModal extends Modal {
         const leftLinesCount = this.leftContent.split('\n').length;
         const rightLinesCount = this.rightContent.split('\n').length;
         
+        const totalChangesCount = addedLines + removedLines + modifiedLines;
+        const changePercent = leftLinesCount > 0 ? ((totalChangesCount / leftLinesCount) * 100).toFixed(1) : '0';
+        
         const leftWordCountNum = this.plugin.countWords(this.leftContent);
         const rightWordCountNum = this.plugin.countWords(this.rightContent);
         
@@ -4218,21 +4221,35 @@ class VersionControlSettingTab extends PluginSettingTab {
         if (this.plugin.settings.showVersionStats) {
             const stats = await this.plugin.getStorageStats();
             const statsEl = containerEl.createEl('div', { cls: 'version-stats' });
-            statsEl.createEl('h3', { text: '📊 存储统计' });
-            const statsGrid = statsEl.createEl('div', { cls: 'stats-grid' });
-            statsGrid.createEl('div', { text: `总大小: ${this.plugin.formatFileSize(stats.totalSize)}` });
-            statsGrid.createEl('div', { text: `版本数量: ${stats.versionCount}` });
-            statsGrid.createEl('div', { text: `文件数量: ${stats.fileCount}` });
-            statsGrid.createEl('div', { text: `星标版本: ${stats.starredCount}` });
-            statsGrid.createEl('div', { text: `标签版本: ${stats.taggedCount}` });
-            if (this.plugin.settings.enableCompression || this.plugin.settings.enableIncrementalStorage) {
-                statsGrid.createEl('div', { text: `压缩率: ${stats.compressionRatio.toFixed(1)}%` });
-            }
-
-            const refreshBtn = statsEl.createEl('button', { text: '🔄 刷新统计' });
+            
+            // 头部：标题与刷新按钮同行
+            const headerEl = statsEl.createEl('div', { cls: 'stats-header' });
+            headerEl.createEl('h3', { text: '📊 存储统计' });
+            const refreshBtn = headerEl.createEl('button', { text: '🔄 刷新', cls: 'stats-refresh-btn' });
             refreshBtn.addEventListener('click', () => {
                 this.display();
             });
+
+            // 数据网格
+            const statsGrid = statsEl.createEl('div', { cls: 'stats-grid' });
+            
+            // 辅助函数：创建单个数据卡片
+            const createStatCard = (label: string, value: string | number, highlight: boolean = false) => {
+                const card = statsGrid.createEl('div', { cls: 'stat-card' });
+                const valEl = card.createEl('div', { text: String(value), cls: 'stat-value' });
+                if (highlight) valEl.style.color = 'var(--text-accent)';
+                card.createEl('div', { text: label, cls: 'stat-label' });
+            };
+
+            createStatCard('总占用空间', this.plugin.formatFileSize(stats.totalSize), true);
+            createStatCard('版本总数', stats.versionCount);
+            createStatCard('文件总数', stats.fileCount);
+            createStatCard('星标版本', stats.starredCount);
+            createStatCard('带有标签', stats.taggedCount);
+            
+            if (this.plugin.settings.enableCompression || this.plugin.settings.enableIncrementalStorage) {
+                createStatCard('存储压缩率', `${stats.compressionRatio.toFixed(1)}%`, true);
+            }
         }
 
         containerEl.createEl('h3', { text: '⚙️ 基础设置' });
