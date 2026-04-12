@@ -829,10 +829,9 @@ export default class VersionControlPlugin extends Plugin {
             }
 
             // 🚀 性能重构核心：逆向增量架构 (Reverse Delta)
-            // 新版本永远存储完整内容 (Full Content)，老版本才被压缩成补丁 (Diff)
             let newVersion: VersionData = {
                 id, timestamp, message, 
-                content: content, // 最新版本永远是完整的！
+                content: content, // 最新版本永远存储完整内容
                 size: content.length, hash,
                 tags: tags.length > 0 ? tags : undefined,
                 starred: false, addedLines, removedLines
@@ -841,7 +840,7 @@ export default class VersionControlPlugin extends Plugin {
             if (this.settings.enableIncrementalStorage && versionFile.versions.length > 0) {
                 const prevVersion = versionFile.versions[0]!;
                 
-                // 只有当上一个版本是完整内容时，才尝试将其转化为逆向差异
+                // 将上一个老版本转化为增量补丁
                 if (prevVersion.content !== undefined && prevVersion.content !== null) {
                     let chainLength = 1;
                     for (let i = 1; i < versionFile.versions.length; i++) {
@@ -855,20 +854,19 @@ export default class VersionControlPlugin extends Plugin {
 
                     if (chainLength < this.settings.rebuildBaseInterval) {
                         try {
-                            // 计算从“新内容”回到“老内容”的逆向补丁
                             const reversePatch = this.createDiff(content, prevVersion.content);
                             const testApply = Diff.applyPatch(content, reversePatch);
                             
                             if (testApply !== false && this.normalizeText(testApply) === prevVersion.content) {
                                 prevVersion.diff = reversePatch;
-                                prevVersion.baseVersionId = id; // 老版本依赖于新版本
+                                prevVersion.baseVersionId = id; 
                                 prevVersion.size = reversePatch.length;
-                                delete prevVersion.content; // 释放老版本的全量空间
+                                delete prevVersion.content; 
                             } else {
                                 console.warn(`[VersionControl] 逆向增量补丁验证失败，保留老版本完整内容。File: ${file.path}`);
                             }
                         } catch (err: any) {
-                            console.error("生成逆向增量版本时出错，保留为完整版本", err);
+                            console.error("生成逆向增量版本时出错", err);
                         }
                     }
                 }
@@ -888,7 +886,6 @@ export default class VersionControlPlugin extends Plugin {
             this.buildVersionIndex(versionFile);
             await this.saveVersionFile(file.path, versionFile);
             
-            // 更新缓存并写入新缓存
             this.versionCache.set(file.path, versionFile);
             this.contentCache.set(`${file.path}::${newVersion.id}`, content);
 
@@ -968,7 +965,6 @@ export default class VersionControlPlugin extends Plugin {
         for (let i = proposedList.length - 1; i >= 0; i--) {
             const v = proposedList[i]!;
             
-            // 如果这个版本是增量，并且它依赖的基础版本被删除了，我们需要将它重构为完整版本以防止数据丢失
             if (v.diff && v.baseVersionId) {
                 if (!proposedKeepSet.has(v.baseVersionId)) {
                     try {
@@ -1134,7 +1130,6 @@ export default class VersionControlPlugin extends Plugin {
 
     async getAllVersions(filePath: string): Promise<VersionData[]> { try { const versionFile = await this.loadVersionFile(filePath); return versionFile.versions; } catch (error: any) { console.error('获取版本列表失败:', error); return []; } }
     
-    // 🧠 性能重构：使用 LRU 缓存避免反复解压，极大提升查看差异时的流畅度
     async getVersionContent(filePath: string, versionId: string, suppressNotice: boolean = false, strictMode: boolean = false): Promise<string> { 
         const cacheKey = `${filePath}::${versionId}`;
         const cached = this.contentCache.get(cacheKey);
@@ -1174,7 +1169,6 @@ export default class VersionControlPlugin extends Plugin {
             }
 
             let resultContent = baseContent;
-            // 对于逆向增量和正向增量，这个循环都是适用的，因为依赖链已经被抽象
             for (let i = patches.length - 1; i >= 0; i--) {
                 const result = Diff.applyPatch(resultContent, patches[i]!);
                 if (result === false) {
@@ -1243,7 +1237,7 @@ export default class VersionControlPlugin extends Plugin {
                 const content = await this.getVersionContent(filePath, version.id, true, true); 
                 if (version.hash) { 
                     const currentHash = this.hashContent(content); 
-                    const oldHash = this.legacyStringHash(content); // 验证老 Hash 是否对应
+                    const oldHash = this.legacyStringHash(content); 
                     if (currentHash !== version.hash && oldHash !== version.hash) { 
                         errors.push(`版本 ${version.id.substring(0,8)}: 哈希校验失败 (内容不匹配)`); 
                     } 
@@ -1291,7 +1285,7 @@ export default class VersionControlPlugin extends Plugin {
             
             if (i % 5 === 0) { 
                 notice.setMessage(`正在检查完整性... ${i + 1}/${total}`); 
-                await this.yieldToMain(); // 性能重构：时间切片防卡死
+                await this.yieldToMain(); 
             } 
         } 
         notice.hide(); 
@@ -1478,7 +1472,7 @@ export default class VersionControlPlugin extends Plugin {
             if (this.isExcluded(file.path)) continue;
 
             count++;
-            if (count % 20 === 0) await this.yieldToMain(); // 性能重构：主动让出线程防止卡死
+            if (count % 20 === 0) await this.yieldToMain();
 
             const versionPath = await this.findExistingVersionPath(file.path);
 
@@ -1525,7 +1519,7 @@ export default class VersionControlPlugin extends Plugin {
         let count = 0;
         for (const vFile of targetFiles) {
             count++;
-            if (count % 10 === 0) await this.yieldToMain(); // 性能重构：时间切片
+            if (count % 10 === 0) await this.yieldToMain();
 
             try {
                 const contentStr = await this.readCompressedOrRaw(vFile);
@@ -1547,7 +1541,6 @@ export default class VersionControlPlugin extends Plugin {
                 });
 
             } catch (e: any) {
-                // ignore errors
             }
         }
 
@@ -1743,7 +1736,6 @@ class VersionHistoryView extends ItemView {
             })
         );
         
-        // 监听文件重命名，自动刷新侧边栏引用
         this.registerEvent(
             this.app.vault.on('rename', (file, oldPath) => {
                 if (this.currentViewMode === 'current' && this.currentFile && oldPath === this.currentFile.path) {
@@ -1806,12 +1798,8 @@ class VersionHistoryView extends ItemView {
     
             if (previousVersion) {
                 const previousContent = await this.plugin.getVersionContent(versionFile.filePath, previousVersion.id, true);
-                
-                // 强制附加 \n 确保底层统计换行符不出错
                 const safePrev = previousContent + '\n';
                 const safeCurr = currentContent + '\n';
-                
-                // 使用自带的紧凑算法计算
                 const diffResult = this.plugin.getCompactDiffLines(safePrev, safeCurr, true);
                 
                 for (let i = 0; i < diffResult.length; i++) {
@@ -1850,7 +1838,6 @@ class VersionHistoryView extends ItemView {
             version.modifiedLines = 0;
         }
     }
-
 
     async refresh() {
         if (this.isRefreshing) return;
@@ -1916,7 +1903,6 @@ class VersionHistoryView extends ItemView {
             });
         });
 
-        // 引入全局动态刷新按钮
         const refreshBtn = tabBar.createEl('button', { 
             cls: 'vc-global-refresh', 
             attr: { 'aria-label': '强制刷新当前视图', 'title': '刷新' } 
@@ -2032,7 +2018,6 @@ class VersionHistoryView extends ItemView {
         const perPage = this.plugin.settings.versionsPerPage > 0 ? this.plugin.settings.versionsPerPage : filteredVersions.length;
         const totalPages = Math.ceil(filteredVersions.length / perPage);
         
-        // 增加分页越界保护
         if (this.currentPage >= totalPages) {
             this.currentPage = Math.max(0, totalPages - 1);
         }
@@ -2841,13 +2826,10 @@ class DiffModal extends Modal {
     }
 
     diffWordsCJK(text1: string, text2: string): Diff.Change[] {
-        // 以空格、制表符、换行、常见中英文标点为界限进行切块
         const tokenize = (str: string) => str.split(/([ \t\n\r]+|[，。！？；：、()（）""'']+)/).filter(Boolean);
         const tokens1 = tokenize(text1);
         const tokens2 = tokenize(text2);
-        
         const result = Diff.diffArrays(tokens1, tokens2);
-        
         return result.map(part => {
             const textValue = part.value ? part.value.join('') : '';
             return {
@@ -2998,7 +2980,6 @@ class DiffModal extends Modal {
             menu.addItem(item => item.setTitle('统一视图').setIcon('align-justify').setChecked(isUnified).onClick(() => { modeSelect.value = 'unified'; modeSelect.dispatchEvent(new Event('change')); }));
             menu.addItem(item => item.setTitle('左右分栏').setIcon('columns').setChecked(!isUnified).onClick(() => { modeSelect.value = 'split'; modeSelect.dispatchEvent(new Event('change')); }));
             
-            // 只有在统一视图下，才显示紧凑模式的开关
             if (isUnified) {
                 menu.addItem(item => item.setTitle('紧凑型统一视图').setIcon('shrink').setChecked(this.plugin.settings.compactUnifiedDiff).onClick(async () => {
                     this.plugin.settings.compactUnifiedDiff = !this.plugin.settings.compactUnifiedDiff;
@@ -3030,7 +3011,7 @@ class DiffModal extends Modal {
                 menu.addSeparator();
             }
 
-            // --- 组 4：通用显示与辅助排版 (全部合并在一起) ---
+            // --- 组 4：通用显示与辅助排版 ---
             menu.addItem(item => item.setTitle('自动换行').setIcon('wrap-text').setChecked(this.wrapLines).onClick(() => { this.wrapLines = !this.wrapLines; this.renderTextDiff(); }));
             
             if (isLineBased) {
@@ -3285,7 +3266,34 @@ class DiffModal extends Modal {
         }, 50);
     }
 
-    renderTextDiff() {
+    // 🚀 性能重构：时间切片渲染引擎 (Time-Slicing Render Engine)
+    async executeRenderTasks(container: HTMLElement, tasks: ((frag: DocumentFragment) => void)[]) {
+        const CHUNK_SIZE = 100; // 每一帧渲染 100 行差异
+        this.loadingOverlay.style.display = 'flex';
+        const msgEl = this.loadingOverlay.querySelector('.diff-loading-message') as HTMLElement;
+        
+        for (let i = 0; i < tasks.length; i += CHUNK_SIZE) {
+            await new Promise<void>(resolve => {
+                requestAnimationFrame(() => {
+                    const frag = document.createDocumentFragment();
+                    const chunk = tasks.slice(i, i + CHUNK_SIZE);
+                    chunk.forEach(task => task(frag));
+                    container.appendChild(frag);
+                    resolve();
+                });
+            });
+            if (i % 300 === 0 && msgEl) {
+                 msgEl.textContent = `正在渲染视图... ${Math.round((i / tasks.length) * 100)}%`;
+            }
+        }
+        this.loadingOverlay.style.display = 'none';
+        
+        if (this.textDiffContainer.hasClass('diff-split')) {
+            this.alignSplitViewLines();
+        }
+    }
+
+    async renderTextDiff() {
         const container = this.textDiffContainer;
         container.empty();
         this.diffElements = [];
@@ -3306,14 +3314,12 @@ class DiffModal extends Modal {
         
         if (modeSelect.value === 'unified') {
             container.removeClass('diff-split');
-            this.renderUnifiedDiff(container, leftProcessed, rightProcessed);
+            await this.renderUnifiedDiff(container, leftProcessed, rightProcessed);
         } else {
             container.addClass('diff-split');
             const leftLabelEl = this.containerEl.querySelector('.diff-left-version-btn') as HTMLElement;
             const rightLabelEl = this.containerEl.querySelector('.diff-right-version-btn') as HTMLElement;
-            this.renderSplitDiff(container, leftProcessed, rightProcessed, leftLabelEl.textContent || '版本 A', rightLabelEl.textContent || '版本 B');
-            
-            this.alignSplitViewLines();
+            await this.renderSplitDiff(container, leftProcessed, rightProcessed, leftLabelEl.textContent || '版本 A', rightLabelEl.textContent || '版本 B');
         }
 
         if (this.wrapLines) container.addClass('diff-wrap-lines');
@@ -3335,6 +3341,7 @@ class DiffModal extends Modal {
         let leftProcessed = this.leftContent;
         let rightProcessed = this.rightContent;
         
+        // 强制无条件追加 \n 确保底层统计不出错
         const safeLeft = leftProcessed + '\n';
         const safeRight = rightProcessed + '\n';
         
@@ -3378,8 +3385,6 @@ class DiffModal extends Modal {
         
         const leftLinesCount = this.leftContent.split('\n').length;
         const rightLinesCount = this.rightContent.split('\n').length;
-        
-        const totalChangesCount = addedLines + removedLines + modifiedLines;
         
         const leftWordCountNum = this.plugin.countWords(this.leftContent);
         const rightWordCountNum = this.plugin.countWords(this.rightContent);
@@ -3632,33 +3637,38 @@ class DiffModal extends Modal {
         }
     }
 
-    renderUnifiedDiff(container: HTMLElement, left: string, right: string) {
+    async renderUnifiedDiff(container: HTMLElement, left: string, right: string) {
+        const renderTasks: ((frag: DocumentFragment) => void)[] = [];
+
         if (this.currentGranularity === 'char' || this.currentGranularity === 'word') {
             const diffResult = this.currentGranularity === 'char'
                 ? Diff.diffChars(left, right)
                 : this.diffWordsCJK(left, right);
             
-            const contentEl = container.createEl('div', { cls: 'line-content' });
             let diffIdx = 0;
 
-            diffResult.forEach(part => {
-                const text = this.showWhitespace ? this.visualizeWhitespace(part.value) : part.value;
-                if (part.added) {
-                    const span = contentEl.createEl('span', { text });
-                    span.addClass('diff-word-added');
-                    span.dataset.diffIndex = String(diffIdx++);
-                    this.diffElements.push(span);
-                } else if (part.removed) {
-                    const span = contentEl.createEl('span', { text });
-                    span.addClass('diff-word-removed');
-                    span.dataset.diffIndex = String(diffIdx++);
-                    this.diffElements.push(span);
-                } else {
-                    if (this.contextLines > 0) {
-                        contentEl.createEl('span', { text });
+            renderTasks.push((frag: DocumentFragment) => {
+                const contentEl = frag.createEl('div', { cls: 'line-content' });
+                diffResult.forEach(part => {
+                    const text = this.showWhitespace ? this.visualizeWhitespace(part.value) : part.value;
+                    if (part.added) {
+                        const span = contentEl.createEl('span', { text });
+                        span.addClass('diff-word-added');
+                        span.dataset.diffIndex = String(diffIdx++);
+                        this.diffElements.push(span);
+                    } else if (part.removed) {
+                        const span = contentEl.createEl('span', { text });
+                        span.addClass('diff-word-removed');
+                        span.dataset.diffIndex = String(diffIdx++);
+                        this.diffElements.push(span);
+                    } else {
+                        if (this.contextLines > 0) {
+                            contentEl.createEl('span', { text });
+                        }
                     }
-                }
+                });
             });
+            await this.executeRenderTasks(container, renderTasks);
             return;
         }
 
@@ -3715,53 +3725,56 @@ class DiffModal extends Modal {
         };
 
         const renderLine = (content: string | DocumentFragment, type: ProcessedDiff['type'], lineNumLeft: number | null, lineNumRight: number | null) => {
-            const lineEl = container.createEl('div', { cls: `diff-line diff-${type}` });
-            
-            if (type === 'added') lineEl.addClass('diff-line-bg-added');
-            else if (type === 'removed') lineEl.addClass('diff-line-bg-removed');
-            else if (type === 'modified') lineEl.addClass('diff-line-bg-modified');
+            renderTasks.push((frag: DocumentFragment) => {
+                // @ts-ignore Obsidian 的 createEl 绑定在 Node 原型上，可以直接给 fragment 使用
+                const lineEl = frag.createEl('div', { cls: `diff-line diff-${type}` });
+                
+                if (type === 'added') lineEl.addClass('diff-line-bg-added');
+                else if (type === 'removed') lineEl.addClass('diff-line-bg-removed');
+                else if (type === 'modified') lineEl.addClass('diff-line-bg-modified');
 
-            if (type !== 'context') {
-                lineEl.dataset.diffIndex = String(diffIdx++);
-                this.diffElements.push(lineEl);
-            }
-            if (lineNumLeft) lineEl.dataset.lineNumberLeft = String(lineNumLeft);
-            if (lineNumRight) lineEl.dataset.lineNumberRight = String(lineNumRight);
-            
-            const gutterCol = lineEl.createEl('div', { cls: 'diff-gutter-column' });
+                if (type !== 'context') {
+                    lineEl.dataset.diffIndex = String(diffIdx++);
+                    this.diffElements.push(lineEl);
+                }
+                if (lineNumLeft) lineEl.dataset.lineNumberLeft = String(lineNumLeft);
+                if (lineNumRight) lineEl.dataset.lineNumberRight = String(lineNumRight);
+                
+                const gutterCol = lineEl.createEl('div', { cls: 'diff-gutter-column' });
 
-            const numsRow = gutterCol.createEl('div', { cls: 'diff-gutter-nums' });
-            if (this.showLineNumbers) {
-                if (lineNumLeft) numsRow.createEl('span', { text: String(lineNumLeft) });
-                if (lineNumLeft && lineNumRight) numsRow.createEl('span', { text: '|', attr: {style: 'opacity:0.3'} });
-                if (lineNumRight) numsRow.createEl('span', { text: String(lineNumRight) });
-            }
-    
-            let marker = ' ';
-            if (type === 'added') marker = '+';
-            else if (type === 'removed') marker = '-';
-            else if (type === 'modified') marker = '~';
+                const numsRow = gutterCol.createEl('div', { cls: 'diff-gutter-nums' });
+                if (this.showLineNumbers) {
+                    if (lineNumLeft) numsRow.createEl('span', { text: String(lineNumLeft) });
+                    if (lineNumLeft && lineNumRight) numsRow.createEl('span', { text: '|', attr: {style: 'opacity:0.3'} });
+                    if (lineNumRight) numsRow.createEl('span', { text: String(lineNumRight) });
+                }
+        
+                let marker = ' ';
+                if (type === 'added') marker = '+';
+                else if (type === 'removed') marker = '-';
+                else if (type === 'modified') marker = '~';
 
-            lineEl.createEl('span', { cls: 'diff-marker', text: marker });
-            
-            const contentEl = lineEl.createEl('span', { cls: 'line-content' });
-            if (typeof content === 'string') {
-                contentEl.setText(this.showWhitespace ? this.visualizeWhitespace(content) : content);
-            } else {
-                contentEl.appendChild(content);
-            }
-            
-            if (Platform.isMobile) {
-                lineEl.addEventListener('dblclick', (e) => {
-                    e.stopPropagation();
-                    const wasVisible = lineEl.hasClass('actions-visible');
-                    const allLines = lineEl.parentElement?.querySelectorAll('.diff-line');
-                    allLines?.forEach(el => el.removeClass('actions-visible'));
-                    if (!wasVisible) {
-                        lineEl.addClass('actions-visible');
-                    }
-                });
-            }
+                lineEl.createEl('span', { cls: 'diff-marker', text: marker });
+                
+                const contentEl = lineEl.createEl('span', { cls: 'line-content' });
+                if (typeof content === 'string') {
+                    contentEl.setText(this.showWhitespace ? this.visualizeWhitespace(content) : content);
+                } else {
+                    contentEl.appendChild(content);
+                }
+                
+                if (Platform.isMobile) {
+                    lineEl.addEventListener('dblclick', (e) => {
+                        e.stopPropagation();
+                        const wasVisible = lineEl.hasClass('actions-visible');
+                        const allLines = lineEl.parentElement?.querySelectorAll('.diff-line');
+                        allLines?.forEach((el:Element) => el.removeClass('actions-visible'));
+                        if (!wasVisible) {
+                            lineEl.addClass('actions-visible');
+                        }
+                    });
+                }
+            });
         };
 
         for (let i = 0; i < processedDiff.length; i++) {
@@ -3856,7 +3869,7 @@ class DiffModal extends Modal {
                     leftLines.forEach(line => renderLine(line, 'removed', leftLineNum++, null));
                     rightLines.forEach(line => renderLine(line, 'added', null, rightLineNum++));
                 }
-                i++; // 跳过下一个已处理的 part
+                i++; 
             } else { 
                 const lines = part.value.replace(/\n$/, '').split('\n');
                 
@@ -3877,9 +3890,12 @@ class DiffModal extends Modal {
 
                         if (showLine) {
                              if (lineIdx > lastLineShown + 1 && this.contextLines < 9999) {
-                                 const skippedEl = container.createEl('div', { cls: 'diff-line diff-context-gap' });
-                                 skippedEl.createEl('span', { cls: 'line-number-container' });
-                                 skippedEl.createEl('span', { cls: 'diff-marker', text: '...' });
+                                 renderTasks.push((frag: DocumentFragment) => {
+                                     // @ts-ignore
+                                     const skippedEl = frag.createEl('div', { cls: 'diff-line diff-context-gap' });
+                                     skippedEl.createEl('span', { cls: 'line-number-container' });
+                                     skippedEl.createEl('span', { cls: 'diff-marker', text: '...' });
+                                 });
                              }
                              renderLine(line, 'context', leftLineNum, rightLineNum);
                              lastLineShown = lineIdx;
@@ -3895,9 +3911,11 @@ class DiffModal extends Modal {
                 }
             }
         }
+        
+        await this.executeRenderTasks(container, renderTasks);
     }
 
-    renderSplitDiff(container: HTMLElement, left: string, right: string, leftLabel: string, rightLabel: string) {
+    async renderSplitDiff(container: HTMLElement, left: string, right: string, leftLabel: string, rightLabel: string) {
         const leftPanel = container.createEl('div', { cls: 'diff-panel' });
         const rightPanel = container.createEl('div', { cls: 'diff-panel' });
 
@@ -3907,33 +3925,55 @@ class DiffModal extends Modal {
         const leftContentEl = leftPanel.createEl('div', { cls: 'diff-content' });
         const rightContentEl = rightPanel.createEl('div', { cls: 'diff-content' });
 
-        this.renderSplitViewAdvanced(leftContentEl, rightContentEl, left, right);
+        await this.renderSplitViewAdvancedAsync(leftContentEl, rightContentEl, left, right);
     }
 
-    renderSplitViewAdvanced(leftPanel: HTMLElement, rightPanel: HTMLElement, leftText: string, rightText: string) {
+    async renderSplitViewAdvancedAsync(leftPanel: HTMLElement, rightPanel: HTMLElement, leftText: string, rightText: string) {
+        const renderTasksLeft: ((frag: DocumentFragment) => void)[] = [];
+        const renderTasksRight: ((frag: DocumentFragment) => void)[] = [];
+
         if (this.currentGranularity === 'char' || this.currentGranularity === 'word') {
             const diffResult = this.currentGranularity === 'char'
                 ? Diff.diffChars(leftText, rightText)
                 : this.diffWordsCJK(leftText, rightText);
             let diffIdx = 0;
 
-            diffResult.forEach(part => {
-                const text = this.showWhitespace ? this.visualizeWhitespace(part.value) : part.value;
-                if (part.added) {
-                    const span = rightPanel.createEl('span', { text, cls: 'diff-word-added' });
-                    span.dataset.diffIndex = String(diffIdx++);
-                    this.diffElements.push(span);
-                } else if (part.removed) {
-                    const span = leftPanel.createEl('span', { text, cls: 'diff-word-removed' });
-                    span.dataset.diffIndex = String(diffIdx++);
-                    this.diffElements.push(span);
-                } else {
-                    if (this.contextLines > 0) { 
-                        leftPanel.createEl('span', { text });
-                        rightPanel.createEl('span', { text });
+            renderTasksLeft.push((frag: DocumentFragment) => {
+                diffResult.forEach(part => {
+                    const text = this.showWhitespace ? this.visualizeWhitespace(part.value) : part.value;
+                    if (part.removed) {
+                        // @ts-ignore
+                        const span = frag.createEl('span', { text, cls: 'diff-word-removed' });
+                        span.dataset.diffIndex = String(diffIdx);
+                        this.diffElements.push(span);
+                    } else if (!part.added && this.contextLines > 0) {
+                        // @ts-ignore
+                        frag.createEl('span', { text });
                     }
-                }
+                });
             });
+            
+            let rightDiffIdx = 0;
+            renderTasksRight.push((frag: DocumentFragment) => {
+                diffResult.forEach(part => {
+                    const text = this.showWhitespace ? this.visualizeWhitespace(part.value) : part.value;
+                    if (part.added) {
+                        // @ts-ignore
+                        const span = frag.createEl('span', { text, cls: 'diff-word-added' });
+                        span.dataset.diffIndex = String(rightDiffIdx++);
+                        this.diffElements.push(span);
+                    } else if (!part.removed && this.contextLines > 0) {
+                        // @ts-ignore
+                        frag.createEl('span', { text });
+                        rightDiffIdx++;
+                    }
+                });
+            });
+
+            await Promise.all([
+                this.executeRenderTasks(leftPanel, renderTasksLeft),
+                this.executeRenderTasks(rightPanel, renderTasksRight)
+            ]);
             return;
         }
 
@@ -3985,44 +4025,49 @@ class DiffModal extends Modal {
             return fragment;
         };
     
-        const renderLine = (panel: HTMLElement, content: string | DocumentFragment, type: string, lineNum: number | null) => {
-            const lineEl = panel.createEl('div', { cls: `diff-line diff-${type}` });
+        const renderLine = (isLeft: boolean, content: string | DocumentFragment, type: string, lineNum: number | null) => {
+            const task = (frag: DocumentFragment) => {
+                // @ts-ignore
+                const lineEl = frag.createEl('div', { cls: `diff-line diff-${type}` });
 
-            if (type === 'added') lineEl.addClass('diff-line-bg-added');
-            else if (type === 'removed') lineEl.addClass('diff-line-bg-removed');
-            else if (type === 'modified') lineEl.addClass('diff-line-bg-modified');
+                if (type === 'added') lineEl.addClass('diff-line-bg-added');
+                else if (type === 'removed') lineEl.addClass('diff-line-bg-removed');
+                else if (type === 'modified') lineEl.addClass('diff-line-bg-modified');
 
-            if (type !== 'context' && type !== 'placeholder') {
-                lineEl.dataset.diffIndex = String(diffIdx++);
-                this.diffElements.push(lineEl);
-            }
-            if (lineNum) lineEl.dataset.lineNumber = String(lineNum);
+                if (type !== 'context' && type !== 'placeholder') {
+                    lineEl.dataset.diffIndex = String(diffIdx++);
+                    this.diffElements.push(lineEl);
+                }
+                if (lineNum) lineEl.dataset.lineNumber = String(lineNum);
 
-            const gutterCol = lineEl.createEl('div', { cls: 'diff-gutter-column' });
+                const gutterCol = lineEl.createEl('div', { cls: 'diff-gutter-column' });
 
-            const numsRow = gutterCol.createEl('div', { cls: 'diff-gutter-nums' });
-            if (this.showLineNumbers) {
-                numsRow.createEl('span', { text: lineNum ? String(lineNum) : '' });
-            }
+                const numsRow = gutterCol.createEl('div', { cls: 'diff-gutter-nums' });
+                if (this.showLineNumbers) {
+                    numsRow.createEl('span', { text: lineNum ? String(lineNum) : '' });
+                }
 
-            const contentEl = lineEl.createEl('span', { cls: 'line-content' });
-            if (typeof content === 'string') {
-                contentEl.setText(this.showWhitespace ? this.visualizeWhitespace(content) : content);
-            } else {
-                contentEl.appendChild(content);
-            }
+                const contentEl = lineEl.createEl('span', { cls: 'line-content' });
+                if (typeof content === 'string') {
+                    contentEl.setText(this.showWhitespace ? this.visualizeWhitespace(content) : content);
+                } else {
+                    contentEl.appendChild(content);
+                }
 
-            if (Platform.isMobile) {
-                lineEl.addEventListener('dblclick', (e) => {
-                    e.stopPropagation();
-                    const wasVisible = lineEl.hasClass('actions-visible');
-                    const allLines = lineEl.parentElement?.parentElement?.querySelectorAll('.diff-line');
-                    allLines?.forEach(el => el.removeClass('actions-visible'));
-                    if (!wasVisible) {
-                        lineEl.addClass('actions-visible');
-                    }
-                });
-            }
+                if (Platform.isMobile) {
+                    lineEl.addEventListener('dblclick', (e) => {
+                        e.stopPropagation();
+                        const wasVisible = lineEl.hasClass('actions-visible');
+                        const allLines = lineEl.parentElement?.parentElement?.querySelectorAll('.diff-line');
+                        allLines?.forEach((el:Element) => el.removeClass('actions-visible'));
+                        if (!wasVisible) {
+                            lineEl.addClass('actions-visible');
+                        }
+                    });
+                }
+            };
+            if (isLeft) renderTasksLeft.push(task);
+            else renderTasksRight.push(task);
         };
     
         for (let i = 0; i < diff.length; i++) {
@@ -4045,14 +4090,14 @@ class DiffModal extends Modal {
                             const lLine = leftLines[j]!;
                             const rLine = rightLines[j]!;
                             if (lLine === rLine) {
-                                renderLine(leftPanel, lLine, 'context', leftLineNum++);
-                                renderLine(rightPanel, rLine, 'context', rightLineNum++);
+                                renderLine(true, lLine, 'context', leftLineNum++);
+                                renderLine(false, rLine, 'context', rightLineNum++);
                             } else {
                                 const lineDiff = secondaryDiffFn(lLine, rLine);
                                 const leftFrag = createHighlightedFragment((lineDiff || []).filter((p: Diff.Change) => !p.added));
                                 const rightFrag = createHighlightedFragment((lineDiff || []).filter((p: Diff.Change) => !p.removed));
-                                renderLine(leftPanel, leftFrag, 'modified', leftLineNum++);
-                                renderLine(rightPanel, rightFrag, 'modified', rightLineNum++);
+                                renderLine(true, leftFrag, 'modified', leftLineNum++);
+                                renderLine(false, rightFrag, 'modified', rightLineNum++);
                             }
                         }
                     } else {
@@ -4064,15 +4109,15 @@ class DiffModal extends Modal {
                             const rLine = rightLines[rIndex];
 
                             if (lLine === undefined) {
-                                renderLine(leftPanel, '', 'placeholder', null);
-                                renderLine(rightPanel, rLine!, 'added', rightLineNum++);
+                                renderLine(true, '', 'placeholder', null);
+                                renderLine(false, rLine!, 'added', rightLineNum++);
                                 rIndex++;
                                 continue;
                             }
 
                             if (rLine === undefined) {
-                                renderLine(leftPanel, lLine!, 'removed', leftLineNum++);
-                                renderLine(rightPanel, '', 'placeholder', null);
+                                renderLine(true, lLine!, 'removed', leftLineNum++);
+                                renderLine(false, '', 'placeholder', null);
                                 lIndex++;
                                 continue;
                             }
@@ -4088,23 +4133,23 @@ class DiffModal extends Modal {
                             const threshold = 30; 
 
                             if (insertionSim > currentSim + threshold) {
-                                renderLine(leftPanel, '', 'placeholder', null);
-                                renderLine(rightPanel, rLine!, 'added', rightLineNum++);
+                                renderLine(true, '', 'placeholder', null);
+                                renderLine(false, rLine!, 'added', rightLineNum++);
                                 rIndex++;
                             } else if (deletionSim > currentSim + threshold) {
-                                renderLine(leftPanel, lLine!, 'removed', leftLineNum++);
-                                renderLine(rightPanel, '', 'placeholder', null);
+                                renderLine(true, lLine!, 'removed', leftLineNum++);
+                                renderLine(false, '', 'placeholder', null);
                                 lIndex++;
                             } else {
                                 if (lLine === rLine) {
-                                    renderLine(leftPanel, lLine, 'context', leftLineNum++);
-                                    renderLine(rightPanel, rLine, 'context', rightLineNum++);
+                                    renderLine(true, lLine, 'context', leftLineNum++);
+                                    renderLine(false, rLine, 'context', rightLineNum++);
                                 } else {
                                     const lineDiff = secondaryDiffFn(lLine!, rLine!);
                                     const leftFrag = createHighlightedFragment((lineDiff || []).filter((p: Diff.Change) => !p.added));
                                     const rightFrag = createHighlightedFragment((lineDiff || []).filter((p: Diff.Change) => !p.removed));
-                                    renderLine(leftPanel, leftFrag, 'modified', leftLineNum++);
-                                    renderLine(rightPanel, rightFrag, 'modified', rightLineNum++);
+                                    renderLine(true, leftFrag, 'modified', leftLineNum++);
+                                    renderLine(false, rightFrag, 'modified', rightLineNum++);
                                 }
                                 lIndex++;
                                 rIndex++;
@@ -4119,31 +4164,31 @@ class DiffModal extends Modal {
                         
                         const leftFrag = createHighlightedFragment((lineDiff || []).filter((p: Diff.Change) => !p.added));
                         const rightFrag = createHighlightedFragment((lineDiff || []).filter((p: Diff.Change) => !p.removed));
-                        renderLine(leftPanel, leftFrag, 'removed', leftLineNum++);
-                        renderLine(rightPanel, rightFrag, 'added', rightLineNum++);
+                        renderLine(true, leftFrag, 'removed', leftLineNum++);
+                        renderLine(false, rightFrag, 'added', rightLineNum++);
                     }
                 } else {
                     leftLines.forEach(line => {
-                        renderLine(leftPanel, line, 'removed', leftLineNum++);
-                        renderLine(rightPanel, '', 'placeholder', null);
+                        renderLine(true, line, 'removed', leftLineNum++);
+                        renderLine(false, '', 'placeholder', null);
                     });
                     rightLines.forEach(line => {
-                        renderLine(leftPanel, '', 'placeholder', null);
-                        renderLine(rightPanel, line, 'added', rightLineNum++);
+                        renderLine(true, '', 'placeholder', null);
+                        renderLine(false, line, 'added', rightLineNum++);
                     });
                 }
                 i++; // 跳过下一个已处理的 part
             } else if (part.added) {
                 const lines = part.value.replace(/\n$/, '').split('\n');
                 for (const line of lines) {
-                    renderLine(leftPanel, '', 'placeholder', null);
-                    renderLine(rightPanel, line, 'added', rightLineNum++);
+                    renderLine(true, '', 'placeholder', null);
+                    renderLine(false, line, 'added', rightLineNum++);
                 }
             } else if (part.removed) {
                 const lines = part.value.replace(/\n$/, '').split('\n');
                 for (const line of lines) {
-                    renderLine(leftPanel, line, 'removed', leftLineNum++);
-                    renderLine(rightPanel, '', 'placeholder', null);
+                    renderLine(true, line, 'removed', leftLineNum++);
+                    renderLine(false, '', 'placeholder', null);
                 }
             } else { 
                 const lines = part.value.replace(/\n$/, '').split('\n');
@@ -4168,16 +4213,21 @@ class DiffModal extends Modal {
 
                     if (showLine) {
                         if (lineIdx > lastLineShown + 1 && this.contextLines < 9999) {
-                            const skippedLeft = leftPanel.createEl('div', { cls: 'diff-line diff-context-gap' });
-                            skippedLeft.createEl('span', { cls: 'line-number-container' });
-                            skippedLeft.createEl('span', { cls: 'diff-marker', text: '...' });
-                            
-                            const skippedRight = rightPanel.createEl('div', { cls: 'diff-line diff-context-gap' });
-                            skippedRight.createEl('span', { cls: 'line-number-container' });
-                            skippedRight.createEl('span', { cls: 'diff-marker', text: '...' });
+                            renderTasksLeft.push((frag: DocumentFragment) => {
+                                // @ts-ignore
+                                const skippedLeft = frag.createEl('div', { cls: 'diff-line diff-context-gap' });
+                                skippedLeft.createEl('span', { cls: 'line-number-container' });
+                                skippedLeft.createEl('span', { cls: 'diff-marker', text: '...' });
+                            });
+                            renderTasksRight.push((frag: DocumentFragment) => {
+                                // @ts-ignore
+                                const skippedRight = frag.createEl('div', { cls: 'diff-line diff-context-gap' });
+                                skippedRight.createEl('span', { cls: 'line-number-container' });
+                                skippedRight.createEl('span', { cls: 'diff-marker', text: '...' });
+                            });
                         }
-                        renderLine(leftPanel, line, 'context', leftLineNum);
-                        renderLine(rightPanel, line, 'context', rightLineNum);
+                        renderLine(true, line, 'context', leftLineNum);
+                        renderLine(false, line, 'context', rightLineNum);
                         lastLineShown = lineIdx;
                     }
                     leftLineNum++;
@@ -4185,6 +4235,11 @@ class DiffModal extends Modal {
                 }
             }
         }
+        
+        await Promise.all([
+            this.executeRenderTasks(leftPanel, renderTasksLeft),
+            this.executeRenderTasks(rightPanel, renderTasksRight)
+        ]);
     }
 
     scrollToDiff() {
