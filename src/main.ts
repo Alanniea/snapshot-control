@@ -3,6 +3,36 @@ import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, Modal, ItemView,
 import * as Diff from 'diff';
 import * as pako from 'pako';
 
+// --- LRU 缓存：用于极速读取已解析的版本内容 ---
+class LRUCache<K, V> {
+    private max: number;
+    private cache: Map<K, V>;
+    constructor(max = 50) {
+        this.max = max;
+        this.cache = new Map();
+    }
+    get(key: K): V | undefined {
+        if (!this.cache.has(key)) return undefined;
+        const val = this.cache.get(key)!;
+        this.cache.delete(key);
+        this.cache.set(key, val);
+        return val;
+    }
+    set(key: K, val: V) {
+        if (this.cache.has(key)) this.cache.delete(key);
+        else if (this.cache.size >= this.max) this.cache.delete(this.cache.keys().next().value);
+        this.cache.set(key, val);
+    }
+    clear() { this.cache.clear(); }
+    deletePrefix(prefix: string) {
+        for (const key of this.cache.keys()) {
+            if (typeof key === 'string' && key.startsWith(prefix)) {
+                this.cache.delete(key);
+            }
+        }
+    }
+}
+
 // VersionData 接口
 interface VersionData {
     id: string;
@@ -120,6 +150,7 @@ export default class VersionControlPlugin extends Plugin {
     debouncedSaves: Map<string, Function> = new Map();
     statusBarItem: HTMLElement;
     versionCache: Map<string, VersionFile> = new Map();
+    contentCache: LRUCache<string, string> = new LRUCache(50); // 性能重构：内容缓存池
 
     fileLocks: Map<string, Promise<void>> = new Map();
     isRestoring: boolean = false; 
@@ -262,6 +293,12 @@ export default class VersionControlPlugin extends Plugin {
         }
         this.debouncedSaves.clear();
         this.versionCache.clear();
+        this.contentCache.clear();
+    }
+
+    // 性能重构：主动让出主线程，避免循环卡死 UI
+    async yieldToMain() {
+        return new Promise(resolve => setTimeout(resolve, 0));
     }
 
     // 执行带锁的异步操作，确保任务完毕后清理锁释放内存
@@ -281,7 +318,6 @@ export default class VersionControlPlugin extends Plugin {
         await nextLock;
     }
 
-    // 高安全性的 53 位 Hash 算法
     cyrb53(str: string, seed = 0): number {
         let h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;
         for(let i = 0, ch; i < str.length; i++) {
@@ -296,7 +332,6 @@ export default class VersionControlPlugin extends Plugin {
         return 4294967296 * (2097151 & h2) + (h1 >>> 0);
     }
 
-    // 兼容旧版的 DJB2 Hash 算法（用于寻找以前生成的老文件）
     legacyStringHash(str: string): string {
         let hash = 0;
         for (let i = 0; i < str.length; i++) {
@@ -309,7 +344,6 @@ export default class VersionControlPlugin extends Plugin {
     stringHash(str: string): string { return this.cyrb53(str).toString(36); }
     hashContent(content: string): string { return this.cyrb53(content).toString(36); }
 
-    // 高级 Diff 压缩算法，解决因空行导致的块分离问题
     getCompactDiffLines(left: string, right: string, ignoreWhitespace: boolean): Diff.Change[] {
         const rawDiff = Diff.diffLines(left, right, { ignoreWhitespace });
         const result: Diff.Change[] = [];
@@ -376,7 +410,6 @@ export default class VersionControlPlugin extends Plugin {
         return (commonLength / maxLen) * 100;
     }
 
-    // 独立计算块内真正修改、增加、删除的行数
     calculateCompactBlockStats(leftLines: string[], rightLines: string[]): { mods: number, adds: number, rems: number } {
         let mods = 0; let adds = 0; let rems = 0;
         if (leftLines.length === rightLines.length) {
@@ -410,8 +443,6 @@ export default class VersionControlPlugin extends Plugin {
         return { mods, adds, rems };
     }
 
-    // --- 文件名处理与兼容逻辑 ---
-
     getVersionFilePath(filePath: string): string {
         const hash = this.stringHash(filePath);
         const fileName = filePath.split('/').pop() || 'file';
@@ -438,7 +469,6 @@ export default class VersionControlPlugin extends Plugin {
         return normalizePath(`${this.settings.versionFolder}/${sanitized}.json`);
     }
 
-    // 核心寻址函数：按优先级依次查找，确保旧历史文件不丢
     async findExistingVersionPath(filePath: string): Promise<string | null> {
         const adapter = this.app.vault.adapter;
         const paths = [
@@ -454,7 +484,6 @@ export default class VersionControlPlugin extends Plugin {
         return null;
     }
 
-    // 处理文件夹重命名递归更新
     async handleFolderRename(folder: TFolder, oldFolderPath: string) {
         const files = this.app.vault.getMarkdownFiles();
         for (const file of files) {
@@ -478,14 +507,15 @@ export default class VersionControlPlugin extends Plugin {
                 await adapter.rename(oldVersionPath, newVersionPath);
                 
                 try {
-                    // 清理目标缓存，防止读取到脏数据
                     this.versionCache.delete(file.path); 
+                    this.contentCache.deletePrefix(file.path + "::");
                     
                     const versionFile = await this.loadVersionFile(file.path); 
                     versionFile.filePath = file.path;
                     await this.saveVersionFile(file.path, versionFile);
                     
                     this.versionCache.delete(oldPath);
+                    this.contentCache.deletePrefix(oldPath + "::");
                     this.lastModifiedTime.delete(oldPath);
                     this.lastModifiedTime.set(file.path, versionFile.lastModified);
                 } catch (e: any) {
@@ -497,7 +527,6 @@ export default class VersionControlPlugin extends Plugin {
         const oldDebouncer = this.debouncedSaves.get(oldPath);
         if (oldDebouncer) {
             this.debouncedSaves.delete(oldPath);
-            // 为新文件续上自动保存任务，防止重命名丢失缓存
             this.handleFileModify(file);
         }
 
@@ -509,7 +538,6 @@ export default class VersionControlPlugin extends Plugin {
     }
 
     async handleDelete(filePath: string) {
-        // 增加防误删保护，只在用户开启了设置时才删除历史记录
         if (!this.settings.deleteHistoryOnDelete) {
             return;
         }
@@ -521,6 +549,7 @@ export default class VersionControlPlugin extends Plugin {
             if (versionPath) {
                 await adapter.remove(versionPath);
                 this.versionCache.delete(filePath);
+                this.contentCache.deletePrefix(filePath + "::");
                 this.lastModifiedTime.delete(filePath);
                 this.debouncedSaves.delete(filePath);
             }
@@ -735,7 +764,7 @@ export default class VersionControlPlugin extends Plugin {
             const timestamp = Date.now();
             const id = `${timestamp}-${Math.random().toString(36).substring(2, 9)}`;
             const hash = this.hashContent(content);
-            const currentHashOld = this.legacyStringHash(content); // 用于防冗余的兼容比对
+            const currentHashOld = this.legacyStringHash(content); 
             
             const versionFile = await this.loadVersionFile(file.path);
             
@@ -773,13 +802,10 @@ export default class VersionControlPlugin extends Plugin {
                             new Notice('ℹ️ 内容未变化,跳过创建版本');
                         }
                         return;
-                    } else {
-                        console.warn(`[VersionControl] Hash collision detected for ${file.path}. Saving new version.`);
                     }
                 }
             }
 
-            let newVersion: VersionData;
             let addedLines = 0;
             let removedLines = 0;
 
@@ -787,8 +813,6 @@ export default class VersionControlPlugin extends Plugin {
                 try {
                     const previousContentRaw = await this.getVersionContent(file.path, versionFile.versions[0]!.id);
                     const previousContent = this.normalizeText(previousContentRaw);
-                    
-                    // 无条件强制附加 \n 确保底层统计换行符不出错
                     const safePrev = previousContent + '\n';
                     const safeCurr = content + '\n';
                     const diffResult = Diff.diffLines(safePrev, safeCurr);
@@ -804,66 +828,54 @@ export default class VersionControlPlugin extends Plugin {
                 addedLines = content.split('\n').length;
             }
 
-            let useIncremental = false;
-            let diffStr = "";
-            let baseVersionId = "";
+            // 🚀 性能重构核心：逆向增量架构 (Reverse Delta)
+            // 新版本永远存储完整内容 (Full Content)，老版本才被压缩成补丁 (Diff)
+            let newVersion: VersionData = {
+                id, timestamp, message, 
+                content: content, // 最新版本永远是完整的！
+                size: content.length, hash,
+                tags: tags.length > 0 ? tags : undefined,
+                starred: false, addedLines, removedLines
+            };
 
             if (this.settings.enableIncrementalStorage && versionFile.versions.length > 0) {
-                let continuousIncrementalCount = 0;
-                for (const v of versionFile.versions) {
-                    if (v.content !== undefined && v.content !== null && !v.diff) {
-                        break;
-                    }
-                    continuousIncrementalCount++;
-                }
-
-                const shouldRebuildBase = (continuousIncrementalCount >= this.settings.rebuildBaseInterval);
+                const prevVersion = versionFile.versions[0]!;
                 
-                if (!shouldRebuildBase) {
-                    try {
-                        const prevVersionId = versionFile.versions[0]!.id;
-                        const baseContentRaw = await this.getVersionContent(file.path, prevVersionId);
-                        const baseContent = this.normalizeText(baseContentRaw);
-
-                        const tempDiff = this.createDiff(baseContent, content);
-                        
-                        const testApply = Diff.applyPatch(baseContent, tempDiff);
-                        
-                        if (testApply !== false && this.normalizeText(testApply) === content) {
-                            useIncremental = true;
-                            diffStr = tempDiff;
-                            baseVersionId = prevVersionId;
+                // 只有当上一个版本是完整内容时，才尝试将其转化为逆向差异
+                if (prevVersion.content !== undefined && prevVersion.content !== null) {
+                    let chainLength = 1;
+                    for (let i = 1; i < versionFile.versions.length; i++) {
+                        const v = versionFile.versions[i]!;
+                        if (v.diff && v.baseVersionId === versionFile.versions[i-1]!.id) {
+                            chainLength++;
                         } else {
-                            console.warn(`[VersionControl] 增量补丁验证失败，降级为完整版本。File: ${file.path}`);
+                            break;
                         }
-                    } catch (err: any) {
-                        console.error("生成增量版本时出错，降级为完整版本", err);
-                        useIncremental = false;
+                    }
+
+                    if (chainLength < this.settings.rebuildBaseInterval) {
+                        try {
+                            // 计算从“新内容”回到“老内容”的逆向补丁
+                            const reversePatch = this.createDiff(content, prevVersion.content);
+                            const testApply = Diff.applyPatch(content, reversePatch);
+                            
+                            if (testApply !== false && this.normalizeText(testApply) === prevVersion.content) {
+                                prevVersion.diff = reversePatch;
+                                prevVersion.baseVersionId = id; // 老版本依赖于新版本
+                                prevVersion.size = reversePatch.length;
+                                delete prevVersion.content; // 释放老版本的全量空间
+                            } else {
+                                console.warn(`[VersionControl] 逆向增量补丁验证失败，保留老版本完整内容。File: ${file.path}`);
+                            }
+                        } catch (err: any) {
+                            console.error("生成逆向增量版本时出错，保留为完整版本", err);
+                        }
                     }
                 }
             }
 
-            if (useIncremental) {
-                newVersion = {
-                    id, timestamp, message, 
-                    diff: diffStr, 
-                    baseVersionId: baseVersionId, 
-                    size: diffStr.length, hash, // 使用新版本强 Hash 记录
-                    tags: tags.length > 0 ? tags : undefined,
-                    starred: false, addedLines, removedLines
-                };
-            } else {
-                newVersion = {
-                    id, timestamp, message, 
-                    content: content,
-                    size: content.length, hash,
-                    tags: tags.length > 0 ? tags : undefined,
-                    starred: false, addedLines, removedLines
-                };
-                
-                if (!versionFile.baseVersion && versionFile.versions.length === 0) {
-                    versionFile.baseVersion = content;
-                }
+            if (!versionFile.baseVersion && versionFile.versions.length === 0) {
+                versionFile.baseVersion = content;
             }
 
             versionFile.versions.unshift(newVersion);
@@ -875,9 +887,12 @@ export default class VersionControlPlugin extends Plugin {
 
             this.buildVersionIndex(versionFile);
             await this.saveVersionFile(file.path, versionFile);
+            
+            // 更新缓存并写入新缓存
             this.versionCache.set(file.path, versionFile);
-            this.refreshVersionHistoryView();
+            this.contentCache.set(`${file.path}::${newVersion.id}`, content);
 
+            this.refreshVersionHistoryView();
             this.lastModifiedTime.set(file.path, timestamp);
             this.updateStatusBar();
             
@@ -893,14 +908,15 @@ export default class VersionControlPlugin extends Plugin {
     createDiff(oldContent: string, newContent: string): string { 
         const changes = Diff.createPatch('file', oldContent, newContent, '', ''); return changes;
     }
+    
     applyDiff(baseContent: string, diffStr: string, suppressNotice: boolean = false): string { 
         try { const result = Diff.applyPatch(baseContent, diffStr); if (result === false) { console.error('应用差异补丁失败 (applyPatch returned false). 返回基础内容。'); if (!suppressNotice) { new Notice('应用差异补丁失败，版本内容可能不完整。'); } return baseContent; } return result; } catch (error: any) { console.error('应用差异时捕获到异常:', error); return baseContent; }
     }
+    
     buildVersionIndex(versionFile: VersionFile) { 
         const index = new Map<string, number>(); versionFile.versions.forEach((version, idx) => { index.set(version.id, idx); }); versionFile.versionIndex = index;
     }
     
-    // 使用迭代替代递归，解除增量恢复的 100 层深度限制
     resolveContentFromList(versions: VersionData[], versionId: string): string { 
         let currentId = versionId;
         let currentVersion = versions.find(v => v.id === currentId);
@@ -911,7 +927,6 @@ export default class VersionControlPlugin extends Plugin {
         while (currentVersion) {
             if (currentVersion.content !== undefined && currentVersion.content !== null) {
                 let content = this.normalizeText(currentVersion.content);
-                // 逆向应用所有补丁
                 for (let i = patches.length - 1; i >= 0; i--) {
                     const result = Diff.applyPatch(content, patches[i]!);
                     if (result === false) throw new Error("增量补丁应用失败");
@@ -953,6 +968,7 @@ export default class VersionControlPlugin extends Plugin {
         for (let i = proposedList.length - 1; i >= 0; i--) {
             const v = proposedList[i]!;
             
+            // 如果这个版本是增量，并且它依赖的基础版本被删除了，我们需要将它重构为完整版本以防止数据丢失
             if (v.diff && v.baseVersionId) {
                 if (!proposedKeepSet.has(v.baseVersionId)) {
                     try {
@@ -975,7 +991,6 @@ export default class VersionControlPlugin extends Plugin {
         return originalCount - versionFile.versions.length;
     }
 
-    // 智能迁移旧版本：在打开或修改文件时，如果发现由旧算法生成的文件，将其合并并升级到新文件
     async loadVersionFile(filePath: string): Promise<VersionFile> {
         if (this.versionCache.has(filePath)) {
             return this.versionCache.get(filePath)!;
@@ -1063,24 +1078,18 @@ export default class VersionControlPlugin extends Plugin {
                     return pako.ungzip(new Uint8Array(rawData), { to: 'string' });
                 } catch (e: any) {
                     if (e.message && e.message.includes('incorrect header check')) {
-                        // 如果不是压缩文件，尝试直接读取
                         return await adapter.read(path);
                     }
                     throw e; 
                 }
             } else {
                 try {
-                    // 先尝试普通文本读取
                     const text = await adapter.read(path);
-                    // 简单校验是否为预期的 JSON 文本
                     if (text && (text.trim().startsWith('{') || text.includes('"versions"'))) {
                         return text;
                     }
-                } catch (e) {
-                    // 读取文本失败（可能是乱码导致），忽略并在下方处理二进制解压
-                }
+                } catch (e) {}
                 
-                // Fallback：尝试按压缩文件格式读取并解压
                 const rawData = await adapter.readBinary(path);
                 return pako.ungzip(new Uint8Array(rawData), { to: 'string' });
             }
@@ -1125,8 +1134,12 @@ export default class VersionControlPlugin extends Plugin {
 
     async getAllVersions(filePath: string): Promise<VersionData[]> { try { const versionFile = await this.loadVersionFile(filePath); return versionFile.versions; } catch (error: any) { console.error('获取版本列表失败:', error); return []; } }
     
-    // 彻底重写 getVersionContent 移除递归
+    // 🧠 性能重构：使用 LRU 缓存避免反复解压，极大提升查看差异时的流畅度
     async getVersionContent(filePath: string, versionId: string, suppressNotice: boolean = false, strictMode: boolean = false): Promise<string> { 
+        const cacheKey = `${filePath}::${versionId}`;
+        const cached = this.contentCache.get(cacheKey);
+        if (cached) return cached;
+
         try { 
             const versionFile = await this.loadVersionFile(filePath); 
             
@@ -1161,6 +1174,7 @@ export default class VersionControlPlugin extends Plugin {
             }
 
             let resultContent = baseContent;
+            // 对于逆向增量和正向增量，这个循环都是适用的，因为依赖链已经被抽象
             for (let i = patches.length - 1; i >= 0; i--) {
                 const result = Diff.applyPatch(resultContent, patches[i]!);
                 if (result === false) {
@@ -1171,6 +1185,8 @@ export default class VersionControlPlugin extends Plugin {
                 }
                 resultContent = this.normalizeText(result);
             }
+
+            this.contentCache.set(cacheKey, resultContent);
             return resultContent;
 
         } catch (error: any) { 
@@ -1185,7 +1201,7 @@ export default class VersionControlPlugin extends Plugin {
         const errors: string[] = [];
         let versionPath = await this.findExistingVersionPath(filePath);
         
-        if (!versionPath) return []; // Missing files return no error
+        if (!versionPath) return []; 
 
         const adapter = this.app.vault.adapter;
         let versionFile: VersionFile;
@@ -1275,7 +1291,7 @@ export default class VersionControlPlugin extends Plugin {
             
             if (i % 5 === 0) { 
                 notice.setMessage(`正在检查完整性... ${i + 1}/${total}`); 
-                await new Promise(resolve => setTimeout(resolve, 5)); 
+                await this.yieldToMain(); // 性能重构：时间切片防卡死
             } 
         } 
         notice.hide(); 
@@ -1297,7 +1313,6 @@ export default class VersionControlPlugin extends Plugin {
                                 version.hash = currentHash; 
                                 fixedCount++; 
                             } else if (this.legacyStringHash(content) === version.hash) {
-                                // 顺便帮老版本升级到强哈希
                                 version.hash = currentHash; 
                                 fixedCount++; 
                             }
@@ -1454,7 +1469,6 @@ export default class VersionControlPlugin extends Plugin {
         } 
     }
     
-    // 移除全库文件内容读取，改用 mtime 快速比对，交出主线程防止卡顿
     async getModifiedFiles(): Promise<{ file: TFile, lastVersionTime: number }[]> {
         const files = this.app.vault.getMarkdownFiles();
         const modifiedFiles: { file: TFile, lastVersionTime: number }[] = [];
@@ -1464,7 +1478,7 @@ export default class VersionControlPlugin extends Plugin {
             if (this.isExcluded(file.path)) continue;
 
             count++;
-            if (count % 50 === 0) await new Promise(r => setTimeout(r, 0));
+            if (count % 20 === 0) await this.yieldToMain(); // 性能重构：主动让出线程防止卡死
 
             const versionPath = await this.findExistingVersionPath(file.path);
 
@@ -1489,7 +1503,6 @@ export default class VersionControlPlugin extends Plugin {
         return modifiedFiles.sort((a, b) => b.file.stat.mtime - a.file.stat.mtime);
     }
 
-    // 按文件修改时间排序，只读取最近修改过的30个文件，避免解析全库巨型 JSON 卡死
     async getGlobalHistory(limit: number = 100): Promise<{ version: VersionData, filePath: string, file: TFile | null }[]> {
         const adapter = this.app.vault.adapter;
         const versionFolder = this.settings.versionFolder;
@@ -1512,7 +1525,7 @@ export default class VersionControlPlugin extends Plugin {
         let count = 0;
         for (const vFile of targetFiles) {
             count++;
-            if (count % 5 === 0) await new Promise(r => setTimeout(r, 0));
+            if (count % 10 === 0) await this.yieldToMain(); // 性能重构：时间切片
 
             try {
                 const contentStr = await this.readCompressedOrRaw(vFile);
@@ -2829,15 +2842,12 @@ class DiffModal extends Modal {
 
     diffWordsCJK(text1: string, text2: string): Diff.Change[] {
         // 以空格、制表符、换行、常见中英文标点为界限进行切块
-        // 保留分隔符，以便还原完整字符串
         const tokenize = (str: string) => str.split(/([ \t\n\r]+|[，。！？；：、()（）""'']+)/).filter(Boolean);
         const tokens1 = tokenize(text1);
         const tokens2 = tokenize(text2);
         
-        // 使用 diffArrays 对切好的块进行对比
         const result = Diff.diffArrays(tokens1, tokens2);
         
-        // 转换回标准的 Diff.Change 格式
         return result.map(part => {
             const textValue = part.value ? part.value.join('') : '';
             return {
@@ -3325,7 +3335,6 @@ class DiffModal extends Modal {
         let leftProcessed = this.leftContent;
         let rightProcessed = this.rightContent;
         
-        // 强制无条件追加 \n 确保底层统计不出错
         const safeLeft = leftProcessed + '\n';
         const safeRight = rightProcessed + '\n';
         
@@ -3371,7 +3380,6 @@ class DiffModal extends Modal {
         const rightLinesCount = this.rightContent.split('\n').length;
         
         const totalChangesCount = addedLines + removedLines + modifiedLines;
-        const changePercent = leftLinesCount > 0 ? ((totalChangesCount / leftLinesCount) * 100).toFixed(1) : '0';
         
         const leftWordCountNum = this.plugin.countWords(this.leftContent);
         const rightWordCountNum = this.plugin.countWords(this.rightContent);
