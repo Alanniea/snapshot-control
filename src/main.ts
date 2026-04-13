@@ -2007,6 +2007,13 @@ class VersionHistoryView extends ItemView {
         const allVersions = versionFile.versions;
         this.totalVersions = allVersions.length;
 
+        // --- 新增：找出所有被其他增量版本依赖的基准版本 ID ---
+        const dependentIds = new Set<string>();
+        allVersions.forEach(v => {
+            if (v.baseVersionId) dependentIds.add(v.baseVersionId);
+        });
+        // ----------------------------------------------------
+
         if (this.totalVersions === 0) {
             this.renderEmptyState(container, '暂无版本历史');
             return;
@@ -2108,6 +2115,16 @@ class VersionHistoryView extends ItemView {
                 if (version.diff) messageEl.createEl('span', { text: '增量', cls: 'version-tag version-tag-incremental' });
                 else if (version.content) messageEl.createEl('span', { text: '完整', cls: 'version-tag version-tag-full' });
                 
+                // --- 新增：如果被依赖，加上锁定标签 ---
+                if (dependentIds.has(version.id)) {
+                    messageEl.createEl('span', { 
+                        text: '🔒 依赖基准', 
+                        cls: 'version-tag version-tag-locked',
+                        attr: { title: '被其他增量版本依赖，为保证数据完整性，无法删除' }
+                    });
+                }
+                // ------------------------------------
+
                 if (version.tags && version.tags.length > 0) {
                     version.tags.forEach(tag => {
                         const tagEl = messageEl.createEl('span', { text: tag, cls: 'version-tag version-tag-custom' });
