@@ -3,6 +3,14 @@ import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, Modal, ItemView,
 import * as Diff from 'diff';
 import * as pako from 'pako';
 
+// --- 工具函数：安全地提取错误信息 ---
+export function getErrorMessage(error: unknown): string {
+    if (error instanceof Error) return error.message;
+    if (typeof error === 'string') return error;
+    if (error && typeof error === 'object' && 'message' in error) return String((error as { message: unknown }).message);
+    return 'Unknown error occurred';
+}
+
 // --- LRU 缓存：用于极速读取已解析的版本内容 ---
 class LRUCache<K, V> {
     private max: number;
@@ -301,13 +309,18 @@ export default class VersionControlPlugin extends Plugin {
         return new Promise(resolve => setTimeout(resolve, 0));
     }
 
-    // 执行带锁的异步操作，确保任务完毕后清理锁释放内存
-    async withLock(filePath: string, fn: () => Promise<void>): Promise<void> {
+    // 执行带锁的异步操作，增加 Timeout 防止死锁导致内存泄漏
+    async withLock(filePath: string, fn: () => Promise<void>, timeoutMs: number = 30000): Promise<void> {
         let currentLock = this.fileLocks.get(filePath) || Promise.resolve();
         const nextLock = currentLock
-            .then(() => fn())
-            .catch((err: any) => {
-                console.error(`[VersionControl] Error in locked operation for ${filePath}:`, err);
+            .then(() => {
+                const timeoutPromise = new Promise<void>((_, reject) => {
+                    setTimeout(() => reject(new Error(`Lock operation timed out after ${timeoutMs}ms`)), timeoutMs);
+                });
+                return Promise.race([fn(), timeoutPromise]);
+            })
+            .catch((error: unknown) => {
+                console.error(`[VersionControl] Error in locked operation for ${filePath}:`, getErrorMessage(error), error);
             })
             .finally(() => {
                 if (this.fileLocks.get(filePath) === nextLock) {
@@ -518,8 +531,8 @@ export default class VersionControlPlugin extends Plugin {
                     this.contentCache.deletePrefix(oldPath + "::");
                     this.lastModifiedTime.delete(oldPath);
                     this.lastModifiedTime.set(file.path, versionFile.lastModified);
-                } catch (e: any) {
-                    console.error("Rename: Error updating internal file path", e);
+                } catch (e: unknown) {
+                    console.error("Rename: Error updating internal file path", getErrorMessage(e), e);
                 }
             }
         });
@@ -627,7 +640,7 @@ export default class VersionControlPlugin extends Plugin {
         const adapter = this.app.vault.adapter;
         const folderPath = this.settings.versionFolder;
         try { if (!await adapter.exists(folderPath)) { await adapter.mkdir(folderPath); } } 
-        catch (error: any) { console.error('创建版本文件夹失败:', error); new Notice('⚠️ 无法创建版本文件夹,请检查权限'); }
+        catch (error: unknown) { console.error('创建版本文件夹失败:', getErrorMessage(error), error); new Notice('⚠️ 无法创建版本文件夹,请检查权限'); }
     }
 
     async activateVersionHistoryView() { 
@@ -700,8 +713,8 @@ export default class VersionControlPlugin extends Plugin {
 
                 await this.createVersionInternal(file, message, false, [], false, content);
                 
-            } catch (error: any) {
-                console.error('自动保存失败:', error);
+            } catch (error: unknown) {
+                console.error('自动保存失败:', getErrorMessage(error), error);
             }
         });
     }
@@ -777,8 +790,8 @@ export default class VersionControlPlugin extends Plugin {
                         if (prevContent === content) {
                             contentReallyIdentical = true;
                         }
-                    } catch (e: any) {
-                        console.warn("Deduplication check: could not read previous version content", e);
+                    } catch (e: unknown) {
+                        console.warn("Deduplication check: could not read previous version content", getErrorMessage(e), e);
                     }
 
                     if (contentReallyIdentical) {
@@ -821,8 +834,8 @@ export default class VersionControlPlugin extends Plugin {
                         if (part.added) addedLines += part.count || 0;
                         if (part.removed) removedLines += part.count || 0;
                     });
-                } catch (e: any) {
-                    console.warn("无法计算 Diff 统计", e);
+                } catch (e: unknown) {
+                    console.warn("无法计算 Diff 统计", getErrorMessage(e), e);
                 }
             } else {
                 addedLines = content.split('\n').length;
@@ -865,8 +878,8 @@ export default class VersionControlPlugin extends Plugin {
                             } else {
                                 console.warn(`[VersionControl] 逆向增量补丁验证失败，保留老版本完整内容。File: ${file.path}`);
                             }
-                        } catch (err: any) {
-                            console.error("生成逆向增量版本时出错", err);
+                        } catch (err: unknown) {
+                            console.error("生成逆向增量版本时出错", getErrorMessage(err), err);
                         }
                     }
                 }
@@ -896,8 +909,8 @@ export default class VersionControlPlugin extends Plugin {
             if (showNotification && this.settings.showNotifications) {
                 new Notice(`✅ 版本已保存: ${message}`);
             }
-        } catch (error: any) {
-            console.error('保存版本失败:', error);
+        } catch (error: unknown) {
+            console.error('保存版本失败:', getErrorMessage(error), error);
             new Notice('❌ 保存版本失败,请查看控制台');
         }
     }
@@ -907,7 +920,7 @@ export default class VersionControlPlugin extends Plugin {
     }
     
     applyDiff(baseContent: string, diffStr: string, suppressNotice: boolean = false): string { 
-        try { const result = Diff.applyPatch(baseContent, diffStr); if (result === false) { console.error('应用差异补丁失败 (applyPatch returned false). 返回基础内容。'); if (!suppressNotice) { new Notice('应用差异补丁失败，版本内容可能不完整。'); } return baseContent; } return result; } catch (error: any) { console.error('应用差异时捕获到异常:', error); return baseContent; }
+        try { const result = Diff.applyPatch(baseContent, diffStr); if (result === false) { console.error('应用差异补丁失败 (applyPatch returned false). 返回基础内容。'); if (!suppressNotice) { new Notice('应用差异补丁失败，版本内容可能不完整。'); } return baseContent; } return result; } catch (error: unknown) { console.error('应用差异时捕获到异常:', getErrorMessage(error), error); return baseContent; }
     }
     
     buildVersionIndex(versionFile: VersionFile) { 
@@ -974,8 +987,8 @@ export default class VersionControlPlugin extends Plugin {
                         v.baseVersionId = undefined;
                         v.size = fullContent.length;
                         
-                    } catch (error: any) {
-                        console.error(`[VersionControl] 严重错误：无法固化版本 ${v.id}，为防止数据丢失，取消本次清理。`, error);
+                    } catch (error: unknown) {
+                        console.error(`[VersionControl] 严重错误：无法固化版本 ${v.id}，为防止数据丢失，取消本次清理。`, getErrorMessage(error), error);
                         new Notice(`⚠️ 自动清理中止：版本 ${v.id.substring(0,8)} 无法重构，这可能是由于数据链损坏。`);
                         return 0; 
                     }
@@ -1001,8 +1014,8 @@ export default class VersionControlPlugin extends Plugin {
             try {
                 loadedContent = await this.readCompressedOrRaw(versionPath);
                 finalVersionFile = JSON.parse(loadedContent) as VersionFile;
-            } catch (e: any) {
-                console.error("Failed to load new version file, will try to recover.", e);
+            } catch (e: unknown) {
+                console.error("Failed to load new version file, will try to recover.", getErrorMessage(e), e);
                 finalVersionFile = { filePath, versions: [], lastModified: Date.now() };
             }
         } else {
@@ -1037,8 +1050,8 @@ export default class VersionControlPlugin extends Plugin {
                     await this.saveVersionFile(filePath, finalVersionFile);
                     await adapter.remove(oldPath); 
 
-                } catch (e: any) {
-                    console.error(`[VersionControl] Error processing legacy file ${oldPath}`, e);
+                } catch (e: unknown) {
+                    console.error(`[VersionControl] Error processing legacy file ${oldPath}`, getErrorMessage(e), e);
                 }
             }
         };
@@ -1072,8 +1085,8 @@ export default class VersionControlPlugin extends Plugin {
                 try {
                     const rawData = await adapter.readBinary(path);
                     return pako.ungzip(new Uint8Array(rawData), { to: 'string' });
-                } catch (e: any) {
-                    if (e.message && e.message.includes('incorrect header check')) {
+                } catch (e: unknown) {
+                    if (getErrorMessage(e).includes('incorrect header check')) {
                         return await adapter.read(path);
                     }
                     throw e; 
@@ -1084,13 +1097,13 @@ export default class VersionControlPlugin extends Plugin {
                     if (text && (text.trim().startsWith('{') || text.includes('"versions"'))) {
                         return text;
                     }
-                } catch (e) {}
+                } catch (e: unknown) {}
                 
                 const rawData = await adapter.readBinary(path);
                 return pako.ungzip(new Uint8Array(rawData), { to: 'string' });
             }
-        } catch (error) {
-            throw new Error(`无法读取或解压历史文件: ${path}`);
+        } catch (error: unknown) {
+            throw new Error(`无法读取或解压历史文件: ${path} | ${getErrorMessage(error)}`);
         }
     }
 
@@ -1118,8 +1131,8 @@ export default class VersionControlPlugin extends Plugin {
             } else {
                 await adapter.write(versionPath, content);
             }
-        } catch (error: any) {
-            console.error('保存版本文件失败:', error);
+        } catch (error: unknown) {
+            console.error('保存版本文件失败:', getErrorMessage(error), error);
             throw error;
         }
     }
@@ -1128,7 +1141,7 @@ export default class VersionControlPlugin extends Plugin {
         return path.replace(/[\/\\:*?"<>|]/g, '_');
     }
 
-    async getAllVersions(filePath: string): Promise<VersionData[]> { try { const versionFile = await this.loadVersionFile(filePath); return versionFile.versions; } catch (error: any) { console.error('获取版本列表失败:', error); return []; } }
+    async getAllVersions(filePath: string): Promise<VersionData[]> { try { const versionFile = await this.loadVersionFile(filePath); return versionFile.versions; } catch (error: unknown) { console.error('获取版本列表失败:', getErrorMessage(error), error); return []; } }
     
     async getVersionContent(filePath: string, versionId: string, suppressNotice: boolean = false, strictMode: boolean = false): Promise<string> { 
         const cacheKey = `${filePath}::${versionId}`;
@@ -1183,9 +1196,9 @@ export default class VersionControlPlugin extends Plugin {
             this.contentCache.set(cacheKey, resultContent);
             return resultContent;
 
-        } catch (error: any) { 
-            console.error('读取版本内容失败:', error); 
-            throw new Error(`无法读取版本内容: ${error.message}`); 
+        } catch (error: unknown) { 
+            console.error('读取版本内容失败:', getErrorMessage(error), error); 
+            throw new Error(`无法读取版本内容: ${getErrorMessage(error)}`); 
         } 
     }
 
@@ -1205,11 +1218,11 @@ export default class VersionControlPlugin extends Plugin {
                 try {
                     const rawData = await adapter.readBinary(versionPath);
                     content = pako.ungzip(new Uint8Array(rawData), { to: 'string' });
-                } catch (e: any) {
+                } catch (e: unknown) {
                     try {
                         content = await adapter.read(versionPath);
                         JSON.parse(content);
-                    } catch (e2: any) {
+                    } catch (e2: unknown) {
                         throw new Error("文件损坏：无法解压且不是有效的 JSON");
                     }
                 }
@@ -1217,8 +1230,8 @@ export default class VersionControlPlugin extends Plugin {
                 content = await adapter.read(versionPath);
             }
             versionFile = JSON.parse(content) as VersionFile;
-        } catch (error: any) {
-            errors.push(`文件读取失败: ${error.message}`);
+        } catch (error: unknown) {
+            errors.push(`文件读取失败: ${getErrorMessage(error)}`);
             return errors;
         }
         
@@ -1242,7 +1255,7 @@ export default class VersionControlPlugin extends Plugin {
                         errors.push(`版本 ${version.id.substring(0,8)}: 哈希校验失败 (内容不匹配)`); 
                     } 
                 } 
-            } catch (e: any) { errors.push(`版本 ${version.id.substring(0,8)}: 内容还原失败 - ${e.message}`); } 
+            } catch (e: unknown) { errors.push(`版本 ${version.id.substring(0,8)}: 内容还原失败 - ${getErrorMessage(e)}`); } 
         }
         return errors;
     }
@@ -1269,12 +1282,12 @@ export default class VersionControlPlugin extends Plugin {
                         const bin = await adapter.readBinary(file); 
                         contentStr = pako.ungzip(new Uint8Array(bin), { to: 'string' }); 
                     } 
-                } catch(e: any) { /* ignore */ } 
+                } catch(e: unknown) { /* ignore */ } 
                 if (contentStr) { 
                     const vData = JSON.parse(contentStr) as VersionFile; 
                     if (vData.filePath) originalFilePath = vData.filePath; 
                 } 
-            } catch (e: any) { 
+            } catch (e: unknown) { 
                 report.push({ filePath: rawFileName, errors: ["文件完全无法读取/解压"] }); 
                 continue; 
             } 
@@ -1310,7 +1323,7 @@ export default class VersionControlPlugin extends Plugin {
                                 version.hash = currentHash; 
                                 fixedCount++; 
                             }
-                        } catch (e: any) { console.warn(`Skipping repair for ${version.id}: content unreadable`); } 
+                        } catch (e: unknown) { console.warn(`Skipping repair for ${version.id}: content unreadable`, getErrorMessage(e)); } 
                     } 
                 }
                 if (fixedCount > 0) { await this.saveVersionFile(filePath, versionFile); this.versionCache.set(filePath, versionFile); new Notice(`✅ 已修复并升级 ${fixedCount} 个版本记录的哈希值`); resolve(true); } else { new Notice(`ℹ️ 未发现可修复的哈希问题`); resolve(false); }
@@ -1329,8 +1342,8 @@ export default class VersionControlPlugin extends Plugin {
                     this.versionCache.set(filePath, versionFile);
                     this.refreshVersionHistoryView();
                 }
-            } catch (error: any) {
-                console.error('更新版本标签失败:', error);
+            } catch (error: unknown) {
+                console.error('更新版本标签失败:', getErrorMessage(error), error);
             }
         });
     }
@@ -1346,8 +1359,8 @@ export default class VersionControlPlugin extends Plugin {
                     this.versionCache.set(filePath, versionFile);
                     this.refreshVersionHistoryView();
                 }
-            } catch (error: any) {
-                console.error('更新版本备注失败:', error);
+            } catch (error: unknown) {
+                console.error('更新版本备注失败:', getErrorMessage(error), error);
             }
         });
     }
@@ -1363,8 +1376,8 @@ export default class VersionControlPlugin extends Plugin {
                     this.versionCache.set(filePath, versionFile);
                     this.refreshVersionHistoryView();
                 }
-            } catch (error: any) {
-                console.error('切换星标失败:', error);
+            } catch (error: unknown) {
+                console.error('切换星标失败:', getErrorMessage(error), error);
             }
         });
     }
@@ -1384,8 +1397,8 @@ export default class VersionControlPlugin extends Plugin {
                 await this.saveVersionFile(filePath, versionFile);
                 this.versionCache.set(filePath, versionFile);
                 this.refreshVersionHistoryView();
-            } catch (error: any) {
-                console.error('删除版本失败:', error);
+            } catch (error: unknown) {
+                console.error('删除版本失败:', getErrorMessage(error), error);
             }
         });
     }
@@ -1404,8 +1417,8 @@ export default class VersionControlPlugin extends Plugin {
                 await this.saveVersionFile(filePath, versionFile);
                 this.versionCache.set(filePath, versionFile);
                 this.refreshVersionHistoryView();
-            } catch (error: any) {
-                console.error('批量删除版本失败:', error);
+            } catch (error: unknown) {
+                console.error('批量删除版本失败:', getErrorMessage(error), error);
             }
         });
     }
@@ -1422,8 +1435,8 @@ export default class VersionControlPlugin extends Plugin {
                 new Notice('✅ 版本已恢复');
             }
             this.refreshVersionHistoryView();
-        } catch (error: any) {
-            console.error('恢复版本失败:', error);
+        } catch (error: unknown) {
+            console.error('恢复版本失败:', getErrorMessage(error), error);
             new Notice('❌ 恢复版本失败');
         } finally {
             setTimeout(() => {
@@ -1434,9 +1447,9 @@ export default class VersionControlPlugin extends Plugin {
 
     async restoreLastVersion() { const file = this.app.workspace.getActiveFile(); if (!file) { new Notice('没有打开的文件'); return; } const versions = await this.getAllVersions(file.path); if (versions.length === 0) { new Notice('没有可恢复的版本'); return; } const lastVersion = versions[0]!; new ConfirmModal(this.app, '恢复到上一版本', `确定要恢复到版本: ${this.formatTime(lastVersion.timestamp)}?\n\n当前未保存的修改将会丢失,插件会在恢复前自动创建备份版本。`, async () => { await this.restoreVersion(file!, lastVersion.id); }).open(); }
     async quickCompare() { const file = this.app.workspace.getActiveFile(); if (!file) { new Notice('没有打开的文件'); return; } const versions = await this.getAllVersions(file.path); if (versions.length === 0) { new Notice('没有历史版本可对比'); return; } const lastVersion = versions[0]!; new DiffModal(this.app, this, file!, lastVersion.id).open(); }
-    async createFullSnapshot() { const files = this.app.vault.getMarkdownFiles(); const total = files.length; let count = 0; let skipped = 0; const progressNotice = new Notice(`正在准备全库版本... (0/${total})`, 0); const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms)); for (let i = 0; i < total; i++) { const file = files[i]!; if (i % 10 === 0) { progressNotice.setMessage(`正在保存全库版本... (${i + 1}/${total})`); await sleep(10); } if (this.isExcluded(file.path)) { skipped++; continue; } try { await this.createVersion(file!, '[Full Snapshot]', false, [], true); count++; } catch (error: any) { console.error(`创建版本失败: ${file.path}`, error); } } progressNotice.hide(); if (this.settings.showNotifications) { setTimeout(() => { new Notice(`✅ 全库版本创建完成\n处理: ${count} 个文件${skipped > 0 ? `\n跳过: ${skipped} 个文件` : ''}`); }, 500); } }
-    async optimizeAllVersionFiles() { const progressNotice = new Notice('正在优化存储...', 0); try { const adapter = this.app.vault.adapter; const versionFolder = this.settings.versionFolder; if (!await adapter.exists(versionFolder)) { progressNotice.hide(); new Notice('版本文件夹不存在'); return; } const files = await adapter.list(versionFolder); let optimized = 0; let savedBytes = 0; for (const file of files.files) { if (file.endsWith('.json')) { try { const oldSize = (await adapter.stat(file))?.size || 0; const filePath = file.replace(this.settings.versionFolder + '/', '').replace('.json', ''); const versionFile = await this.loadVersionFile(filePath); this.buildVersionIndex(versionFile); await this.saveVersionFile(versionFile.filePath, versionFile); const newSize = (await adapter.stat(file))?.size || 0; savedBytes += (oldSize - newSize); optimized++; } catch (error: any) { console.error('优化文件失败:', file, error); } } } progressNotice.hide(); new Notice(`✅ 优化完成\n处理: ${optimized} 个文件\n节省: ${this.formatFileSize(savedBytes)}`); } catch (error: any) { progressNotice.hide(); console.error('优化失败:', error); new Notice('❌ 优化失败'); } }
-    async getStorageStats(): Promise<{ totalSize: number; versionCount: number; fileCount: number; compressionRatio: number; starredCount: number; taggedCount: number }> { const adapter = this.app.vault.adapter; const versionFolder = this.settings.versionFolder; try { if (!await adapter.exists(versionFolder)) { return { totalSize: 0, versionCount: 0, fileCount: 0, compressionRatio: 0, starredCount: 0, taggedCount: 0 }; } const files = await adapter.list(versionFolder); let totalSize = 0; let versionCount = 0; let fileCount = 0; let totalOriginalSize = 0; let starredCount = 0; let taggedCount = 0; for (const file of files.files) { if (file.endsWith('.json')) { try { const stat = await adapter.stat(file); const fileSize = stat?.size || 0; totalSize += fileSize; let versionFile: VersionFile; if (this.settings.enableCompression) { try { const rawData = await adapter.readBinary(file); const decompressed = pako.ungzip(new Uint8Array(rawData), { to: 'string' }); versionFile = JSON.parse(decompressed) as VersionFile; } catch (e: any) { const content = await adapter.read(file); versionFile = JSON.parse(content) as VersionFile; } } else { const content = await adapter.read(file); versionFile = JSON.parse(content) as VersionFile; } if (versionFile.versions && Array.isArray(versionFile.versions)) { versionCount += versionFile.versions.length; versionFile.versions.forEach(v => { if (v.content) { totalOriginalSize += v.content.length; } else if (v.diff) { totalOriginalSize += v.diff.length; } if (v.starred) starredCount++; if (v.tags && v.tags.length > 0) taggedCount++; }); fileCount++; } } catch (error: any) { console.error('读取版本文件失败:', file, error); } } } const compressionRatio = totalOriginalSize > 0 ? ((1 - totalSize / totalOriginalSize) * 100) : 0; return { totalSize, versionCount, fileCount, compressionRatio, starredCount, taggedCount }; } catch (error: any) { console.error('获取存储统计失败:', error); return { totalSize: 0, versionCount: 0, fileCount: 0, compressionRatio: 0, starredCount: 0, taggedCount: 0 }; } }
+    async createFullSnapshot() { const files = this.app.vault.getMarkdownFiles(); const total = files.length; let count = 0; let skipped = 0; const progressNotice = new Notice(`正在准备全库版本... (0/${total})`, 0); const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms)); for (let i = 0; i < total; i++) { const file = files[i]!; if (i % 10 === 0) { progressNotice.setMessage(`正在保存全库版本... (${i + 1}/${total})`); await sleep(10); } if (this.isExcluded(file.path)) { skipped++; continue; } try { await this.createVersion(file!, '[Full Snapshot]', false, [], true); count++; } catch (error: unknown) { console.error(`创建版本失败: ${file.path}`, getErrorMessage(error), error); } } progressNotice.hide(); if (this.settings.showNotifications) { setTimeout(() => { new Notice(`✅ 全库版本创建完成\n处理: ${count} 个文件${skipped > 0 ? `\n跳过: ${skipped} 个文件` : ''}`); }, 500); } }
+    async optimizeAllVersionFiles() { const progressNotice = new Notice('正在优化存储...', 0); try { const adapter = this.app.vault.adapter; const versionFolder = this.settings.versionFolder; if (!await adapter.exists(versionFolder)) { progressNotice.hide(); new Notice('版本文件夹不存在'); return; } const files = await adapter.list(versionFolder); let optimized = 0; let savedBytes = 0; for (const file of files.files) { if (file.endsWith('.json')) { try { const oldSize = (await adapter.stat(file))?.size || 0; const filePath = file.replace(this.settings.versionFolder + '/', '').replace('.json', ''); const versionFile = await this.loadVersionFile(filePath); this.buildVersionIndex(versionFile); await this.saveVersionFile(versionFile.filePath, versionFile); const newSize = (await adapter.stat(file))?.size || 0; savedBytes += (oldSize - newSize); optimized++; } catch (error: unknown) { console.error('优化文件失败:', file, getErrorMessage(error), error); } } } progressNotice.hide(); new Notice(`✅ 优化完成\n处理: ${optimized} 个文件\n节省: ${this.formatFileSize(savedBytes)}`); } catch (error: unknown) { progressNotice.hide(); console.error('优化失败:', getErrorMessage(error), error); new Notice('❌ 优化失败'); } }
+    async getStorageStats(): Promise<{ totalSize: number; versionCount: number; fileCount: number; compressionRatio: number; starredCount: number; taggedCount: number }> { const adapter = this.app.vault.adapter; const versionFolder = this.settings.versionFolder; try { if (!await adapter.exists(versionFolder)) { return { totalSize: 0, versionCount: 0, fileCount: 0, compressionRatio: 0, starredCount: 0, taggedCount: 0 }; } const files = await adapter.list(versionFolder); let totalSize = 0; let versionCount = 0; let fileCount = 0; let totalOriginalSize = 0; let starredCount = 0; let taggedCount = 0; for (const file of files.files) { if (file.endsWith('.json')) { try { const stat = await adapter.stat(file); const fileSize = stat?.size || 0; totalSize += fileSize; let versionFile: VersionFile; if (this.settings.enableCompression) { try { const rawData = await adapter.readBinary(file); const decompressed = pako.ungzip(new Uint8Array(rawData), { to: 'string' }); versionFile = JSON.parse(decompressed) as VersionFile; } catch (e: unknown) { const content = await adapter.read(file); versionFile = JSON.parse(content) as VersionFile; } } else { const content = await adapter.read(file); versionFile = JSON.parse(content) as VersionFile; } if (versionFile.versions && Array.isArray(versionFile.versions)) { versionCount += versionFile.versions.length; versionFile.versions.forEach(v => { if (v.content) { totalOriginalSize += v.content.length; } else if (v.diff) { totalOriginalSize += v.diff.length; } if (v.starred) starredCount++; if (v.tags && v.tags.length > 0) taggedCount++; }); fileCount++; } } catch (error: unknown) { console.error('读取版本文件失败:', file, getErrorMessage(error), error); } } } const compressionRatio = totalOriginalSize > 0 ? ((1 - totalSize / totalOriginalSize) * 100) : 0; return { totalSize, versionCount, fileCount, compressionRatio, starredCount, taggedCount }; } catch (error: unknown) { console.error('获取存储统计失败:', getErrorMessage(error), error); return { totalSize: 0, versionCount: 0, fileCount: 0, compressionRatio: 0, starredCount: 0, taggedCount: 0 }; } }
     
     async exportVersions(filePath: string): Promise<void> { 
         try { 
@@ -1444,8 +1457,8 @@ export default class VersionControlPlugin extends Plugin {
             const exportPath = normalizePath(`${this.settings.versionFolder}/export_${this.sanitizeFileName(filePath)}_${Date.now()}.json`); 
             await this.app.vault.adapter.write(exportPath, JSON.stringify(versionFile, null, 2)); 
             new Notice(`✅ 版本已导出到: ${exportPath}`); 
-        } catch (error: any) { 
-            console.error('导出版本失败:', error); 
+        } catch (error: unknown) { 
+            console.error('导出版本失败:', getErrorMessage(error), error); 
             new Notice('❌ 导出失败'); 
         } 
     }
@@ -1457,8 +1470,8 @@ export default class VersionControlPlugin extends Plugin {
             const exportPath = normalizePath(`${fileName}_v${versionId.substring(0,8)}.md`); 
             await this.app.vault.create(exportPath, content); 
             new Notice(`✅ 版本已导出为: ${exportPath}`); 
-        } catch (error: any) { 
-            console.error('导出版本为文件失败:', error); 
+        } catch (error: unknown) { 
+            console.error('导出版本为文件失败:', getErrorMessage(error), error); 
             new Notice('❌ 导出失败'); 
         } 
     }
@@ -1486,8 +1499,8 @@ export default class VersionControlPlugin extends Plugin {
                         const lastTime = versionFile.versions.length > 0 ? versionFile.versions[0]!.timestamp : 0;
                         modifiedFiles.push({ file, lastVersionTime: lastTime });
                     }
-                } catch (e: any) {
-                    console.error(`Error checking modified file ${file.path}`, e);
+                } catch (e: unknown) {
+                    console.error(`Error checking modified file ${file.path}`, getErrorMessage(e), e);
                 }
             } else {
                 modifiedFiles.push({ file, lastVersionTime: 0 });
@@ -1540,7 +1553,7 @@ export default class VersionControlPlugin extends Plugin {
                     });
                 });
 
-            } catch (e: any) {
+            } catch (e: unknown) {
             }
         }
 
@@ -1656,9 +1669,9 @@ class QuickPreviewModal extends Modal {
             const words = this.plugin.countWords(this.versionContent);
             statsBar.createEl('span', { text: `📄 ${words.toLocaleString()} 词` });
 
-        } catch (error: any) {
+        } catch (error: unknown) {
             contentEl.createEl('p', { text: '❌ 加载预览失败' });
-            console.error('预览加载失败:', error);
+            console.error('预览加载失败:', getErrorMessage(error), error);
         }
     }
 
@@ -1832,7 +1845,7 @@ class VersionHistoryView extends ItemView {
             version.addedLines = added;
             version.removedLines = removed;
             version.modifiedLines = modified;
-        } catch (error: any) {
+        } catch (error: unknown) {
             version.addedLines = 0;
             version.removedLines = 0;
             version.modifiedLines = 0;
@@ -1872,8 +1885,8 @@ class VersionHistoryView extends ItemView {
                 newScrollArea.scrollTop = scrollTop;
             }
 
-        } catch (error: any) {
-            console.error("Version History Refresh Error:", error);
+        } catch (error: unknown) {
+            console.error("Version History Refresh Error:", getErrorMessage(error), error);
             realContainer.empty();
             realContainer.createEl('div', { text: '加载出错，请查看控制台。' });
         } finally {
@@ -1952,7 +1965,7 @@ class VersionHistoryView extends ItemView {
             if (stat) {
                 fileStats.createEl('span', { text: `📅 修改: ${new Date(stat.mtime).toLocaleString('zh-CN')}`, cls: 'file-stat-item' });
             }
-        } catch (error: any) { console.error('获取文件信息失败:', error); }
+        } catch (error: unknown) { console.error('获取文件信息失败:', getErrorMessage(error), error); }
 
         const actions = header.createEl('div', { cls: 'version-header-actions' });
         
@@ -2849,6 +2862,7 @@ class DiffModal extends Modal {
             contentEl.addClass('is-mobile');
         }
 
+        // 使用原生事件监听，并在 onClose 中安全移除
         window.addEventListener('resize', this.resizeHandler);
 
         const headerContainer = contentEl.createEl('div', { cls: 'diff-modal-header' });
@@ -2884,8 +2898,8 @@ class DiffModal extends Modal {
                     if (this.versionId === 'current' || this.secondVersionId === 'current') {
                         await this.updateDiffView();
                     }
-                } catch (err: any) {
-                    console.error("保存新版本或刷新视图失败", err);
+                } catch (err: unknown) {
+                    console.error("保存新版本或刷新视图失败", getErrorMessage(err), err);
                 } finally {
                     saveNewVersionBtn.innerHTML = '💾';
                     saveNewVersionBtn.disabled = false;
@@ -2918,7 +2932,7 @@ class DiffModal extends Modal {
 
         try {
             this.allVersions = await this.plugin.getAllVersions(this.file.path);
-        } catch (error: any) {
+        } catch (error: unknown) {
             new Notice('❌ 加载版本列表失败');
             this.close();
             return;
@@ -3203,8 +3217,8 @@ class DiffModal extends Modal {
             this.updateSelectorButtonLabels();
             this.renderTextDiff();
 
-        } catch (error: any) {
-            console.error("加载差异失败:", error);
+        } catch (error: unknown) {
+            console.error("加载差异失败:", getErrorMessage(error), error);
             new Notice('❌ 加载版本内容失败');
         } finally {
             this.loadingOverlay.style.display = 'none';
@@ -3631,8 +3645,8 @@ class DiffModal extends Modal {
             const fileName = `diff_report_${Date.now()}.md`;
             this.app.vault.create(fileName, report);
             new Notice(`✅ 差异报告已导出: ${fileName}`);
-        } catch (error: any) {
-            console.error('导出差异报告失败:', error);
+        } catch (error: unknown) {
+            console.error('导出差异报告失败:', getErrorMessage(error), error);
             new Notice('❌ 导出失败');
         }
     }
@@ -4264,6 +4278,10 @@ class DiffModal extends Modal {
         window.removeEventListener('resize', this.resizeHandler);
         const { contentEl } = this;
         contentEl.empty();
+        
+        this.leftContent = '';
+        this.rightContent = '';
+        this.diffElements = [];
     }
 }
 
@@ -4800,8 +4818,8 @@ class VersionControlSettingTab extends PluginSettingTab {
                 this.plugin.refreshVersionHistoryView();
                 this.display();
             }
-        } catch (error: any) {
-            console.error('清空版本失败:', error);
+        } catch (error: unknown) {
+            console.error('清空版本失败:', getErrorMessage(error), error);
             new Notice('❌ 清空失败,请查看控制台');
         }
     }
