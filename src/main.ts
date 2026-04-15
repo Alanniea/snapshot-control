@@ -2275,6 +2275,13 @@ class VersionHistoryView extends ItemView {
 
         const list = container.createEl('div', { cls: 'version-list' });
 
+        // --- 补全：在全库历史中也计算依赖关系 ---
+        const globalDependentIds = new Set<string>();
+        history.forEach(item => {
+            if (item.version.baseVersionId) globalDependentIds.add(item.version.baseVersionId);
+        });
+        // ------------------------------------
+
         let currentDay = '';
 
         history.forEach(({ version, filePath, file }) => {
@@ -2301,7 +2308,8 @@ class VersionHistoryView extends ItemView {
 
             const fileLink = headerRow.createEl('span', { 
                 text: filePath, 
-                attr: { style: 'font-weight:bold; cursor:pointer; text-decoration:underline;' } 
+                cls: 'internal-link',
+                attr: { style: 'font-weight:bold; cursor:pointer;' } 
             });
             fileLink.addEventListener('click', () => {
                 if (file) {
@@ -2319,6 +2327,13 @@ class VersionHistoryView extends ItemView {
             } else {
                 msgRow.createEl('span', { text: '手动', cls: 'version-tag version-tag-manual' });
             }
+
+            // --- 补全：显示依赖基准标签 ---
+            if (globalDependentIds.has(version.id)) {
+                msgRow.createEl('span', { text: '🔒 依赖', cls: 'version-tag version-tag-locked', attr: { title: '被其他版本依赖' } });
+            }
+            // ---------------------------
+
             msgRow.createEl('span', { text: version.message.replace(/\[.*?\]/g, '').trim() || '无描述' });
 
             const actions = item.createEl('div', { cls: 'version-actions' });
@@ -2515,12 +2530,29 @@ class VersionHistoryView extends ItemView {
     }
 
     async batchDelete(file: TFile) {
+        // --- 补全：在 UI 层面提供更友好的拦截 ---
         new ConfirmModal(
             this.app,
             '确认批量删除',
             `确定要删除选中的 ${this.selectedVersions.size} 个版本吗?\n\n此操作不可撤销!`,
             async () => {
                 const versionIds = Array.from(this.selectedVersions);
+                const versionFile = await this.plugin.loadVersionFile(file.path);
+                
+                // 检查选中的 ID 中是否包含被依赖的基准版本
+                const dependentIds = new Set(versionFile.versions.map(v => v.baseVersionId).filter(Boolean));
+                const hasLocked = versionIds.some(id => dependentIds.has(id));
+
+                if (hasLocked) {
+                    new Notice('❌ 包含被依赖的基准版本，无法删除。已为你取消勾选这些版本。', 5000);
+                    // 智能清除被锁定的勾选，保留正常的勾选
+                    versionIds.forEach(id => {
+                        if (dependentIds.has(id)) this.selectedVersions.delete(id);
+                    });
+                    this.refresh();
+                    return;
+                }
+
                 await this.plugin.deleteVersions(file.path, versionIds);
                 this.selectedVersions.clear();
             }
