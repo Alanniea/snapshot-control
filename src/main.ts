@@ -2599,7 +2599,7 @@ class DiffModal extends Modal {
             this.allVersions.forEach((version) => {
                 menu.addItem((item) =>
                     item
-                        .setTitle(`${this.plugin.formatTime(version.timestamp)} - ${version.message}`)
+                        .setTitle(`${this.plugin.formatTime(version.timestamp)}`) // 删除了后面的 message
                         .setIcon('history')
                         .onClick(() => {
                             this.handleVersionChange(side, version.id);
