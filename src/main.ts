@@ -4157,16 +4157,6 @@ class VersionControlSettingTab extends PluginSettingTab {
                     }
                 }));
 
-        new Setting(containerEl)
-            .setName('优化存储')
-            .setDesc('重新压缩和优化所有版本文件')
-            .addButton(button => button
-                .setButtonText('立即优化')
-                .onClick(async () => {
-                    await this.plugin.optimizeAllVersionFiles();
-                    this.display();
-                }));
-
         containerEl.createEl('h3', { text: '🗑️ 自动清理' });
 
         new Setting(containerEl)
