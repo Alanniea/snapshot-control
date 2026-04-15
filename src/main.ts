@@ -4314,15 +4314,6 @@ class VersionControlSettingTab extends PluginSettingTab {
                 }));
 
         new Setting(containerEl)
-            .setName('检查版本完整性')
-            .setDesc('扫描所有版本文件，检测结构损坏、增量链条断裂或哈希不匹配的问题。')
-            .addButton(button => button
-                .setButtonText('开始检查')
-                .onClick(async () => {
-                    await this.plugin.checkAllVersionsIntegrity();
-                }));
-
-        new Setting(containerEl)
             .setName('导出版本数据')
             .setDesc('将版本文件夹打包导出')
             .addButton(button => button
