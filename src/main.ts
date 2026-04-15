@@ -1558,7 +1558,6 @@ class VersionHistoryView extends ItemView {
             const menu = new Menu();
             menu.addItem((item) => item.setTitle('📊 查看统计').setIcon('bar-chart').onClick(() => { this.showDetailedStats(); }));
             menu.addItem((item) => item.setTitle('📥 导出版本数据').setIcon('download').onClick(() => { this.plugin.exportVersions(file.path); }));
-            menu.addItem((item) => item.setTitle('📂 保存全库版本').setIcon('folder').onClick(() => { this.plugin.createFullSnapshot(); }));
             menu.addItem((item) => item.setTitle('🗑️ 清理旧版本').setIcon('trash').onClick(async () => { await this.cleanupOldVersions(file); }));
             menu.showAtMouseEvent(e as MouseEvent);
         });
