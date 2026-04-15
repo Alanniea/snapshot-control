@@ -1783,7 +1783,6 @@ class VersionHistoryView extends ItemView {
             });
         }
         
-        messageEl.createEl('span', { text: version.message.replace(/\[.*?\]/g, '').trim() || '无描述', cls: 'version-message' });
         if (version.note && !this.plugin.settings.compactHistoryView) info.createEl('div', { text: `📝 ${version.note}`, cls: 'version-note' });
         
         const statsRow = info.createEl('div', { cls: 'version-stats-row' });
