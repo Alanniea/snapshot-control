@@ -182,14 +182,11 @@ export default class VersionControlPlugin extends Plugin {
 
         this.registerView('version-history', (leaf) => new VersionHistoryView(leaf, this));
 
-        this.addCommand({ id: 'create-version', name: '保存新版本', callback: () => this.createManualVersion() });
         this.addCommand({ id: 'show-version-history', name: '显示版本历史', callback: () => this.activateVersionHistoryView() });
         this.addCommand({ id: 'create-full-snapshot', name: '保存全库版本', callback: () => this.createFullSnapshot() });
         this.addCommand({ id: 'compare-with-version', name: '与历史版本对比', callback: () => this.quickCompare() });
-        this.addCommand({ id: 'restore-last-version', name: '恢复到上一版本', callback: () => this.restoreLastVersion() });
         this.addCommand({ id: 'optimize-storage', name: '优化存储空间', callback: () => this.optimizeAllVersionFiles() });
         this.addCommand({ id: 'check-version-integrity', name: '检查版本完整性', callback: () => this.checkAllVersionsIntegrity() });
-        this.addCommand({ id: 'quick-preview-version', name: '快速预览上一版本', callback: () => this.quickPreviewLastVersion() });
         this.addCommand({ id: 'star-current-version', name: '标记当前版本为重要', callback: () => this.starLastVersion() });
 
         this.addSettingTab(new VersionControlSettingTab(this.app, this));
