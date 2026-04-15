@@ -1959,8 +1959,16 @@ class VersionHistoryView extends ItemView {
     
     showVersionContextMenu(event: MouseEvent, file: TFile, version: VersionData, isLocked: boolean = false) {
         const menu = new Menu();
-        menu.addItem((item) => item.setTitle('与当前文件对比').setIcon('file-diff').onClick(() => { this.showDiffModal(file, version.id); }));
-        menu.addItem((item) => item.setTitle('与另一个版本对比').setIcon('files').onClick(() => { this.selectVersionForCompare(file, version.id); }));
+        
+        // 保留这项即可，因为这项操作比较复杂（需要二次选择版本），不适合放卡片上
+        menu.addItem((item) =>
+            item.setTitle('与另一个版本对比')
+                .setIcon('files')
+                .onClick(() => {
+                    this.selectVersionForCompare(file, version.id);
+                })
+        );
+        
         menu.addSeparator();
         menu.addItem((item) => item.setTitle(version.starred ? '取消星标' : '添加星标').setIcon('star').onClick(async () => {
             await this.plugin.toggleVersionStar(file.path, version.id);
