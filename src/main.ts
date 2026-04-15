@@ -1970,11 +1970,6 @@ class VersionHistoryView extends ItemView {
         );
         
         menu.addSeparator();
-        menu.addItem((item) => item.setTitle(version.starred ? '取消星标' : '添加星标').setIcon('star').onClick(async () => {
-            await this.plugin.toggleVersionStar(file.path, version.id);
-            this.refresh(); // 右键菜单修改后触发一次刷新
-        }));
-        
         if (this.plugin.settings.enableVersionTags) {
             menu.addItem((item) => item.setTitle('编辑标签').setIcon('tag').onClick(() => { new TagEditModal(this.app, this.plugin, file.path, version.id, version.tags || []).open(); }));
         }
