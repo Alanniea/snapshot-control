@@ -688,3 +688,53 @@ button.mod-warning:hover {
         width: 100%;
     }
 }
+
+/* ======================================================================= */
+/* ======================== 边缘细节样式补全 (Patch) ======================= */
+/* ======================================================================= */
+
+/* 1. 差异视图：代码折叠时的省略号分隔行 (...) */
+.diff-line.diff-context-gap {
+    background-color: rgba(var(--background-modifier-border-rgb), 0.2) !important;
+    justify-content: center;
+    color: var(--text-muted);
+    font-style: italic;
+    padding: 4px 0;
+    cursor: default;
+    border-top: 1px dashed var(--background-modifier-border);
+    border-bottom: 1px dashed var(--background-modifier-border);
+}
+.diff-line.diff-context-gap:hover {
+    transform: none; /* 取消 hover 时的右移效果 */
+}
+.diff-line.diff-context-gap .diff-marker {
+    letter-spacing: 4px;
+    opacity: 0.6;
+    margin: 0;
+}
+
+/* 2. 差异视图：对比文件完全为空时的居中提示 */
+.diff-empty-notice {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--text-muted);
+    font-size: 1.1em;
+    font-style: italic;
+    background: var(--background-secondary);
+    border-radius: 6px;
+}
+
+/* 3. 历史列表：补全(修改)统计条的高度 */
+.diff-stats-modified {
+    height: 100%;
+}
+
+/* 4. "待保存"面板：副标题文字弱化 */
+.vc-desc {
+    color: var(--text-muted);
+    font-size: 0.9em;
+    margin-top: -8px;
+    margin-bottom: 16px;
+}
