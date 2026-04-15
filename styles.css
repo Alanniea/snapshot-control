@@ -89,7 +89,7 @@
 .vc-batch-bar { display: flex; justify-content: flex-end; padding: 4px; background: var(--background-secondary); border-radius: 4px; margin-bottom: 10px; border: 1px solid var(--background-modifier-border);}
 .vc-desc { color: var(--text-muted); font-size: 0.9em; margin-top: -8px; margin-bottom: 16px; }
 
-/* 修复手机端超长路径撑爆布局 */
+/* 内部链接，支持超长路径自动换行防止撑爆 */
 .internal-link { 
     color: var(--text-accent); 
     text-decoration: none; 
@@ -107,15 +107,18 @@
 .vc-global-refresh.is-spinning svg { animation: vc-spin 1s linear infinite; color: var(--text-accent); }
 @keyframes vc-spin { 100% { transform: rotate(360deg); } }
 
-.version-group-header { font-size: 1.1em; font-weight: bold; color: var(--text-accent); padding: 12px 8px 4px; border-bottom: 1px solid var(--background-modifier-border); margin-top: 10px; }
-.version-list .version-group-header:first-child { margin-top: 0; }
-.version-control-statusbar-clickable { cursor: pointer; transition: all 0.2s ease; padding: 2px 6px; border-radius: 3px; }
-.version-control-statusbar-clickable:hover { background: var(--background-modifier-hover); color: var(--text-accent); }
-.version-control-statusbar-clickable:active { transform: scale(0.95); }
-.version-history-empty { text-align: center; padding: 40px 20px; color: var(--text-muted); font-size: 14px; }
-.version-empty-icon { font-size: 48px; margin-bottom: 15px; }
-.version-history-empty button { margin-top: 15px; }
-.version-header { margin-bottom: 20px; padding-bottom: 15px; border-bottom: 1px solid var(--background-modifier-border); }
+/* 头部信息与搜索栏吸顶 */
+.version-header { 
+    position: sticky; 
+    top: 0; 
+    z-index: 10; 
+    background: var(--background-primary); 
+    padding-top: 10px; 
+    margin-top: -10px; 
+    margin-bottom: 20px; 
+    padding-bottom: 15px; 
+    border-bottom: 1px solid var(--background-modifier-border); 
+}
 .version-title h3 { margin: 0 0 5px 0; font-size: 18px; color: var(--text-normal); }
 .version-file-path { font-size: 12px; color: var(--text-muted); }
 .version-file-stats { display: flex; gap: 15px; margin-top: 10px; font-size: 12px; }
@@ -128,11 +131,37 @@
 .version-header-actions button.mod-cta { background: var(--interactive-accent); color: var(--text-on-accent); border-color: var(--interactive-accent); }
 .version-header-actions button.mod-cta:hover { background: var(--interactive-accent-hover); }
 
+/* 日期分组 Header (支持折叠) */
+.version-group-header { 
+    font-size: 1.1em; 
+    font-weight: bold; 
+    color: var(--text-accent); 
+    padding: 12px 8px 4px; 
+    border-bottom: 1px solid var(--background-modifier-border); 
+    margin-top: 10px; 
+    cursor: pointer; 
+    user-select: none; 
+    transition: color 0.2s; 
+}
+.version-list .version-group-header:first-child { margin-top: 0; }
+.version-group-header:hover { color: var(--text-normal); }
+.group-chevron { display: inline-block; width: 16px; font-size: 0.8em; color: var(--text-muted); transition: transform 0.2s; }
+.group-count { color: var(--text-muted); font-size: 0.85em; font-weight: normal; margin-left: 4px; }
+
+.version-control-statusbar-clickable { cursor: pointer; transition: all 0.2s ease; padding: 2px 6px; border-radius: 3px; }
+.version-control-statusbar-clickable:hover { background: var(--background-modifier-hover); color: var(--text-accent); }
+.version-control-statusbar-clickable:active { transform: scale(0.95); }
+.version-history-empty { text-align: center; padding: 40px 20px; color: var(--text-muted); font-size: 14px; }
+.version-empty-icon { font-size: 48px; margin-bottom: 15px; }
+.version-history-empty button { margin-top: 15px; }
+
 .version-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 10px; background: var(--background-secondary); border-radius: 6px; margin-bottom: 15px; }
 .version-toolbar button { padding: 6px 12px; background: var(--interactive-normal); color: var(--text-normal); border: 1px solid var(--background-modifier-border); border-radius: 4px; cursor: pointer; font-size: 13px; }
 .version-toolbar button:hover { background: var(--interactive-hover); }
 .version-toolbar button.mod-warning { background: var(--color-red); color: white; border-color: var(--color-red); }
 .version-list { display: flex; flex-direction: column; gap: 12px; }
+
+/* 版本卡片基础样式 */
 .version-item { display: flex; align-items: center; gap: 12px; padding: 12px; background: var(--background-secondary); border-radius: 6px; border: 1px solid var(--background-modifier-border); transition: all 0.2s ease; }
 .version-item:hover { background: var(--background-secondary-alt); border-color: var(--interactive-accent); }
 .version-item.version-starred { border-left: 3px solid gold; background: rgba(255, 215, 0, 0.05); }
@@ -144,7 +173,14 @@
 .version-time { font-weight: 600; font-size: 13px; color: var(--text-normal); }
 .version-message-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 
-/* 各种版本的标签颜色样式 (修复了手动保存没有背景色的问题) */
+/* 紧凑模式增强 */
+.version-history-view.is-compact .version-item { padding: 6px 10px; gap: 8px; }
+.version-history-view.is-compact .version-message-row span:not(.version-tag) { font-size: 11px; }
+.version-history-view.is-compact .version-diff-stats { display: none; }
+.version-history-view.is-compact .version-note { display: none; }
+.version-history-view.is-compact .version-actions button { padding: 3px 6px; font-size: 11px; }
+
+/* 各种版本的标签颜色样式 */
 .version-tag { display: inline-block; padding: 2px 8px; font-size: 11px; border-radius: 3px; font-weight: 500; }
 .version-tag-auto { background: rgba(100, 149, 237, 0.2); color: cornflowerblue; }
 .version-tag-manual { background: rgba(150, 150, 150, 0.2); color: var(--text-normal); }
@@ -165,7 +201,7 @@
 .diff-stats-bar { display: flex; width: 80px; height: 8px; background-color: var(--background-modifier-border); border-radius: 4px; overflow: hidden; }
 .diff-stats-added { background-color: var(--color-green); height: 100%; }
 .diff-stats-removed { background-color: var(--color-red); height: 100%; }
-.diff-stats-modified { background-color: var(--text-accent); height: 100%; } /* 修复修改条高度塌陷 */
+.diff-stats-modified { background-color: var(--text-accent); height: 100%; }
 .diff-stats-text-added { color: var(--color-green); font-weight: 600; }
 .diff-stats-text-removed { color: var(--color-red); font-weight: 600; }
 .version-actions { display: flex; gap: 6px; flex-shrink: 0; }
@@ -201,6 +237,28 @@
 .diff-word-added, .diff-word-removed { user-select: text !important; -webkit-user-select: text !important; text-decoration: none !important; }
 .diff-line-bg-removed .line-content { text-decoration: none !important; }
 .diff-line .diff-marker { margin-right: 6px; opacity: 0.5; font-family: var(--font-monospace); align-self: center; user-select: none !important; -webkit-user-select: none !important; }
+
+/* 差异上下文折叠提示 (...) */
+.diff-line.diff-context-gap {
+    background-color: rgba(var(--background-modifier-border-rgb), 0.2) !important;
+    justify-content: center;
+    color: var(--text-muted);
+    font-style: italic;
+    padding: 4px 0;
+    cursor: default;
+    border-top: 1px dashed var(--background-modifier-border);
+    border-bottom: 1px dashed var(--background-modifier-border);
+}
+.diff-line.diff-context-gap:hover { transform: none; }
+.diff-line.diff-context-gap .diff-marker { letter-spacing: 4px; opacity: 0.6; margin: 0; }
+
+/* 完全空文件的居中提示 */
+.diff-empty-notice {
+    display: flex; align-items: center; justify-content: center;
+    height: 100%; min-height: 150px;
+    color: var(--text-muted); font-size: 1.1em; font-style: italic;
+    background: var(--background-secondary); border-radius: 6px;
+}
 
 /* 移动端 Diff 适配基础 (桌面端保留) */
 .is-mobile .diff-line.actions-visible .line-number-container { width: auto !important; min-width: 45px !important; display: flex !important; flex-direction: row !important; align-items: center !important; justify-content: flex-start !important; background: var(--background-primary); z-index: 5; }
@@ -520,49 +578,6 @@ button.mod-warning {
 }
 button.mod-warning:hover {
     background-color: #d32f2f !important; /* 稍微深一点的红色 */
-}
-
-/* ======================================================================= */
-/* ======================== 边缘细节样式补全 (Patch) ======================= */
-/* ======================================================================= */
-
-/* 1. 差异视图：代码折叠时的省略号分隔行 (...) */
-.diff-line.diff-context-gap {
-    background-color: rgba(var(--background-modifier-border-rgb), 0.2) !important;
-    justify-content: center;
-    color: var(--text-muted);
-    font-style: italic;
-    padding: 4px 0;
-    cursor: default;
-    border-top: 1px dashed var(--background-modifier-border);
-    border-bottom: 1px dashed var(--background-modifier-border);
-}
-.diff-line.diff-context-gap:hover {
-    transform: none; /* 取消 hover 时的右移效果 */
-}
-.diff-line.diff-context-gap .diff-marker {
-    letter-spacing: 4px;
-    opacity: 0.6;
-    margin: 0;
-}
-
-/* 2. 差异视图：对比文件完全为空时的居中提示 */
-.diff-empty-notice {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    height: 100%;
-    color: var(--text-muted);
-    font-size: 1.1em;
-    font-style: italic;
-    background: var(--background-secondary);
-    border-radius: 6px;
-    min-height: 150px;
-}
-
-/* 3. 历史列表：补全(修改)统计条的高度 */
-.diff-stats-modified {
-    height: 100%;
 }
 
 /* ======================================================================= */
