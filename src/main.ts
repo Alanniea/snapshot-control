@@ -662,9 +662,8 @@ export default class VersionControlPlugin extends Plugin {
         const existingDebouncer = this.debouncedSaves.get(file.path);
         if (existingDebouncer) this.debouncedSaves.delete(file.path);
 
-        new VersionMessageModal(this.app, this.settings, async (message, tags) => {
-            await this.createVersion(file, message, true, tags, true);
-        }).open();
+        // 直接保存版本，跳过输入界面，默认描述为 [Manual Save]
+        await this.createVersion(file, '[Manual Save]', true, [], true);
     }
 
     normalizeText(text: string): string { return (!text) ? "" : text.replace(/\r\n/g, "\n").replace(/\r/g, "\n"); }
@@ -2206,88 +2205,6 @@ class NoteEditModal extends Modal {
     }
 }
 
-class VersionMessageModal extends Modal {
-    result: string = '';
-    tags: string[] = [];
-    onSubmit: (result: string, tags: string[]) => void;
-    inputEl: TextComponent;
-    settings: VersionControlSettings;
-
-    constructor(app: App, settings: VersionControlSettings, onSubmit: (result: string, tags: string[]) => void) {
-        super(app);
-        this.settings = settings;
-        this.onSubmit = onSubmit;
-    }
-
-    onOpen() {
-        const { contentEl } = this;
-        contentEl.createEl('h2', { text: '创建版本' });
-
-        new Setting(contentEl)
-            .setName('提交信息')
-            .setDesc('描述此版本的更改内容')
-            .addText(text => {
-                this.inputEl = text;
-                text.setPlaceholder('例如:添加新章节、修复错误等...')
-                    .onChange(value => {
-                        this.result = value;
-                    });
-                text.inputEl.style.width = '100%';
-                setTimeout(() => {
-                    if (text.inputEl) {
-                        text.inputEl.focus();
-                    }
-                }, 50);
-            });
-
-        if (this.settings.enableVersionTags && this.settings.defaultTags.length > 0) {
-            const tagSection = contentEl.createEl('div', { cls: 'tag-section' });
-            tagSection.createEl('h3', { text: '添加标签 (可选)' });
-            const tagContainer = tagSection.createEl('div', { cls: 'tag-list' });
-
-            this.settings.defaultTags.forEach(tag => {
-                const tagEl = tagContainer.createEl('span', { text: tag, cls: 'tag-item' });
-                tagEl.addEventListener('click', () => {
-                    if (tagEl.hasClass('tag-selected')) {
-                        tagEl.removeClass('tag-selected');
-                        this.tags = this.tags.filter(t => t !== tag);
-                    } else {
-                        tagEl.addClass('tag-selected');
-                        this.tags.push(tag);
-                    }
-                });
-            });
-        }
-
-        const buttonContainer = contentEl.createEl('div', { cls: 'modal-button-container' });
-        
-        const cancelBtn = buttonContainer.createEl('button', { text: '取消' });
-        cancelBtn.addEventListener('click', () => this.close());
-
-        const createBtn = buttonContainer.createEl('button', { 
-            text: '创建',
-            cls: 'mod-cta'
-        });
-        createBtn.addEventListener('click', () => {
-            this.close();
-            this.onSubmit(this.result || '[Manual Save]', this.tags);
-        });
-
-        this.inputEl.inputEl.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                this.close();
-                this.onSubmit(this.result || '[Manual Save]', this.tags);
-            }
-        });
-    }
-
-    onClose() {
-        const { contentEl } = this;
-        contentEl.empty();
-    }
-}
-
 class ConfirmModal extends Modal {
     title: string;
     message: string;
@@ -2415,43 +2332,26 @@ class DiffModal extends Modal {
             attr: { 'aria-label': '保存当前文件为新版本', 'title': '保存新版本' } 
         });
         saveNewVersionBtn.innerHTML = '💾'; 
-        saveNewVersionBtn.addEventListener('click', (e) => {
+        saveNewVersionBtn.addEventListener('click', async (e) => {
             e.preventDefault();
             e.stopPropagation();
 
-            const currentModalContainer = this.modalEl.parentElement;
-            if (currentModalContainer) {
-                currentModalContainer.style.display = 'none';
+            saveNewVersionBtn.innerHTML = '⏳';
+            saveNewVersionBtn.disabled = true;
+            try {
+                await this.plugin.createVersion(this.file, '[Manual Save]', true, [], true);
+                this.allVersions = await this.plugin.getAllVersions(this.file.path);
+                this.updateSelectorButtonLabels();
+                
+                if (this.versionId === 'current' || this.secondVersionId === 'current') {
+                    await this.updateDiffView();
+                }
+            } catch (err: unknown) {
+                console.error("保存新版本或刷新视图失败", getErrorMessage(err), err);
+            } finally {
+                saveNewVersionBtn.innerHTML = '💾';
+                saveNewVersionBtn.disabled = false;
             }
-
-            const msgModal = new VersionMessageModal(this.app, this.plugin.settings, async (message, tags) => {
-                saveNewVersionBtn.innerHTML = '⏳';
-                saveNewVersionBtn.disabled = true;
-                try {
-                    await this.plugin.createVersion(this.file, message, true, tags, true);
-                    this.allVersions = await this.plugin.getAllVersions(this.file.path);
-                    this.updateSelectorButtonLabels();
-                    
-                    if (this.versionId === 'current' || this.secondVersionId === 'current') {
-                        await this.updateDiffView();
-                    }
-                } catch (err: unknown) {
-                    console.error("保存新版本或刷新视图失败", getErrorMessage(err), err);
-                } finally {
-                    saveNewVersionBtn.innerHTML = '💾';
-                    saveNewVersionBtn.disabled = false;
-                }
-            });
-
-            const originalOnClose = msgModal.onClose.bind(msgModal);
-            msgModal.onClose = () => {
-                originalOnClose();
-                if (currentModalContainer) {
-                    currentModalContainer.style.display = '';
-                }
-            };
-
-            msgModal.open();
         });
 
         const togglePanelBtn = headerActions.createEl('button', { 
