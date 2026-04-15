@@ -186,7 +186,6 @@ export default class VersionControlPlugin extends Plugin {
         this.addCommand({ id: 'create-full-snapshot', name: '保存全库版本', callback: () => this.createFullSnapshot() });
         this.addCommand({ id: 'optimize-storage', name: '优化存储空间', callback: () => this.optimizeAllVersionFiles() });
         this.addCommand({ id: 'check-version-integrity', name: '检查版本完整性', callback: () => this.checkAllVersionsIntegrity() });
-        this.addCommand({ id: 'star-current-version', name: '标记当前版本为重要', callback: () => this.starLastVersion() });
 
         this.addSettingTab(new VersionControlSettingTab(this.app, this));
 
