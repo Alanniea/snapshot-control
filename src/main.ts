@@ -1950,15 +1950,6 @@ class VersionHistoryView extends ItemView {
     showVersionContextMenu(event: MouseEvent, file: TFile, version: VersionData, isLocked: boolean = false) {
         const menu = new Menu();
         
-        // 保留这项即可，因为这项操作比较复杂（需要二次选择版本），不适合放卡片上
-        menu.addItem((item) =>
-            item.setTitle('与另一个版本对比')
-                .setIcon('files')
-                .onClick(() => {
-                    this.selectVersionForCompare(file, version.id);
-                })
-        );
-        
         menu.addSeparator();
         if (this.plugin.settings.enableVersionTags) {
             menu.addItem((item) => item.setTitle('编辑标签').setIcon('tag').onClick(() => { new TagEditModal(this.app, this.plugin, file.path, version.id, version.tags || []).open(); }));
