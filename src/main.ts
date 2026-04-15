@@ -182,10 +182,6 @@ export default class VersionControlPlugin extends Plugin {
 
         this.registerView('version-history', (leaf) => new VersionHistoryView(leaf, this));
 
-        this.addRibbonIcon('history', '版本历史', () => {
-            this.activateVersionHistoryView();
-        });
-
         this.addCommand({ id: 'create-version', name: '保存新版本', callback: () => this.createManualVersion() });
         this.addCommand({ id: 'show-version-history', name: '显示版本历史', callback: () => this.activateVersionHistoryView() });
         this.addCommand({ id: 'create-full-snapshot', name: '保存全库版本', callback: () => this.createFullSnapshot() });
