@@ -1537,13 +1537,23 @@ class VersionHistoryView extends ItemView {
         searchInput.value = this.searchQuery;
         searchInput.addEventListener('input', (e) => { this.searchQuery = (e.target as HTMLInputElement).value; this.currentPage = 0; this.refresh(); });
 
-        const starFilterBtn = actions.createEl('button', { text: this.showStarredOnly ? '已筛星标' : '筛选星标', cls: this.showStarredOnly ? 'mod-cta' : '' });
+        // --- 重构：为按钮添加图标以便在移动端显示 ---
+        const starFilterBtn = actions.createEl('button', { 
+            cls: this.showStarredOnly ? 'mod-cta' : '',
+            attr: { 'aria-label': '仅显示星标版本' }
+        });
+        setIcon(starFilterBtn, 'star');
+        starFilterBtn.createEl('span', { text: this.showStarredOnly ? '已筛星标' : '筛选星标' });
         starFilterBtn.addEventListener('click', () => { this.showStarredOnly = !this.showStarredOnly; this.currentPage = 0; this.refresh(); });
 
-        const createBtn = actions.createEl('button', { text: '+ 创建', cls: 'mod-cta' });
+        const createBtn = actions.createEl('button', { cls: 'mod-cta', attr: { 'aria-label': '创建新版本' } });
+        setIcon(createBtn, 'plus-circle');
+        createBtn.createEl('span', { text: '创建' });
         createBtn.addEventListener('click', () => { this.plugin.createManualVersion(); });
 
-        const moreMenuBtn = actions.createEl('button', { text: '更多' });
+        const moreMenuBtn = actions.createEl('button', { attr: { 'aria-label': '更多操作' } });
+        setIcon(moreMenuBtn, 'more-horizontal');
+        moreMenuBtn.createEl('span', { text: '更多' });
         moreMenuBtn.addEventListener('click', (e) => {
             const menu = new Menu();
             menu.addItem((item) => item.setTitle('📊 查看统计').setIcon('bar-chart').onClick(() => { this.showDetailedStats(); }));

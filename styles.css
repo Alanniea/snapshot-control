@@ -126,7 +126,8 @@
 .version-header-actions { display: flex; gap: 10px; margin-top: 15px; flex-wrap: wrap; }
 .version-search { flex: 1; min-width: 200px; padding: 6px 12px; background: var(--background-primary); color: var(--text-normal); border: 1px solid var(--background-modifier-border); border-radius: 4px; font-size: 13px; }
 .version-search:focus { outline: none; border-color: var(--interactive-accent); }
-.version-header-actions button { padding: 6px 12px; background: var(--interactive-normal); color: var(--text-normal); border: 1px solid var(--background-modifier-border); border-radius: 4px; cursor: pointer; font-size: 13px; transition: all 0.2s ease; }
+.version-header-actions button { display: flex; align-items: center; gap: 6px; padding: 6px 12px; background: var(--interactive-normal); color: var(--text-normal); border: 1px solid var(--background-modifier-border); border-radius: 4px; cursor: pointer; font-size: 13px; transition: all 0.2s ease; }
+.version-header-actions button .lucide { display: none; } /* 桌面端默认隐藏图标 */
 .version-header-actions button:hover { background: var(--interactive-hover); }
 .version-header-actions button.mod-cta { background: var(--interactive-accent); color: var(--text-on-accent); border-color: var(--interactive-accent); }
 .version-header-actions button.mod-cta:hover { background: var(--interactive-accent-hover); }
@@ -239,26 +240,12 @@
 .diff-line .diff-marker { margin-right: 6px; opacity: 0.5; font-family: var(--font-monospace); align-self: center; user-select: none !important; -webkit-user-select: none !important; }
 
 /* 差异上下文折叠提示 (...) */
-.diff-line.diff-context-gap {
-    background-color: rgba(var(--background-modifier-border-rgb), 0.2) !important;
-    justify-content: center;
-    color: var(--text-muted);
-    font-style: italic;
-    padding: 4px 0;
-    cursor: default;
-    border-top: 1px dashed var(--background-modifier-border);
-    border-bottom: 1px dashed var(--background-modifier-border);
-}
+.diff-line.diff-context-gap { background-color: rgba(var(--background-modifier-border-rgb), 0.2) !important; justify-content: center; color: var(--text-muted); font-style: italic; padding: 4px 0; cursor: default; border-top: 1px dashed var(--background-modifier-border); border-bottom: 1px dashed var(--background-modifier-border); }
 .diff-line.diff-context-gap:hover { transform: none; }
 .diff-line.diff-context-gap .diff-marker { letter-spacing: 4px; opacity: 0.6; margin: 0; }
 
 /* 完全空文件的居中提示 */
-.diff-empty-notice {
-    display: flex; align-items: center; justify-content: center;
-    height: 100%; min-height: 150px;
-    color: var(--text-muted); font-size: 1.1em; font-style: italic;
-    background: var(--background-secondary); border-radius: 6px;
-}
+.diff-empty-notice { display: flex; align-items: center; justify-content: center; height: 100%; min-height: 150px; color: var(--text-muted); font-size: 1.1em; font-style: italic; background: var(--background-secondary); border-radius: 6px; }
 
 /* 移动端 Diff 适配基础 (桌面端保留) */
 .is-mobile .diff-line.actions-visible .line-number-container { width: auto !important; min-width: 45px !important; display: flex !important; flex-direction: row !important; align-items: center !important; justify-content: flex-start !important; background: var(--background-primary); z-index: 5; }
@@ -726,8 +713,35 @@ button.mod-warning:hover {
     }
     
     .diff-toolbar button:hover::after, .diff-toolbar select:hover::after { display: none; }
-    .version-header-actions { flex-direction: column; }
-    .version-search { width: 100%; }
+    
+    /* 侧边栏头部按钮响应式：图标化 */
+    .version-header-actions {
+        flex-direction: row; /* 恢复横向排列 */
+        flex-wrap: nowrap; /* 不换行 */
+        justify-content: space-between; /* 两端对齐 */
+        align-items: center;
+    }
+    .version-search {
+        flex-grow: 1; /* 搜索框占据多余空间 */
+        flex-basis: 100%; /* 单独占一行 */
+        order: 1; /* 排在最前面 */
+    }
+    .version-header-actions button {
+        padding: 8px; /* 调整按钮内边距，使其更像图标按钮 */
+        min-width: 40px;
+        flex-grow: 1; /* 让按钮平均分配空间 */
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        order: 2; /* 排在搜索框后面 */
+    }
+    .version-header-actions button span {
+        display: none; /* 在移动端隐藏文字 */
+    }
+    .version-header-actions button .lucide {
+        display: inline-block; /* 在移动端显示图标 */
+        margin: 0; /* 清除图标的默认边距 */
+    }
 
     /* === 4. 设置面板手机端适配 === */
     .stats-grid { 
