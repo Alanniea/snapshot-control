@@ -716,31 +716,31 @@ button.mod-warning:hover {
     
     /* 侧边栏头部按钮响应式：图标化 */
     .version-header-actions {
-        flex-direction: row; /* 恢复横向排列 */
-        flex-wrap: nowrap; /* 不换行 */
-        justify-content: space-between; /* 两端对齐 */
+        flex-direction: row;
+        flex-wrap: nowrap;
+        justify-content: space-between;
         align-items: center;
+        gap: 8px;
     }
     .version-search {
-        flex-grow: 1; /* 搜索框占据多余空间 */
-        flex-basis: 100%; /* 单独占一行 */
-        order: 1; /* 排在最前面 */
+        flex: 1;
+        min-width: 100px;
     }
     .version-header-actions button {
-        padding: 8px; /* 调整按钮内边距，使其更像图标按钮 */
+        padding: 8px;
         min-width: 40px;
-        flex-grow: 1; /* 让按钮平均分配空间 */
+        flex-grow: 0;
+        flex-shrink: 0;
         display: flex;
         justify-content: center;
         align-items: center;
-        order: 2; /* 排在搜索框后面 */
     }
     .version-header-actions button span {
-        display: none; /* 在移动端隐藏文字 */
+        display: none;
     }
     .version-header-actions button .lucide {
-        display: inline-block; /* 在移动端显示图标 */
-        margin: 0; /* 清除图标的默认边距 */
+        display: inline-block;
+        margin: 0;
     }
 
     /* === 4. 设置面板手机端适配 === */
