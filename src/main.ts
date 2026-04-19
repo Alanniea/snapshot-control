@@ -2599,7 +2599,7 @@ class DiffModal extends Modal {
             this.allVersions.forEach((version) => {
                 menu.addItem((item) =>
                     item
-                        .setTitle(`${this.plugin.formatTime(version.timestamp)}`) // 删除了后面的 message
+                        .setTitle(`${this.plugin.formatTime(version.timestamp)}`) 
                         .setIcon('history')
                         .onClick(() => {
                             this.handleVersionChange(side, version.id);
@@ -4261,7 +4261,41 @@ class IntegrityReportModal extends Modal {
             successDiv.createEl('h3', { text: '✅ 所有检查通过' });
             successDiv.createEl('p', { text: '未发现损坏的版本记录。' });
         } else {
-            contentEl.createEl('p', { text: `⚠️ 发现 ${this.report.length} 个文件存在问题:` });
+            const headerContainer = contentEl.createEl('div', { attr: { style: 'display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;' } });
+            headerContainer.createEl('p', { text: `⚠️ 发现 ${this.report.length} 个文件存在问题:`, attr: { style: 'margin: 0;' } });
+            
+            const repairAllBtn = headerContainer.createEl('button', { text: '✨ 一键修复所有哈希', cls: 'mod-cta' });
+            
+            repairAllBtn.addEventListener('click', async () => {
+                repairAllBtn.setText('正在努力修复中...');
+                repairAllBtn.disabled = true;
+                
+                let successCount = 0;
+                let failCount = 0;
+                const total = this.report.length;
+                const notice = new Notice(`正在批量修复哈希... 0/${total}`, 0);
+
+                for (let i = 0; i < total; i++) {
+                    const item = this.report[i]!;
+                    try {
+                        const repaired = await this.plugin.repairVersionFile(item.filePath);
+                        if (repaired) successCount++;
+                        else failCount++; 
+                    } catch (e: unknown) {
+                        failCount++;
+                    }
+                    
+                    if (i % 5 === 0) {
+                        notice.setMessage(`正在批量修复哈希... ${i + 1}/${total}`);
+                        repairAllBtn.setText(`修复中 ${i + 1}/${total}...`);
+                        await this.plugin.yieldToMain();
+                    }
+                }
+
+                notice.hide();
+                new Notice(`✅ 批量修复完成！\n成功修复 ${successCount} 个文件。\n（若有残留错误，可能是文件严重损坏）`, 8000);
+                this.close(); 
+            });
             
             const listContainer = contentEl.createEl('div', { cls: 'integrity-report-list' });
             
@@ -4276,12 +4310,15 @@ class IntegrityReportModal extends Modal {
 
                 const repairBtn = fileContainer.createEl('button', { text: '尝试修复哈希' });
                 repairBtn.addEventListener('click', async () => {
+                    repairBtn.setText('修复中...');
+                    repairBtn.disabled = true;
                     const repaired = await this.plugin.repairVersionFile(item.filePath);
                     if (repaired) {
-                        repairBtn.setText('修复成功');
-                        repairBtn.disabled = true;
+                        repairBtn.setText('✅ 修复成功');
+                        repairBtn.addClass('mod-cta'); 
                     } else {
-                        new Notice('无法自动修复，请手动检查文件。');
+                        repairBtn.setText('修复失败');
+                        new Notice('无法自动修复，可能是依赖链断裂或内容已损坏。');
                     }
                 });
             });
