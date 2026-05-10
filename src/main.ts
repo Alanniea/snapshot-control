@@ -217,6 +217,14 @@ export default class VersionControlPlugin extends Plugin {
             })
         );
 
+        // --- 新增：监听 APP 切入后台/失去焦点的事件 ---
+        this.registerDomEvent(document, 'visibilitychange', () => {
+            if (document.visibilityState === 'hidden') this.forceSaveOnBackground();
+        });
+        this.registerDomEvent(window, 'pagehide', () => {
+            this.forceSaveOnBackground();
+        });
+
         if (this.settings.autoSave && this.settings.autoSaveOnInterval) {
             this.startAutoSave();
         }
@@ -531,6 +539,8 @@ export default class VersionControlPlugin extends Plugin {
     getSaveTypeLabel(message: string): string { 
         if (message.includes('[Auto Save - On Modify]')) return '修改保存';
         if (message.includes('[Auto Save - Interval]')) return '定时保存';
+        // --- 新增：后台保存标签 ---
+        if (message.includes('[Auto Save - Background]')) return '后台保存';
         if (message.includes('[Full Snapshot]')) return '全库版本';
         if (message.includes('[Before Restore]')) return '恢复前备份';
         if (message.includes('[Auto Save')) return '自动保存';
@@ -650,6 +660,25 @@ export default class VersionControlPlugin extends Plugin {
         const modifiedFiles = await this.getModifiedFiles();
         for (const item of modifiedFiles) {
             if (!this.isExcluded(item.file.path)) { await this.autoSaveFile(item.file, '[Auto Save - Interval]'); }
+        }
+    }
+
+    // --- 新增：APP切入后台时强制保存 ---
+    private async forceSaveOnBackground() {
+        if (!this.settings.autoSave || this.isRestoring || this.isUnloaded) return;
+
+        // 1. 优先抢救当前正在编辑的文件
+        const activeFile = this.app.workspace.getActiveFile();
+        if (activeFile && !this.isExcluded(activeFile.path)) {
+            await this.autoSaveFile(activeFile, '[Auto Save - Background]');
+        }
+
+        // 2. 顺便扫描其他可能没来得及保存的后台文件
+        const modifiedFiles = await this.getModifiedFiles();
+        for (const item of modifiedFiles) {
+            if (item.file.path !== activeFile?.path && !this.isExcluded(item.file.path)) {
+                await this.autoSaveFile(item.file, '[Auto Save - Background]');
+            }
         }
     }
     
