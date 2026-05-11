@@ -541,6 +541,7 @@ export default class VersionControlPlugin extends Plugin {
     getSaveTypeLabel(message: string): string { 
         if (message.includes('[Auto Save - On Modify]')) return '修改保存';
         if (message.includes('[Auto Save - Interval]')) return '定时保存';
+        // --- 新增：后台保存标签 ---
         if (message.includes('[Auto Save - Background]')) return '后台保存';
         if (message.includes('[Full Snapshot]')) return '全库版本';
         if (message.includes('[Before Restore]')) return '恢复前备份';
@@ -1203,10 +1204,26 @@ export default class VersionControlPlugin extends Plugin {
                 try {
                     const stat = await this.app.vault.adapter.stat(versionPath);
                     if (!stat) continue;
+                    // 第一层拦截：如果文件修改时间确实更新了
                     if (file.stat.mtime > stat.mtime + 2000) {
                         const versionFile = await this.loadVersionFile(file.path);
-                        const lastTime = versionFile.versions.length > 0 ? versionFile.versions[0]!.timestamp : 0;
-                        modifiedFiles.push({ file, lastVersionTime: lastTime });
+                        const lastVersion = versionFile.versions.length > 0 ? versionFile.versions[0] : null;
+                        
+                        if (lastVersion) {
+                            // --- 新增：内容真实性校验 (防止改了又删回去的情况) ---
+                            const rawContent = await this.app.vault.read(file);
+                            const content = this.normalizeText(rawContent);
+                            const currentHash = this.hashContent(content);
+                            const currentHashOld = this.legacyStringHash(content);
+                            
+                            // 如果当前内容算出来的哈希，跟上一个版本的哈希完全一样，说明内容其实没变！直接跳过。
+                            if (lastVersion.hash === currentHash || lastVersion.hash === currentHashOld) {
+                                continue;
+                            }
+                            modifiedFiles.push({ file, lastVersionTime: lastVersion.timestamp });
+                        } else {
+                            modifiedFiles.push({ file, lastVersionTime: 0 });
+                        }
                     }
                 } catch (e: unknown) {}
             } else { modifiedFiles.push({ file, lastVersionTime: 0 }); }
