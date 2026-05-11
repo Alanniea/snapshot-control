@@ -541,7 +541,6 @@ export default class VersionControlPlugin extends Plugin {
     getSaveTypeLabel(message: string): string { 
         if (message.includes('[Auto Save - On Modify]')) return '修改保存';
         if (message.includes('[Auto Save - Interval]')) return '定时保存';
-        // --- 新增：后台保存标签 ---
         if (message.includes('[Auto Save - Background]')) return '后台保存';
         if (message.includes('[Full Snapshot]')) return '全库版本';
         if (message.includes('[Before Restore]')) return '恢复前备份';
@@ -1383,6 +1382,7 @@ class VersionHistoryView extends ItemView {
     totalVersions: number = 0;
     filterTag: string | null = null;
     showStarredOnly: boolean = false;
+    showUniqueFilesOnly: boolean = true; // 新增：全局历史默认只显示单文件最新记录
     
     currentViewMode: ViewMode = 'current';
     isRefreshing: boolean = false;
@@ -1927,14 +1927,39 @@ class VersionHistoryView extends ItemView {
     }
 
     async renderGlobalHistory(container: HTMLElement) {
-        container.createEl('h3', { text: '🌍 全库版本时间轴' });
+        const header = container.createEl('div', { attr: { style: 'display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;' } });
+        header.createEl('h3', { text: '🌍 全库版本时间轴', attr: { style: 'margin: 0;' } });
+        
+        const filterBtn = header.createEl('button', { 
+            cls: this.showUniqueFilesOnly ? 'mod-cta' : '',
+            attr: { 'aria-label': '切换：只显示最新 / 显示全部', style: 'padding: 4px 10px; font-size: 12px; display: flex; align-items: center; gap: 4px;' }
+        });
+        setIcon(filterBtn, this.showUniqueFilesOnly ? 'files' : 'list');
+        filterBtn.createEl('span', { text: this.showUniqueFilesOnly ? '单文件最新' : '显示全部' });
+        filterBtn.addEventListener('click', () => { 
+            this.showUniqueFilesOnly = !this.showUniqueFilesOnly; 
+            this.refresh(); 
+        });
 
-        const history = await this.plugin.getGlobalHistory(100); 
+        let history = await this.plugin.getGlobalHistory(300); // 稍微取多一点，防止去重后数量太少
         if (history.length === 0) { this.renderEmptyState(container, '未找到任何版本记录'); return; }
+
+        // --- 新增：去重逻辑 ---
+        if (this.showUniqueFilesOnly) {
+            const seen = new Set<string>();
+            history = history.filter(item => {
+                if (seen.has(item.filePath)) return false;
+                seen.add(item.filePath);
+                return true;
+            });
+        }
+        
+        // 限制最终显示数量，防止卡顿
+        history = history.slice(0, 50);
 
         const list = container.createEl('div', { cls: 'version-list' });
 
-        // --- 补全：在全库历史中也计算依赖关系 ---
+        // --- 在全库历史中也计算依赖关系 ---
         const globalDependentIds = new Set<string>();
         history.forEach(item => {
             if (item.version.baseVersionId) globalDependentIds.add(item.version.baseVersionId);
@@ -1973,7 +1998,7 @@ class VersionHistoryView extends ItemView {
             if (version.message.includes('[Auto Save')) msgRow.createEl('span', { text: '自动', cls: 'version-tag version-tag-auto' });
             else msgRow.createEl('span', { text: '手动', cls: 'version-tag version-tag-manual' });
 
-            // --- 补全：显示依赖基准标签 ---
+            // --- 显示依赖基准标签 ---
             if (globalDependentIds.has(version.id)) {
                 msgRow.createEl('span', { text: '🔒 依赖', cls: 'version-tag version-tag-locked', attr: { title: '被其他版本依赖' } });
             }
