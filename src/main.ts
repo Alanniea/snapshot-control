@@ -247,13 +247,13 @@ export default class VersionControlPlugin extends Plugin {
                 tick++;
                 let hasRecentSave = false;
                 
-                // 1. 状态栏高频秒级刷新（仅在1分钟内才每秒执行DOM替换）
-                if (this.activeFileLastSaveTime !== null && (Date.now() - this.activeFileLastSaveTime < 60000)) {
+                // 状态栏高频秒级刷新：放宽到 62000 毫秒，确保能执行到 60秒 的 "1分钟前" 过渡帧
+                if (this.activeFileLastSaveTime !== null && (Date.now() - this.activeFileLastSaveTime < 62000)) {
                     hasRecentSave = true;
                     this.renderStatusBarTime();
                 }
 
-                // 2. 侧边栏视图刷新（平时 60 秒一次，有刚保存的最新记录时 5 秒一次）
+                // 侧边栏视图刷新（平时 60 秒一次，有刚保存的最新记录时 5 秒一次）
                 if (tick % 60 === 0 || (hasRecentSave && tick % 5 === 0)) {
                     const leaves = this.app.workspace.getLeavesOfType('version-history');
                     leaves.forEach(leaf => { 
@@ -1281,12 +1281,14 @@ export default class VersionControlPlugin extends Plugin {
         return modifiedFiles.sort((a, b) => b.file.stat.mtime - a.file.stat.mtime);
     }
 
-    // --- 智能相对时间格式化（60秒内显示精确秒数） ---
+    // --- 智能相对时间格式化（平滑过渡到 1 分钟） ---
     getRelativeTime(timestamp: number): string { 
         const diff = Math.max(0, Date.now() - timestamp);
         if (diff < 60000) {
             const seconds = Math.floor(diff / 1000);
             return `${seconds}秒前`;
+        } else if (diff >= 60000 && diff < 120000) {
+            return `1分钟前`;
         }
         return moment(timestamp).fromNow(); 
     }
