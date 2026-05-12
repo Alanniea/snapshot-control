@@ -1995,15 +1995,45 @@ class VersionHistoryView extends ItemView {
             if (!file) headerRow.createEl('span', { text: '(已删除)', attr: { style: 'color:var(--text-error); font-size:0.8em;' } });
 
             const msgRow = info.createEl('div', { cls: 'version-message-row' });
-            if (version.message.includes('[Auto Save')) msgRow.createEl('span', { text: '自动', cls: 'version-tag version-tag-auto' });
-            else msgRow.createEl('span', { text: '手动', cls: 'version-tag version-tag-manual' });
+            
+            // --- 同步当前文件的保存类型标签 ---
+            const saveTypeLabel = this.plugin.getSaveTypeLabel(version.message);
+            let tagClass = 'version-tag-auto';
+            if (saveTypeLabel === '手动保存') tagClass = 'version-tag-manual';
+            else if (saveTypeLabel === '全库版本') tagClass = 'version-tag-snapshot';
+            else if (saveTypeLabel === '恢复前备份') tagClass = 'version-tag-backup';
+            msgRow.createEl('span', { text: saveTypeLabel, cls: `version-tag ${tagClass}` });
 
-            // --- 显示依赖基准标签 ---
+            // --- 同步 增量/完整 标签 ---
+            if (version.diff) msgRow.createEl('span', { text: '增量', cls: 'version-tag version-tag-incremental' });
+            else if (version.content) msgRow.createEl('span', { text: '完整', cls: 'version-tag version-tag-full' });
+
+            // --- 依赖基准标签 ---
             if (globalDependentIds.has(version.id)) {
-                msgRow.createEl('span', { text: '🔒 依赖', cls: 'version-tag version-tag-locked', attr: { title: '被其他版本依赖' } });
+                msgRow.createEl('span', { text: '🔒 依赖基准', cls: 'version-tag version-tag-locked', attr: { title: '被其他增量版本依赖，为保证数据完整性，不可删除' } });
             }
 
-            msgRow.createEl('span', { text: version.message.replace(/\[.*?\]/g, '').trim() || '无描述' });
+            // --- 同步自定义标签 ---
+            if (version.tags && version.tags.length > 0) {
+                version.tags.forEach(tag => {
+                    msgRow.createEl('span', { text: tag, cls: 'version-tag version-tag-custom' });
+                });
+            }
+
+            // --- 显示原始描述 ---
+            const pureMessage = version.message.replace(/\[.*?\]/g, '').trim();
+            if (pureMessage) {
+                msgRow.createEl('span', { text: pureMessage });
+            }
+
+            // --- 同步备注 (Note) ---
+            if (version.note && !this.plugin.settings.compactHistoryView) {
+                info.createEl('div', { text: `📝 ${version.note}`, cls: 'version-note' });
+            }
+
+            // --- 同步文件大小显示 ---
+            const statsRow = info.createEl('div', { cls: 'version-stats-row' });
+            statsRow.createEl('span', { text: this.plugin.formatFileSize(version.size), cls: 'version-size' });
 
             const actions = item.createEl('div', { cls: 'version-actions' });
             if (file) {
