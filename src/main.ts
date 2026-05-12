@@ -240,28 +240,23 @@ export default class VersionControlPlugin extends Plugin {
 
         await this.ensureVersionFolder();
 
-        // --- 智能混合刷新定时器：极低消耗的秒级状态更新 ---
+        // --- 核心修复：绝对每秒刷新定时器 ---
         let tick = 0;
         this.registerInterval(
             window.setInterval(() => { 
                 tick++;
-                let hasRecentSave = false;
                 
-                // 状态栏高频秒级刷新：放宽到 62000 毫秒，确保能执行到 60秒 的 "1分钟前" 过渡帧
-                if (this.activeFileLastSaveTime !== null && (Date.now() - this.activeFileLastSaveTime < 62000)) {
-                    hasRecentSave = true;
-                    this.renderStatusBarTime();
-                }
+                // 1. 状态栏：无论过去多久，每秒强制更新文本，彻底解决卡死问题
+                this.renderStatusBarTime();
 
-                // 侧边栏视图刷新（平时 60 秒一次，有刚保存的最新记录时 5 秒一次）
-                if (tick % 60 === 0 || (hasRecentSave && tick % 5 === 0)) {
+                // 2. 侧边栏视图：每 10 秒统一刷新一次相对时间
+                if (tick % 10 === 0) {
                     const leaves = this.app.workspace.getLeavesOfType('version-history');
                     leaves.forEach(leaf => { 
                         if (leaf.view instanceof VersionHistoryView) leaf.view.updateRelativeTimes(); 
                     });
                 }
                 
-                if (tick >= 60) tick = 0;
             }, 1000)
         );
 
@@ -1287,8 +1282,6 @@ export default class VersionControlPlugin extends Plugin {
         if (diff < 60000) {
             const seconds = Math.floor(diff / 1000);
             return `${seconds}秒前`;
-        } else if (diff >= 60000 && diff < 120000) {
-            return `1分钟前`;
         }
         return moment(timestamp).fromNow(); 
     }
