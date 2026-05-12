@@ -163,6 +163,9 @@ export default class VersionControlPlugin extends Plugin {
     statusBarItem: HTMLElement;
     versionCache: Map<string, VersionFile> = new Map();
     contentCache: LRUCache<string, string> = new LRUCache(50); 
+    
+    // --- 极速秒开核心：全局历史内存缓存 ---
+    globalHistoryCache: { version: VersionData, filePath: string, file: TFile | null }[] | null = null;
 
     fileLocks: Map<string, Promise<void>> = new Map();
     isRestoring: boolean = false; 
@@ -237,6 +240,13 @@ export default class VersionControlPlugin extends Plugin {
             window.setInterval(() => { this.updateAllRelativeTimes(); }, 60000)
         );
 
+        // --- 极速秒开核心：后台静默预热缓存 ---
+        setTimeout(() => {
+            if (!this.isUnloaded) {
+                this.getGlobalHistory(200).catch(() => {});
+            }
+        }, 5000); // 启动 5 秒后偷偷拉取数据
+
         if (this.settings.showNotifications) {
             new Notice('✅ 版本控制插件已启动');
         }
@@ -248,6 +258,12 @@ export default class VersionControlPlugin extends Plugin {
         this.debouncedSaves.clear();
         this.versionCache.clear();
         this.contentCache.clear();
+        this.globalHistoryCache = null;
+    }
+
+    // --- 极速秒开核心：清理全局缓存的方法 ---
+    clearGlobalCache() {
+        this.globalHistoryCache = null;
     }
 
     async yieldToMain() { return new Promise(resolve => setTimeout(resolve, 0)); }
@@ -500,6 +516,7 @@ export default class VersionControlPlugin extends Plugin {
                     this.contentCache.deletePrefix(oldPath + "::");
                     this.lastModifiedTime.delete(oldPath);
                     this.lastModifiedTime.set(file.path, versionFile.lastModified);
+                    this.clearGlobalCache(); // --- 极速秒开核心：数据改变，清除缓存 ---
                 } catch (e: unknown) { console.error("Rename Error", getErrorMessage(e), e); }
             }
         });
@@ -521,6 +538,7 @@ export default class VersionControlPlugin extends Plugin {
                 this.contentCache.deletePrefix(filePath + "::");
                 this.lastModifiedTime.delete(filePath);
                 this.debouncedSaves.delete(filePath);
+                this.clearGlobalCache(); // --- 极速秒开核心：数据改变，清除缓存 ---
             }
         });
     }
@@ -733,6 +751,7 @@ export default class VersionControlPlugin extends Plugin {
                             this.versionCache.set(file.path, versionFile);
                             this.refreshVersionHistoryView();
                             this.updateStatusBar();
+                            this.clearGlobalCache(); // --- 极速秒开核心：数据改变，清除缓存 ---
                             if (showNotification && this.settings.showNotifications) new Notice(`✅ 版本已保存 (自动保存已更新)`);
                             return;
                         }
@@ -802,6 +821,7 @@ export default class VersionControlPlugin extends Plugin {
             this.refreshVersionHistoryView();
             this.lastModifiedTime.set(file.path, timestamp);
             this.updateStatusBar();
+            this.clearGlobalCache(); // --- 极速秒开核心：数据改变，清除缓存 ---
             if (showNotification && this.settings.showNotifications) new Notice(`✅ 版本已保存: ${message}`);
         } catch (error: unknown) {
             console.error('保存版本失败:', getErrorMessage(error), error);
@@ -871,6 +891,7 @@ export default class VersionControlPlugin extends Plugin {
         }
 
         versionFile.versions = proposedList;
+        this.clearGlobalCache(); // --- 极速秒开核心：数据改变，清除缓存 ---
         return originalCount - versionFile.versions.length;
     }
 
@@ -1099,6 +1120,7 @@ export default class VersionControlPlugin extends Plugin {
                     await this.saveVersionFile(filePath, versionFile);
                     this.versionCache.set(filePath, versionFile);
                     this.refreshVersionHistoryView();
+                    this.clearGlobalCache(); // --- 极速秒开核心：数据改变，清除缓存 ---
                 }
             } catch (error: unknown) { }
         });
@@ -1114,6 +1136,7 @@ export default class VersionControlPlugin extends Plugin {
                     await this.saveVersionFile(filePath, versionFile);
                     this.versionCache.set(filePath, versionFile);
                     this.refreshVersionHistoryView();
+                    this.clearGlobalCache(); // --- 极速秒开核心：数据改变，清除缓存 ---
                 }
             } catch (error: unknown) { }
         });
@@ -1128,7 +1151,7 @@ export default class VersionControlPlugin extends Plugin {
                     versionFile.versions[index!]!.starred = !versionFile.versions[index!]!.starred;
                     await this.saveVersionFile(filePath, versionFile);
                     this.versionCache.set(filePath, versionFile);
-                    // 注意：此处移除了全局 refresh，交由 View 层的事件委托去局部刷新 DOM
+                    this.clearGlobalCache(); // --- 极速秒开核心：数据改变，清除缓存 ---
                 }
             } catch (error: unknown) {}
         });
@@ -1149,6 +1172,7 @@ export default class VersionControlPlugin extends Plugin {
                 await this.saveVersionFile(filePath, versionFile);
                 this.versionCache.set(filePath, versionFile);
                 this.refreshVersionHistoryView();
+                this.clearGlobalCache(); // --- 极速秒开核心：数据改变，清除缓存 ---
             } catch (error: unknown) {}
         });
     }
@@ -1167,6 +1191,7 @@ export default class VersionControlPlugin extends Plugin {
                 await this.saveVersionFile(filePath, versionFile);
                 this.versionCache.set(filePath, versionFile);
                 this.refreshVersionHistoryView();
+                this.clearGlobalCache(); // --- 极速秒开核心：数据改变，清除缓存 ---
             } catch (error: unknown) {}
         });
     }
@@ -1209,7 +1234,7 @@ export default class VersionControlPlugin extends Plugin {
                         const lastVersion = versionFile.versions.length > 0 ? versionFile.versions[0] : null;
                         
                         if (lastVersion) {
-                            // --- 新增：内容真实性校验 (防止改了又删回去的情况) ---
+                            // --- 内容真实性校验 (防止改了又删回去的情况) ---
                             const rawContent = await this.app.vault.read(file);
                             const content = this.normalizeText(rawContent);
                             const currentHash = this.hashContent(content);
@@ -1231,6 +1256,11 @@ export default class VersionControlPlugin extends Plugin {
     }
 
     async getGlobalHistory(limit: number = 100): Promise<{ version: VersionData, filePath: string, file: TFile | null }[]> {
+        // --- 极速秒开核心：如果内存里有缓存，直接 0 毫秒返回！ ---
+        if (this.globalHistoryCache) {
+            return this.globalHistoryCache.slice(0, limit);
+        }
+
         const adapter = this.app.vault.adapter;
         const versionFolder = this.settings.versionFolder;
         if (!await adapter.exists(versionFolder)) return [];
@@ -1243,24 +1273,34 @@ export default class VersionControlPlugin extends Plugin {
         }));
         fileStats.sort((a, b) => b.mtime - a.mtime);
 
-        const targetFiles = fileStats.slice(0, 30).map(item => item.file);
+        // 为了极速响应，首次提取时只读取最近修改的前 20 个文件
+        const targetFiles = fileStats.slice(0, 20).map(item => item.file);
         const allVersions: { version: VersionData, filePath: string, file: TFile | null }[] = [];
 
         let count = 0;
         for (const vFile of targetFiles) {
-            count++; if (count % 10 === 0) await this.yieldToMain();
+            count++; 
+            // 增加防卡顿频率，每处理 4 个文件释放一下主线程，防假死
+            if (count % 4 === 0) await this.yieldToMain();
             try {
                 const contentStr = await this.readCompressedOrRaw(vFile);
                 if (!contentStr) continue;
                 const data = JSON.parse(contentStr) as VersionFile;
                 if (!data.versions) continue;
+
+                // 顺手塞进内存缓存，一会儿点击“对比”或者“预览”时就能秒开了
+                this.versionCache.set(data.filePath, data);
+
                 const tFile = this.app.vault.getAbstractFileByPath(data.filePath);
-                data.versions.slice(0, 10).forEach(v => {
+                data.versions.slice(0, 15).forEach(v => {
                     allVersions.push({ version: v, filePath: data.filePath, file: (tFile instanceof TFile) ? tFile : null });
                 });
             } catch (e: unknown) {}
         }
         allVersions.sort((a, b) => b.version.timestamp - a.version.timestamp);
+        
+        // --- 极速秒开核心：保存到全局缓存 ---
+        this.globalHistoryCache = allVersions;
         return allVersions.slice(0, limit);
     }
 
@@ -1507,14 +1547,20 @@ class VersionHistoryView extends ItemView {
             this.refresh();
         });
 
-        const refreshBtn = tabBar.createEl('button', { cls: 'vc-global-refresh', attr: { 'aria-label': '强制刷新', 'title': '刷新' } });
+        const refreshBtn = tabBar.createEl('button', { cls: 'vc-global-refresh', attr: { 'aria-label': '强制刷新', 'title': '强制刷新全库缓存' } });
         setIcon(refreshBtn, 'refresh-cw'); 
         refreshBtn.addEventListener('click', async (e) => {
             e.preventDefault();
             if (this.isRefreshing) return; 
             refreshBtn.addClass('is-spinning'); 
+            
+            // 手动点击刷新按钮时，强制清空缓存
             if (this.currentViewMode === 'current' && this.currentFile) this.plugin.versionCache.delete(this.currentFile.path);
-            else if (this.currentViewMode === 'global' || this.currentViewMode === 'modified') this.plugin.versionCache.clear(); 
+            else if (this.currentViewMode === 'global' || this.currentViewMode === 'modified') {
+                this.plugin.versionCache.clear(); 
+                this.plugin.clearGlobalCache(); // --- 极速秒开核心：手动刷新强制清除全局缓存 ---
+            }
+            
             await this.refresh(); 
             setTimeout(() => { refreshBtn.removeClass('is-spinning'); }, 300);
         });
@@ -1941,110 +1987,119 @@ class VersionHistoryView extends ItemView {
             this.refresh(); 
         });
 
-        let history = await this.plugin.getGlobalHistory(300); // 稍微取多一点，防止去重后数量太少
-        if (history.length === 0) { this.renderEmptyState(container, '未找到任何版本记录'); return; }
-
-        // --- 新增：去重逻辑 ---
-        if (this.showUniqueFilesOnly) {
-            const seen = new Set<string>();
-            history = history.filter(item => {
-                if (seen.has(item.filePath)) return false;
-                seen.add(item.filePath);
-                return true;
+        const listWrapper = container.createEl('div', { cls: 'version-list-wrapper' });
+        
+        // --- 极速秒开核心：如果缓存没有就绪，显示骨架屏（不阻塞界面切换） ---
+        let loadingEl: HTMLElement | null = null;
+        if (!this.plugin.globalHistoryCache) {
+            loadingEl = listWrapper.createEl('div', { 
+                text: '✨ 首次加载全库数据中...', 
+                attr: { style: 'text-align: center; padding: 40px 20px; color: var(--text-muted); font-size: 13px;' } 
             });
         }
-        
-        // 限制最终显示数量，防止卡顿
-        history = history.slice(0, 50);
 
-        const list = container.createEl('div', { cls: 'version-list' });
+        // --- 异步渲染机制，确保切页永不卡顿 ---
+        setTimeout(async () => {
+            let history = await this.plugin.getGlobalHistory(200); 
+            if (loadingEl) loadingEl.remove();
 
-        // --- 在全库历史中也计算依赖关系 ---
-        const globalDependentIds = new Set<string>();
-        history.forEach(item => {
-            if (item.version.baseVersionId) globalDependentIds.add(item.version.baseVersionId);
-        });
-
-        let currentDay = '';
-
-        history.forEach(({ version, filePath, file }) => {
-            const dateObj = new Date(version.timestamp);
-            const dateStr = dateObj.toLocaleDateString();
-
-            if (dateStr !== currentDay) {
-                currentDay = dateStr;
-                list.createEl('h4', { text: currentDay, cls: 'version-group-header' });
+            if (history.length === 0) { 
+                this.renderEmptyState(listWrapper, '未找到任何版本记录'); 
+                return; 
             }
 
-            const item = list.createEl('div', { cls: 'version-item' });
-            if (version.starred) item.addClass('version-starred');
-
-            const info = item.createEl('div', { cls: 'version-info' });
-
-            const headerRow = info.createEl('div', { cls: 'version-time-row', attr: { style: 'justify-content:flex-start; gap:8px;' } });
-            headerRow.createEl('span', { 
-                text: new Date(version.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second: '2-digit'}),
-                cls: 'version-time', attr: { style: 'font-family:var(--font-monospace); color:var(--text-accent);' }
-            });
-
-            const fileLink = headerRow.createEl('span', { text: filePath, cls: 'internal-link' });
-            fileLink.addEventListener('click', () => {
-                if (file) this.app.workspace.getLeaf(false).openFile(file);
-                else new Notice('文件已删除，无法打开');
-            });
-            if (!file) headerRow.createEl('span', { text: '(已删除)', attr: { style: 'color:var(--text-error); font-size:0.8em;' } });
-
-            const msgRow = info.createEl('div', { cls: 'version-message-row' });
-            
-            // --- 同步当前文件的保存类型标签 ---
-            const saveTypeLabel = this.plugin.getSaveTypeLabel(version.message);
-            let tagClass = 'version-tag-auto';
-            if (saveTypeLabel === '手动保存') tagClass = 'version-tag-manual';
-            else if (saveTypeLabel === '全库版本') tagClass = 'version-tag-snapshot';
-            else if (saveTypeLabel === '恢复前备份') tagClass = 'version-tag-backup';
-            msgRow.createEl('span', { text: saveTypeLabel, cls: `version-tag ${tagClass}` });
-
-            // --- 同步 增量/完整 标签 ---
-            if (version.diff) msgRow.createEl('span', { text: '增量', cls: 'version-tag version-tag-incremental' });
-            else if (version.content) msgRow.createEl('span', { text: '完整', cls: 'version-tag version-tag-full' });
-
-            // --- 依赖基准标签 ---
-            if (globalDependentIds.has(version.id)) {
-                msgRow.createEl('span', { text: '🔒 依赖基准', cls: 'version-tag version-tag-locked', attr: { title: '被其他增量版本依赖，为保证数据完整性，不可删除' } });
-            }
-
-            // --- 同步自定义标签 ---
-            if (version.tags && version.tags.length > 0) {
-                version.tags.forEach(tag => {
-                    msgRow.createEl('span', { text: tag, cls: 'version-tag version-tag-custom' });
+            if (this.showUniqueFilesOnly) {
+                const seen = new Set<string>();
+                history = history.filter(item => {
+                    if (seen.has(item.filePath)) return false;
+                    seen.add(item.filePath);
+                    return true;
                 });
             }
+            
+            history = history.slice(0, 50);
 
-            // --- 显示原始描述 ---
-            const pureMessage = version.message.replace(/\[.*?\]/g, '').trim();
-            if (pureMessage) {
-                msgRow.createEl('span', { text: pureMessage });
-            }
+            const list = listWrapper.createEl('div', { cls: 'version-list' });
 
-            // --- 同步备注 (Note) ---
-            if (version.note && !this.plugin.settings.compactHistoryView) {
-                info.createEl('div', { text: `📝 ${version.note}`, cls: 'version-note' });
-            }
+            const globalDependentIds = new Set<string>();
+            history.forEach(item => {
+                if (item.version.baseVersionId) globalDependentIds.add(item.version.baseVersionId);
+            });
 
-            // --- 同步文件大小显示 ---
-            const statsRow = info.createEl('div', { cls: 'version-stats-row' });
-            statsRow.createEl('span', { text: this.plugin.formatFileSize(version.size), cls: 'version-size' });
+            let currentDay = '';
 
-            const actions = item.createEl('div', { cls: 'version-actions' });
-            if (file) {
-                const diffBtn = actions.createEl('button', { text: '对比', cls: 'version-btn' });
-                diffBtn.addEventListener('click', () => { new DiffModal(this.app, this.plugin, file, version.id).open(); });
-                if (this.plugin.settings.enableQuickPreview) {
-                    const viewBtn = actions.createEl('button', { text: '预览', cls: 'version-btn' });
-                    viewBtn.addEventListener('click', () => { new QuickPreviewModal(this.app, this.plugin, file, version.id).open(); });
+            history.forEach(({ version, filePath, file }) => {
+                const dateObj = new Date(version.timestamp);
+                const dateStr = dateObj.toLocaleDateString();
+
+                if (dateStr !== currentDay) {
+                    currentDay = dateStr;
+                    list.createEl('h4', { text: currentDay, cls: 'version-group-header' });
                 }
-            }
-        });
+
+                const item = list.createEl('div', { cls: 'version-item' });
+                if (version.starred) item.addClass('version-starred');
+
+                const info = item.createEl('div', { cls: 'version-info' });
+
+                const headerRow = info.createEl('div', { cls: 'version-time-row', attr: { style: 'justify-content:flex-start; gap:8px;' } });
+                headerRow.createEl('span', { 
+                    text: new Date(version.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second: '2-digit'}),
+                    cls: 'version-time', attr: { style: 'font-family:var(--font-monospace); color:var(--text-accent);' }
+                });
+
+                const fileLink = headerRow.createEl('span', { text: filePath, cls: 'internal-link' });
+                fileLink.addEventListener('click', () => {
+                    if (file) this.app.workspace.getLeaf(false).openFile(file);
+                    else new Notice('文件已删除，无法打开');
+                });
+                if (!file) headerRow.createEl('span', { text: '(已删除)', attr: { style: 'color:var(--text-error); font-size:0.8em;' } });
+
+                const msgRow = info.createEl('div', { cls: 'version-message-row' });
+                
+                const saveTypeLabel = this.plugin.getSaveTypeLabel(version.message);
+                let tagClass = 'version-tag-auto';
+                if (saveTypeLabel === '手动保存') tagClass = 'version-tag-manual';
+                else if (saveTypeLabel === '全库版本') tagClass = 'version-tag-snapshot';
+                else if (saveTypeLabel === '恢复前备份') tagClass = 'version-tag-backup';
+                msgRow.createEl('span', { text: saveTypeLabel, cls: `version-tag ${tagClass}` });
+
+                if (version.diff) msgRow.createEl('span', { text: '增量', cls: 'version-tag version-tag-incremental' });
+                else if (version.content) msgRow.createEl('span', { text: '完整', cls: 'version-tag version-tag-full' });
+
+                if (globalDependentIds.has(version.id)) {
+                    msgRow.createEl('span', { text: '🔒 依赖基准', cls: 'version-tag version-tag-locked', attr: { title: '被其他增量版本依赖，为保证数据完整性，不可删除' } });
+                }
+
+                if (version.tags && version.tags.length > 0) {
+                    version.tags.forEach(tag => {
+                        msgRow.createEl('span', { text: tag, cls: 'version-tag version-tag-custom' });
+                    });
+                }
+
+                const pureMessage = version.message.replace(/\[.*?\]/g, '').trim();
+                if (pureMessage) {
+                    msgRow.createEl('span', { text: pureMessage });
+                }
+
+                if (version.note && !this.plugin.settings.compactHistoryView) {
+                    info.createEl('div', { text: `📝 ${version.note}`, cls: 'version-note' });
+                }
+
+                const statsRow = info.createEl('div', { cls: 'version-stats-row' });
+                statsRow.createEl('span', { text: this.plugin.formatFileSize(version.size), cls: 'version-size' });
+
+                const actions = item.createEl('div', { cls: 'version-actions' });
+                if (file) {
+                    const diffBtn = actions.createEl('button', { text: '对比', cls: 'version-btn' });
+                    diffBtn.addEventListener('click', () => { new DiffModal(this.app, this.plugin, file, version.id).open(); });
+                    if (this.plugin.settings.enableQuickPreview) {
+                        const viewBtn = actions.createEl('button', { text: '预览', cls: 'version-btn' });
+                        viewBtn.addEventListener('click', () => { new QuickPreviewModal(this.app, this.plugin, file, version.id).open(); });
+                    }
+                }
+            });
+        }, 10); // 极短的延迟，优先让浏览器渲染页面框架，消除顿挫感
     }
     
     showVersionContextMenu(event: MouseEvent, file: TFile, version: VersionData, isLocked: boolean = false) {
