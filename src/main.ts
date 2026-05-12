@@ -166,6 +166,10 @@ export default class VersionControlPlugin extends Plugin {
     
     // --- 极速秒开核心：全局历史内存缓存 ---
     globalHistoryCache: { version: VersionData, filePath: string, file: TFile | null }[] | null = null;
+    
+    // --- 智能变频刷新核心：状态栏内存锚点 ---
+    activeFileLastSaveTime: number | null = null;
+    activeFileSaveLabel: string = '';
 
     fileLocks: Map<string, Promise<void>> = new Map();
     isRestoring: boolean = false; 
@@ -236,8 +240,29 @@ export default class VersionControlPlugin extends Plugin {
 
         await this.ensureVersionFolder();
 
+        // --- 智能混合刷新定时器：极低消耗的秒级状态更新 ---
+        let tick = 0;
         this.registerInterval(
-            window.setInterval(() => { this.updateAllRelativeTimes(); }, 60000)
+            window.setInterval(() => { 
+                tick++;
+                let hasRecentSave = false;
+                
+                // 1. 状态栏高频秒级刷新（仅在1分钟内才每秒执行DOM替换）
+                if (this.activeFileLastSaveTime !== null && (Date.now() - this.activeFileLastSaveTime < 60000)) {
+                    hasRecentSave = true;
+                    this.renderStatusBarTime();
+                }
+
+                // 2. 侧边栏视图刷新（平时 60 秒一次，有刚保存的最新记录时 5 秒一次）
+                if (tick % 60 === 0 || (hasRecentSave && tick % 5 === 0)) {
+                    const leaves = this.app.workspace.getLeavesOfType('version-history');
+                    leaves.forEach(leaf => { 
+                        if (leaf.view instanceof VersionHistoryView) leaf.view.updateRelativeTimes(); 
+                    });
+                }
+                
+                if (tick >= 60) tick = 0;
+            }, 1000)
         );
 
         // --- 极速秒开核心：后台静默预热缓存 ---
@@ -545,16 +570,6 @@ export default class VersionControlPlugin extends Plugin {
 
     async loadSettings() { this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData()); }
     async saveSettings() { await this.saveData(this.settings); this.updateStatusBar(); }
-    
-    updateAllRelativeTimes() { 
-        const file = this.app.workspace.getActiveFile();
-        if (!file) return;
-        if (this.settings.useRelativeTime || this.settings.showLastSaveTimeInStatusBar) {
-            this.updateStatusBar();
-            const leaves = this.app.workspace.getLeavesOfType('version-history');
-            leaves.forEach(leaf => { if (leaf.view instanceof VersionHistoryView) leaf.view.updateRelativeTimes(); });
-        }
-    }
 
     getSaveTypeLabel(message: string): string { 
         if (message.includes('[Auto Save - On Modify]')) return '修改保存';
@@ -566,30 +581,41 @@ export default class VersionControlPlugin extends Plugin {
         return '手动保存';
     }
 
+    // --- 重写：智能剥离耗时逻辑与渲染逻辑 ---
     async updateStatusBar() {
         if (!this.settings.autoSave) { 
             this.statusBarItem.setText('⏸ 版本控制: 已暂停'); this.statusBarItem.title = '自动保存已暂停'; 
+            this.activeFileLastSaveTime = null;
             return; 
         }
         const file = this.app.workspace.getActiveFile();
         if (!this.settings.showLastSaveTimeInStatusBar || !file) { 
             this.statusBarItem.setText(''); this.statusBarItem.title = ''; 
+            this.activeFileLastSaveTime = null;
             return; 
         }
         
         const versions = await this.getAllVersions(file.path);
         if (versions.length > 0) {
             const lastVersion = versions[0]!;
-            const lastSaveTime = lastVersion.timestamp;
-            this.lastModifiedTime.set(file.path, lastSaveTime);
-            const saveTypeLabel = this.getSaveTypeLabel(lastVersion.message);
-            const relativeTime = this.getRelativeTime(lastSaveTime);
-            this.statusBarItem.setText(`${saveTypeLabel}: ${relativeTime}`);
-            this.statusBarItem.title = `${saveTypeLabel}于 ${new Date(lastSaveTime).toLocaleString('zh-CN')}. 点击可快速对比。`;
+            this.activeFileLastSaveTime = lastVersion.timestamp;
+            this.activeFileSaveLabel = this.getSaveTypeLabel(lastVersion.message);
+            this.lastModifiedTime.set(file.path, this.activeFileLastSaveTime);
+            
+            this.renderStatusBarTime();
         } else {
             this.lastModifiedTime.delete(file.path);
+            this.activeFileLastSaveTime = null;
             this.statusBarItem.setText(''); this.statusBarItem.title = '';
         }
+    }
+
+    // --- 新增：极轻量级状态栏文字渲染 ---
+    renderStatusBarTime() {
+        if (this.activeFileLastSaveTime === null) return;
+        const relativeTime = this.getRelativeTime(this.activeFileLastSaveTime);
+        this.statusBarItem.setText(`${this.activeFileSaveLabel}: ${relativeTime}`);
+        this.statusBarItem.title = `${this.activeFileSaveLabel}于 ${new Date(this.activeFileLastSaveTime).toLocaleString('zh-CN')}. 点击可快速对比。`;
     }
 
     async quickDiffFromStatusBar() {
@@ -1255,6 +1281,16 @@ export default class VersionControlPlugin extends Plugin {
         return modifiedFiles.sort((a, b) => b.file.stat.mtime - a.file.stat.mtime);
     }
 
+    // --- 智能相对时间格式化（60秒内显示精确秒数） ---
+    getRelativeTime(timestamp: number): string { 
+        const diff = Math.max(0, Date.now() - timestamp);
+        if (diff < 60000) {
+            const seconds = Math.floor(diff / 1000);
+            return `${seconds}秒前`;
+        }
+        return moment(timestamp).fromNow(); 
+    }
+
     async getGlobalHistory(limit: number = 100): Promise<{ version: VersionData, filePath: string, file: TFile | null }[]> {
         // --- 极速秒开核心：如果内存里有缓存，直接 0 毫秒返回！ ---
         if (this.globalHistoryCache) {
@@ -1315,7 +1351,6 @@ export default class VersionControlPlugin extends Plugin {
         return cjkCount + westernCount;
     }
     formatTime(timestamp: number): string { return this.settings.useRelativeTime ? moment(timestamp).fromNow() : moment(timestamp).format('YYYY-MM-DD HH:mm:ss'); }
-    getRelativeTime(timestamp: number): string { return moment(timestamp).fromNow(); }
     refreshVersionHistoryView() { const leaves = this.app.workspace.getLeavesOfType('version-history'); leaves.forEach(leaf => { if (leaf.view instanceof VersionHistoryView) { leaf.view.refresh(); } }); }
 }
 
