@@ -1282,6 +1282,8 @@ export default class VersionControlPlugin extends Plugin {
         if (diff < 60000) {
             const seconds = Math.floor(diff / 1000);
             return `${seconds}秒前`;
+        } else if (diff >= 60000 && diff < 120000) {
+            return `1分钟前`;
         }
         return moment(timestamp).fromNow(); 
     }
@@ -2722,7 +2724,7 @@ class DiffModal extends Modal {
             if(nextBtn) nextBtn.disabled = this.currentDiffIndex >= this.totalDiffs - 1;
             if(lastBtn) lastBtn.disabled = this.currentDiffIndex >= this.totalDiffs - 1;
         } else {
-            statsEl.setText(this.leftContent === this.rightContent ? '✅' : '0/0');
+            statsEl.setText('0 / 0');
             [firstBtn, prevBtn, nextBtn, lastBtn].forEach(btn => { if(btn) btn.disabled = true; });
         }
     }
@@ -2940,13 +2942,6 @@ class DiffModal extends Modal {
         let leftProcessed = this.leftContent;
         let rightProcessed = this.rightContent;
         
-        if (!leftProcessed && !rightProcessed) {
-            container.createEl('div', { text: '两个版本都是空文件', cls: 'diff-empty-notice' });
-            return;
-        }
-        
-        container.toggleClass('show-whitespace-active', this.showWhitespace);
-        
         const modeSelect = this.containerEl.querySelector('.diff-select[aria-label="视图模式"]') as HTMLSelectElement;
         
         if (modeSelect.value === 'unified') {
@@ -2963,6 +2958,20 @@ class DiffModal extends Modal {
         else container.removeClass('diff-wrap-lines');
 
         this.totalDiffs = this.diffElements.length;
+
+        // === 【新增：空白恐慌 空状态 (Empty State)】 ===
+        if (this.totalDiffs === 0) {
+            container.empty();
+            container.removeClass('diff-split');
+            const emptyState = container.createEl('div', { 
+                attr: { style: 'display: flex; flex-direction: column; align-items: center; justify-content: center; width: 100%; height: 100%; min-height: 250px; color: var(--text-muted); text-align: center;' } 
+            });
+            emptyState.createEl('div', { text: '✨', attr: { style: 'font-size: 48px; margin-bottom: 16px; opacity: 0.9;' } });
+            emptyState.createEl('h3', { text: '这两个版本完全一致', attr: { style: 'color: var(--text-normal); margin: 0 0 8px 0; font-size: 16px;' } });
+            emptyState.createEl('p', { text: '没有检测到任何修改内容' + (this.ignoreWhitespace ? ' (已忽略空白字符)' : ''), attr: { style: 'margin: 0; font-size: 13px;' } });
+        }
+        // ==============================================
+
         this.updateNavState();
         if (this.totalDiffs > 0) setTimeout(() => this.scrollToDiff(), 100);
         
