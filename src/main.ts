@@ -4250,55 +4250,64 @@ class VersionControlSettingTab extends PluginSettingTab {
                 .onChange(async (value) => {
                     this.plugin.settings.autoClear = value;
                     await this.plugin.saveSettings();
+                    this.display();
                 }));
 
-        new Setting(containerEl)
-            .setName('按数量清理')
-            .setDesc('保留指定数量的最新版本')
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.enableMaxVersions)
-                .onChange(async (value) => {
-                    this.plugin.settings.enableMaxVersions = value;
-                    await this.plugin.saveSettings();
-                }));
-
-        new Setting(containerEl)
-            .setName('最大版本数')
-            .setDesc('每个文件最多保留的版本数量')
-            .addText(text => text
-                .setPlaceholder('50')
-                .setValue(String(this.plugin.settings.maxVersions))
-                .onChange(async (value) => {
-                    const num = parseInt(value);
-                    if (!isNaN(num) && num > 0) {
-                        this.plugin.settings.maxVersions = num;
+        if (this.plugin.settings.autoClear) {
+            new Setting(containerEl)
+                .setName('按数量清理')
+                .setDesc('保留指定数量的最新版本')
+                .addToggle(toggle => toggle
+                    .setValue(this.plugin.settings.enableMaxVersions)
+                    .onChange(async (value) => {
+                        this.plugin.settings.enableMaxVersions = value;
                         await this.plugin.saveSettings();
-                    }
-                }));
+                        this.display(); 
+                    }));
 
-        new Setting(containerEl)
-            .setName('按天数清理')
-            .setDesc('自动删除超过指定天数的版本')
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.enableMaxDays)
-                .onChange(async (value) => {
-                    this.plugin.settings.enableMaxDays = value;
-                    await this.plugin.saveSettings();
-                }));
+            if (this.plugin.settings.enableMaxVersions) {
+                new Setting(containerEl)
+                    .setName('最大版本数')
+                    .setDesc('每个文件最多保留的版本数量')
+                    .addText(text => text
+                        .setPlaceholder('50')
+                        .setValue(String(this.plugin.settings.maxVersions))
+                        .onChange(async (value) => {
+                            const num = parseInt(value);
+                            if (!isNaN(num) && num > 0) {
+                                this.plugin.settings.maxVersions = num;
+                                await this.plugin.saveSettings();
+                            }
+                        }));
+            }
 
-        new Setting(containerEl)
-            .setName('最大保留天数')
-            .setDesc('删除超过此天数的旧版本')
-            .addText(text => text
-                .setPlaceholder('30')
-                .setValue(String(this.plugin.settings.maxDays))
-                .onChange(async (value) => {
-                    const num = parseInt(value);
-                    if (!isNaN(num) && num > 0) {
-                        this.plugin.settings.maxDays = num;
+            new Setting(containerEl)
+                .setName('按天数清理')
+                .setDesc('自动删除超过指定天数的版本')
+                .addToggle(toggle => toggle
+                    .setValue(this.plugin.settings.enableMaxDays)
+                    .onChange(async (value) => {
+                        this.plugin.settings.enableMaxDays = value;
                         await this.plugin.saveSettings();
-                    }
-                }));
+                        this.display(); 
+                    }));
+
+            if (this.plugin.settings.enableMaxDays) {
+                new Setting(containerEl)
+                    .setName('最大保留天数')
+                    .setDesc('删除超过此天数的旧版本')
+                    .addText(text => text
+                        .setPlaceholder('30')
+                        .setValue(String(this.plugin.settings.maxDays))
+                        .onChange(async (value) => {
+                            const num = parseInt(value);
+                            if (!isNaN(num) && num > 0) {
+                                this.plugin.settings.maxDays = num;
+                                await this.plugin.saveSettings();
+                            }
+                        }));
+            }
+        }
 
         containerEl.createEl('h3', { text: '🎨 显示设置' });
 
