@@ -1461,6 +1461,7 @@ class VersionHistoryView extends ItemView {
     currentViewMode: ViewMode = 'current';
     isRefreshing: boolean = false;
     collapsedGroups: Set<string> = new Set(); 
+    scrollPositions: Map<ViewMode, number> = new Map(); // 新增：分 Tab 记忆滚动条位置
 
     constructor(leaf: WorkspaceLeaf, plugin: VersionControlPlugin) {
         super(leaf);
@@ -1527,8 +1528,12 @@ class VersionHistoryView extends ItemView {
         this.isRefreshing = true;
 
         const realContainer = this.contentEl;
+        
+        // 刷新前，捕获并保存当前的滚动条位置
         const currentScrollArea = realContainer.querySelector('.vc-content-area');
-        const scrollTop = currentScrollArea ? currentScrollArea.scrollTop : 0;
+        if (currentScrollArea) {
+            this.scrollPositions.set(this.currentViewMode, currentScrollArea.scrollTop);
+        }
 
         try {
             const buffer = createDiv();
@@ -1539,6 +1544,7 @@ class VersionHistoryView extends ItemView {
 
             const contentContainer = buffer.createEl('div', { cls: 'vc-content-area' });
             
+            // 下方渲染是异步的，所以在各渲染函数底部执行滚动条恢复
             if (this.currentViewMode === 'current') await this.renderCurrentFileHistory(contentContainer);
             else if (this.currentViewMode === 'modified') await this.renderModifiedFiles(contentContainer);
             else if (this.currentViewMode === 'global') await this.renderGlobalHistory(contentContainer);
@@ -1546,8 +1552,6 @@ class VersionHistoryView extends ItemView {
             realContainer.empty();
             realContainer.appendChild(buffer);
 
-            const newScrollArea = realContainer.querySelector('.vc-content-area');
-            if (newScrollArea && scrollTop > 0) newScrollArea.scrollTop = scrollTop;
         } catch (error: unknown) {
             console.error("Version History Refresh Error:", getErrorMessage(error), error);
             realContainer.empty(); realContainer.createEl('div', { text: '加载出错，请查看控制台。' });
@@ -1565,7 +1569,12 @@ class VersionHistoryView extends ItemView {
         tabs.forEach(tab => {
             const btn = tabBar.createEl('button', { cls: `vc-tab-btn ${this.currentViewMode === tab.id ? 'mod-cta' : ''}`, attr: { title: tab.label } });
             btn.setText(tab.label);
-            btn.addEventListener('click', () => { this.currentViewMode = tab.id; this.currentPage = 0; this.refresh(); });
+            btn.addEventListener('click', () => { 
+                this.currentViewMode = tab.id; 
+                this.currentPage = 0; 
+                this.scrollPositions.set(tab.id, 0); // 切换 Tab 时重置滚动条为顶部
+                this.refresh(); 
+            });
         });
 
         // 紧凑模式切换按钮
@@ -1827,6 +1836,14 @@ class VersionHistoryView extends ItemView {
         stats.createEl('span', { text: `共 ${this.totalVersions} 个版本` });
         if (this.searchQuery || this.showStarredOnly || this.filterTag) stats.createEl('span', { text: ` · 筛选后 ${filteredVersions.length} 个` });
 
+        // 恢复滚动条位置
+        requestAnimationFrame(() => {
+            const savedScroll = this.scrollPositions.get('current') || 0;
+            if (savedScroll > 0) {
+                container.scrollTop = savedScroll;
+            }
+        });
+
         // --- 异步执行后台 Diff 统计 (不阻塞主线程 UI) ---
         if (pendingStatsQueue.length > 0) {
             setTimeout(async () => {
@@ -2004,6 +2021,14 @@ class VersionHistoryView extends ItemView {
                 if (list.children.length === 0) this.refresh();
             });
         });
+
+        // 恢复滚动条位置
+        requestAnimationFrame(() => {
+            const savedScroll = this.scrollPositions.get('modified') || 0;
+            if (savedScroll > 0) {
+                container.scrollTop = savedScroll;
+            }
+        });
     }
 
     async renderGlobalHistory(container: HTMLElement) {
@@ -2169,6 +2194,15 @@ class VersionHistoryView extends ItemView {
                     }
                 }
             });
+
+            // 恢复滚动条位置
+            requestAnimationFrame(() => {
+                const savedScroll = this.scrollPositions.get('global') || 0;
+                if (savedScroll > 0) {
+                    container.scrollTop = savedScroll;
+                }
+            });
+
         }, 10); // 极短的延迟，优先让浏览器渲染页面框架，消除顿挫感
     }
     
