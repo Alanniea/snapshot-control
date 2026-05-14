@@ -331,8 +331,8 @@
 .diff-modified .line-content span { display: inline; }
 
 /* 具体的文字高亮 (兼容紧凑模式) */
-.diff-word-added { background-color: rgba(100, 255, 100, 0.25); color: var(--text-normal); border-radius: 2px; padding: 0 3px; font-weight: normal; box-shadow: 0 0 0 1px rgba(46, 160, 67, 0.3); }
-.diff-word-removed { background-color: rgba(255, 100, 100, 0.25); color: var(--text-muted); border-bottom: 1px solid rgba(244, 67, 54, 0.4); text-decoration: none !important; border-radius: 2px; opacity: 0.85; padding: 0 3px; font-weight: normal; box-shadow: 0 0 0 1px rgba(248, 81, 73, 0.3); }
+.diff-word-added { background-color: rgba(100, 255, 100, 0.25); color: var(--text-normal); font-weight: normal; }
+.diff-word-removed { background-color: rgba(255, 100, 100, 0.25); color: var(--text-muted); text-decoration: none !important; font-weight: normal; }
 
 /* 其他行状态 */
 .diff-context { background: transparent; }
