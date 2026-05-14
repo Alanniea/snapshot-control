@@ -4102,14 +4102,14 @@ class VersionControlSettingTab extends PluginSettingTab {
                 }));
 
         new Setting(containerEl)
-            .setName('修改时保存延迟 (分钟)')
-            .setDesc('修改后等待多久才保存。支持小数,例如 0.5 代表30秒。')
+            .setName('修改时保存延迟 (秒)')
+            .setDesc('文件修改后等待多久才执行自动保存。例如 180 代表 3 分钟。')
             .addText(text => text
-                .setValue(String(this.plugin.settings.autoSaveDelayOnModify / 60))
+                .setValue(String(this.plugin.settings.autoSaveDelayOnModify))
                 .onChange(async (value) => {
-                    const num = parseFloat(value);
+                    const num = parseInt(value, 10);
                     if (!isNaN(num) && num >= 0) {
-                        this.plugin.settings.autoSaveDelayOnModify = num * 60;
+                        this.plugin.settings.autoSaveDelayOnModify = num;
                         await this.plugin.saveSettings();
                     }
                 }));
