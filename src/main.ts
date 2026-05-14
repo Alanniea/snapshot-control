@@ -131,7 +131,7 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
     versionsPerPage: 20,
     rebuildBaseInterval: 10,
     autoSaveOnModify: true,
-    autoSaveMinChanges: 10,
+    autoSaveMinChanges: 0, // 修改为 0，确保只要有修改就触发保存
     autoSaveOnInterval: false,
     autoSaveOnBackground: true, // 默认开启后台防丢失保存
     
@@ -4111,52 +4111,6 @@ class VersionControlSettingTab extends PluginSettingTab {
                     if (!isNaN(num) && num >= 0) {
                         this.plugin.settings.autoSaveDelayOnModify = num;
                         await this.plugin.saveSettings();
-                    }
-                }));
-
-        new Setting(containerEl)
-            .setName('最小变化字符数')
-            .setDesc('只有变化超过此字符数时才保存版本')
-            .addSlider(slider => slider
-                .setLimits(0, 100, 5)
-                .setValue(this.plugin.settings.autoSaveMinChanges)
-                .setDynamicTooltip()
-                .onChange(async (value) => {
-                    this.plugin.settings.autoSaveMinChanges = value;
-                    await this.plugin.saveSettings();
-                }));
-
-        new Setting(containerEl)
-            .setName('⏰ 定时自动保存')
-            .setDesc('按固定时间间隔扫描所有已修改的文件并保存')
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.autoSaveOnInterval)
-                .onChange(async (value) => {
-                    this.plugin.settings.autoSaveOnInterval = value;
-                    await this.plugin.saveSettings();
-                    
-                    if (value && this.plugin.settings.autoSave) {
-                        this.plugin.startAutoSave();
-                    } else if (this.plugin.autoSaveTimer) {
-                        window.clearInterval(this.plugin.autoSaveTimer);
-                        this.plugin.autoSaveTimer = null;
-                    }
-                }));
-
-        new Setting(containerEl)
-            .setName('定时间隔 (分钟)')
-            .setDesc('每隔多久自动检查并保存')
-            .addText(text => text
-                .setPlaceholder('5')
-                .setValue(String(this.plugin.settings.autoSaveInterval))
-                .onChange(async (value) => {
-                    const num = parseInt(value);
-                    if (!isNaN(num) && num > 0) {
-                        this.plugin.settings.autoSaveInterval = num;
-                        await this.plugin.saveSettings();
-                        if (this.plugin.settings.autoSave && this.plugin.settings.autoSaveOnInterval) {
-                            this.plugin.startAutoSave();
-                        }
                     }
                 }));
 
