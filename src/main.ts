@@ -92,7 +92,7 @@ interface VersionControlSettings {
     autoSaveOnModify: boolean;
     autoSaveMinChanges: number;
     autoSaveOnInterval: boolean;
-    autoSaveOnBackground: boolean; // 新增：后台自动保存开关
+    autoSaveOnBackground: boolean; 
     
     autoSaveDelayOnModify: number;
 
@@ -108,7 +108,8 @@ interface VersionControlSettings {
     compactUnifiedDiff: boolean; 
     
     deleteHistoryOnDelete: boolean; 
-    compactHistoryView: boolean; // 新增：侧边栏紧凑模式
+    compactHistoryView: boolean; 
+    globalHistoryTimeMode: 'modified' | 'saved'; // 新增：全库历史时间显示模式
 }
 
 const DEFAULT_SETTINGS: VersionControlSettings = {
@@ -131,9 +132,9 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
     versionsPerPage: 20,
     rebuildBaseInterval: 10,
     autoSaveOnModify: true,
-    autoSaveMinChanges: 0, // 修改为 0，确保只要有修改就触发保存
+    autoSaveMinChanges: 0, 
     autoSaveOnInterval: false,
-    autoSaveOnBackground: true, // 默认开启后台防丢失保存
+    autoSaveOnBackground: true, 
     
     autoSaveDelayOnModify: 180,
 
@@ -149,7 +150,8 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
     compactUnifiedDiff: false, 
     
     deleteHistoryOnDelete: false, 
-    compactHistoryView: false, // 默认不开启紧凑模式
+    compactHistoryView: false, 
+    globalHistoryTimeMode: 'modified', // 默认显示文件修改时间
 };
 
 // 视图模式类型定义
@@ -1454,11 +1456,11 @@ class VersionHistoryView extends ItemView {
     totalVersions: number = 0;
     filterTag: string | null = null;
     showStarredOnly: boolean = false;
-    showUniqueFilesOnly: boolean = true; // 新增：全局历史默认只显示单文件最新记录
+    showUniqueFilesOnly: boolean = true; 
     
     currentViewMode: ViewMode = 'current';
     isRefreshing: boolean = false;
-    collapsedGroups: Set<string> = new Set(); // 用于记忆折叠状态的日期组
+    collapsedGroups: Set<string> = new Set(); 
 
     constructor(leaf: WorkspaceLeaf, plugin: VersionControlPlugin) {
         super(leaf);
@@ -2008,7 +2010,22 @@ class VersionHistoryView extends ItemView {
         const header = container.createEl('div', { attr: { style: 'display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;' } });
         header.createEl('h3', { text: '🌍 全库版本时间轴', attr: { style: 'margin: 0;' } });
         
-        const filterBtn = header.createEl('button', { 
+        const btnGroup = header.createEl('div', { attr: { style: 'display: flex; gap: 8px;' } });
+
+        // --- 新增：时间模式切换按钮 ---
+        const timeModeBtn = btnGroup.createEl('button', {
+            cls: this.plugin.settings.globalHistoryTimeMode === 'modified' ? 'mod-cta' : '',
+            attr: { 'aria-label': '切换全库排序与显示时间', style: 'padding: 4px 10px; font-size: 12px; display: flex; align-items: center; gap: 4px;' }
+        });
+        setIcon(timeModeBtn, 'clock');
+        timeModeBtn.createEl('span', { text: this.plugin.settings.globalHistoryTimeMode === 'modified' ? '按修改时间' : '按保存时间' });
+        timeModeBtn.addEventListener('click', async () => {
+            this.plugin.settings.globalHistoryTimeMode = this.plugin.settings.globalHistoryTimeMode === 'modified' ? 'saved' : 'modified';
+            await this.plugin.saveSettings();
+            this.refresh();
+        });
+
+        const filterBtn = btnGroup.createEl('button', { 
             cls: this.showUniqueFilesOnly ? 'mod-cta' : '',
             attr: { 'aria-label': '切换：只显示最新 / 显示全部', style: 'padding: 4px 10px; font-size: 12px; display: flex; align-items: center; gap: 4px;' }
         });
@@ -2049,6 +2066,15 @@ class VersionHistoryView extends ItemView {
                 });
             }
             
+            const isModifiedMode = this.plugin.settings.globalHistoryTimeMode === 'modified';
+
+            // --- 重构：根据模式智能排序 ---
+            history.sort((a, b) => {
+                const timeA = isModifiedMode ? (a.file ? a.file.stat.mtime : a.version.timestamp) : a.version.timestamp;
+                const timeB = isModifiedMode ? (b.file ? b.file.stat.mtime : b.version.timestamp) : b.version.timestamp;
+                return timeB - timeA;
+            });
+
             history = history.slice(0, 50);
 
             const list = listWrapper.createEl('div', { cls: 'version-list' });
@@ -2061,7 +2087,13 @@ class VersionHistoryView extends ItemView {
             let currentDay = '';
 
             history.forEach(({ version, filePath, file }) => {
-                const dateObj = new Date(version.timestamp);
+                
+                const primaryTime = isModifiedMode ? (file ? file.stat.mtime : version.timestamp) : version.timestamp;
+                // 如果是修改模式，且有 file，副时间是 version；如果是保存模式，且有 file，副时间是 mtime
+                const secondaryTime = isModifiedMode ? version.timestamp : (file ? file.stat.mtime : null);
+                const secondaryLabel = isModifiedMode ? '保存时间' : '修改时间';
+
+                const dateObj = new Date(primaryTime);
                 const dateStr = dateObj.toLocaleDateString();
 
                 if (dateStr !== currentDay) {
@@ -2075,9 +2107,10 @@ class VersionHistoryView extends ItemView {
                 const info = item.createEl('div', { cls: 'version-info' });
 
                 const headerRow = info.createEl('div', { cls: 'version-time-row', attr: { style: 'justify-content:flex-start; gap:8px;' } });
+                
                 headerRow.createEl('span', { 
-                    text: new Date(version.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second: '2-digit'}),
-                    cls: 'version-time', attr: { style: 'font-family:var(--font-monospace); color:var(--text-accent);' }
+                    text: new Date(primaryTime).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second: '2-digit'}),
+                    cls: 'version-time', attr: { style: 'font-family:var(--font-monospace); color:var(--text-accent);', title: isModifiedMode ? '文件最后修改时间' : '版本保存时间' }
                 });
 
                 const fileLink = headerRow.createEl('span', { text: filePath, cls: 'internal-link' });
@@ -2120,6 +2153,11 @@ class VersionHistoryView extends ItemView {
 
                 const statsRow = info.createEl('div', { cls: 'version-stats-row' });
                 statsRow.createEl('span', { text: this.plugin.formatFileSize(version.size), cls: 'version-size' });
+                
+                // 智能切换副时间的显示
+                if (secondaryTime) {
+                    statsRow.createEl('span', { text: `| ${secondaryLabel}: ${new Date(secondaryTime).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second: '2-digit'})}`, cls: 'version-size' });
+                }
 
                 const actions = item.createEl('div', { cls: 'version-actions' });
                 if (file) {
@@ -4263,6 +4301,19 @@ class VersionControlSettingTab extends PluginSettingTab {
                 }));
 
         containerEl.createEl('h3', { text: '🎨 显示设置' });
+
+        new Setting(containerEl)
+            .setName('全库历史默认时间模式')
+            .setDesc('在全库版本历史中，默认按“文件修改时间”还是“版本保存时间”进行排序和展示。')
+            .addDropdown(dropdown => dropdown
+                .addOption('modified', '文件修改时间')
+                .addOption('saved', '版本保存时间')
+                .setValue(this.plugin.settings.globalHistoryTimeMode)
+                .onChange(async (value: 'modified' | 'saved') => {
+                    this.plugin.settings.globalHistoryTimeMode = value;
+                    await this.plugin.saveSettings();
+                    this.plugin.refreshVersionHistoryView();
+                }));
 
         new Setting(containerEl)
             .setName('使用相对时间')
