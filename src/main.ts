@@ -92,7 +92,6 @@ interface VersionControlSettings {
     autoSaveOnModify: boolean;
     autoSaveMinChanges: number;
     autoSaveOnInterval: boolean;
-    autoSaveOnBackground: boolean; 
     
     autoSaveDelayOnModify: number;
 
@@ -134,7 +133,6 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
     autoSaveOnModify: true,
     autoSaveMinChanges: 0, 
     autoSaveOnInterval: false,
-    autoSaveOnBackground: true, 
     
     autoSaveDelayOnModify: 180,
 
@@ -227,14 +225,6 @@ export default class VersionControlPlugin extends Plugin {
                 this.updateStatusBar();
             })
         );
-
-        // --- 监听 APP 切入后台/失去焦点的事件 ---
-        this.registerDomEvent(document, 'visibilitychange', () => {
-            if (document.visibilityState === 'hidden') this.forceSaveOnBackground();
-        });
-        this.registerDomEvent(window, 'pagehide', () => {
-            this.forceSaveOnBackground();
-        });
 
         if (this.settings.autoSave && this.settings.autoSaveOnInterval) {
             this.startAutoSave();
@@ -702,25 +692,6 @@ export default class VersionControlPlugin extends Plugin {
         const modifiedFiles = await this.getModifiedFiles();
         for (const item of modifiedFiles) {
             if (!this.isExcluded(item.file.path)) { await this.autoSaveFile(item.file, '[Auto Save - Interval]'); }
-        }
-    }
-
-    // --- APP切入后台时强制保存 ---
-    private async forceSaveOnBackground() {
-        if (!this.settings.autoSave || !this.settings.autoSaveOnBackground || this.isRestoring || this.isUnloaded) return;
-
-        // 1. 优先抢救当前正在编辑的文件
-        const activeFile = this.app.workspace.getActiveFile();
-        if (activeFile && !this.isExcluded(activeFile.path)) {
-            await this.autoSaveFile(activeFile, '[Auto Save - Background]');
-        }
-
-        // 2. 顺便扫描其他可能没来得及保存的后台文件
-        const modifiedFiles = await this.getModifiedFiles();
-        for (const item of modifiedFiles) {
-            if (item.file.path !== activeFile?.path && !this.isExcluded(item.file.path)) {
-                await this.autoSaveFile(item.file, '[Auto Save - Background]');
-            }
         }
     }
     
@@ -4184,16 +4155,6 @@ class VersionControlSettingTab extends PluginSettingTab {
                         this.plugin.settings.autoSaveDelayOnModify = num;
                         await this.plugin.saveSettings();
                     }
-                }));
-
-        new Setting(containerEl)
-            .setName('📱 切入后台时自动保存')
-            .setDesc('当应用切入后台或失去焦点时，立刻抢救性保存所有已修改但还未触发保存的文件(强烈建议开启，防丢神器)。')
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.autoSaveOnBackground)
-                .onChange(async (value) => {
-                    this.plugin.settings.autoSaveOnBackground = value;
-                    await this.plugin.saveSettings();
                 }));
 
         new Setting(containerEl)
