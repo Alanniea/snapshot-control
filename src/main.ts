@@ -1484,9 +1484,20 @@ class VersionHistoryView extends ItemView {
         const relativeElements = this.contentEl.querySelectorAll('.version-global-relative-time');
         relativeElements.forEach(el => {
             const timestampStr = (el as HTMLElement).dataset.timestamp;
+            const prefix = (el as HTMLElement).dataset.prefix || '| ';
             if (timestampStr) {
                 const timestamp = parseInt(timestampStr, 10);
-                el.textContent = `| ${this.plugin.getRelativeTime(timestamp)}`;
+                el.textContent = `${prefix}${this.plugin.getRelativeTime(timestamp)}`;
+            }
+        });
+
+        // 强制定时刷新的内联相对时间元素
+        const inlineRelativeElements = this.contentEl.querySelectorAll('.version-global-relative-time-inline');
+        inlineRelativeElements.forEach(el => {
+            const timestampStr = (el as HTMLElement).dataset.timestamp;
+            if (timestampStr) {
+                const timestamp = parseInt(timestampStr, 10);
+                el.textContent = this.plugin.getRelativeTime(timestamp);
             }
         });
     }
@@ -2163,14 +2174,21 @@ class VersionHistoryView extends ItemView {
                 
                 // 智能切换副时间的显示
                 if (secondaryTime) {
-                    statsRow.createEl('span', { text: `| ${secondaryLabel}: ${new Date(secondaryTime).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second: '2-digit'})}`, cls: 'version-size' });
+                    const secSpan = statsRow.createEl('span', { cls: 'version-size' });
+                    secSpan.appendText(`| ${secondaryLabel}: ${new Date(secondaryTime).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second: '2-digit'})} (`);
+                    secSpan.createEl('span', {
+                        text: this.plugin.getRelativeTime(secondaryTime),
+                        cls: 'version-global-relative-time-inline',
+                        attr: { 'data-timestamp': String(secondaryTime) }
+                    });
+                    secSpan.appendText(`)`);
                 }
 
-                // 强制显示相对时间（如：10分钟前），并挂载时间戳以便每 10 秒自动刷新
+                const primaryLabel = isModifiedMode ? '修改' : '保存';
                 statsRow.createEl('span', { 
-                    text: `| ${this.plugin.getRelativeTime(primaryTime)}`, 
+                    text: `| ${primaryLabel}: ${this.plugin.getRelativeTime(primaryTime)}`, 
                     cls: 'version-size version-global-relative-time', 
-                    attr: { 'data-timestamp': String(primaryTime) }
+                    attr: { 'data-timestamp': String(primaryTime), 'data-prefix': `| ${primaryLabel}: ` }
                 });
 
                 const actions = item.createEl('div', { cls: 'version-actions' });
