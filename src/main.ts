@@ -1469,13 +1469,24 @@ class VersionHistoryView extends ItemView {
     }
 
     updateRelativeTimes() {
-        if (!this.plugin.settings.useRelativeTime) return;
-        const timeElements = this.contentEl.querySelectorAll('.version-time');
-        timeElements.forEach(el => {
+        if (this.plugin.settings.useRelativeTime) {
+            const timeElements = this.contentEl.querySelectorAll('.version-time');
+            timeElements.forEach(el => {
+                const timestampStr = (el as HTMLElement).dataset.timestamp;
+                if (timestampStr) {
+                    const timestamp = parseInt(timestampStr, 10);
+                    el.textContent = this.plugin.getRelativeTime(timestamp);
+                }
+            });
+        }
+        
+        // 强制定时刷新的相对时间元素（如全库历史底部追加的相对时间）
+        const relativeElements = this.contentEl.querySelectorAll('.version-global-relative-time');
+        relativeElements.forEach(el => {
             const timestampStr = (el as HTMLElement).dataset.timestamp;
             if (timestampStr) {
                 const timestamp = parseInt(timestampStr, 10);
-                el.textContent = this.plugin.getRelativeTime(timestamp);
+                el.textContent = `| ${this.plugin.getRelativeTime(timestamp)}`;
             }
         });
     }
@@ -2154,6 +2165,13 @@ class VersionHistoryView extends ItemView {
                 if (secondaryTime) {
                     statsRow.createEl('span', { text: `| ${secondaryLabel}: ${new Date(secondaryTime).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second: '2-digit'})}`, cls: 'version-size' });
                 }
+
+                // 强制显示相对时间（如：10分钟前），并挂载时间戳以便每 10 秒自动刷新
+                statsRow.createEl('span', { 
+                    text: `| ${this.plugin.getRelativeTime(primaryTime)}`, 
+                    cls: 'version-size version-global-relative-time', 
+                    attr: { 'data-timestamp': String(primaryTime) }
+                });
 
                 const actions = item.createEl('div', { cls: 'version-actions' });
                 if (file) {
