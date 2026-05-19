@@ -175,12 +175,6 @@ export default class VersionControlPlugin extends Plugin {
     isRestoring: boolean = false; 
     isUnloaded: boolean = false;
 
-    // --- 新增：智能防抖刷新器（文件修改停止 1.5 秒后无缝刷新视图） ---
-    debouncedViewRefresh = debounce(() => {
-        if (this.isUnloaded) return;
-        this.refreshVersionHistoryView();
-    }, 1500, true);
-
     async onload() {
         this.isUnloaded = false;
         await this.loadSettings();
@@ -211,8 +205,6 @@ export default class VersionControlPlugin extends Plugin {
                     if (this.settings.autoSave && this.settings.autoSaveOnModify) {
                         this.handleFileModify(file);
                     }
-                    // 新增：文件修改后，触发防抖刷新视图，彻底解决不刷新的问题
-                    this.debouncedViewRefresh();
                 }
             })
         );
@@ -749,9 +741,11 @@ export default class VersionControlPlugin extends Plugin {
                             latestVersion.tags = tags.length > 0 ? tags : latestVersion.tags;
                             await this.saveVersionFile(file.path, versionFile);
                             this.versionCache.set(file.path, versionFile);
+                            
+                            this.clearGlobalCache(); // --- 极速秒开核心：必须先清除缓存！ ---
                             this.refreshVersionHistoryView();
                             this.updateStatusBar();
-                            this.clearGlobalCache(); // --- 极速秒开核心：数据改变，清除缓存 ---
+                            
                             if (showNotification && this.settings.showNotifications) new Notice(`✅ 版本已保存 (自动保存已更新)`);
                             return;
                         }
@@ -818,10 +812,11 @@ export default class VersionControlPlugin extends Plugin {
             this.versionCache.set(file.path, versionFile);
             this.contentCache.set(`${file.path}::${newVersion.id}`, content);
 
+            this.clearGlobalCache(); // --- 极速秒开核心：必须先清除缓存！ ---
             this.refreshVersionHistoryView();
             this.lastModifiedTime.set(file.path, timestamp);
             this.updateStatusBar();
-            this.clearGlobalCache(); // --- 极速秒开核心：数据改变，清除缓存 ---
+            
             if (showNotification && this.settings.showNotifications) new Notice(`✅ 版本已保存: ${message}`);
         } catch (error: unknown) {
             console.error('保存版本失败:', getErrorMessage(error), error);
@@ -1119,8 +1114,8 @@ export default class VersionControlPlugin extends Plugin {
                     versionFile.versions[index!]!.tags = tags.length > 0 ? tags : undefined;
                     await this.saveVersionFile(filePath, versionFile);
                     this.versionCache.set(filePath, versionFile);
+                    this.clearGlobalCache(); 
                     this.refreshVersionHistoryView();
-                    this.clearGlobalCache(); // --- 极速秒开核心：数据改变，清除缓存 ---
                 }
             } catch (error: unknown) { }
         });
@@ -1135,8 +1130,8 @@ export default class VersionControlPlugin extends Plugin {
                     versionFile.versions[index!]!.note = note.trim() || undefined;
                     await this.saveVersionFile(filePath, versionFile);
                     this.versionCache.set(filePath, versionFile);
+                    this.clearGlobalCache(); 
                     this.refreshVersionHistoryView();
-                    this.clearGlobalCache(); // --- 极速秒开核心：数据改变，清除缓存 ---
                 }
             } catch (error: unknown) { }
         });
@@ -1151,7 +1146,7 @@ export default class VersionControlPlugin extends Plugin {
                     versionFile.versions[index!]!.starred = !versionFile.versions[index!]!.starred;
                     await this.saveVersionFile(filePath, versionFile);
                     this.versionCache.set(filePath, versionFile);
-                    this.clearGlobalCache(); // --- 极速秒开核心：数据改变，清除缓存 ---
+                    this.clearGlobalCache(); 
                 }
             } catch (error: unknown) {}
         });
@@ -1171,8 +1166,8 @@ export default class VersionControlPlugin extends Plugin {
                 this.buildVersionIndex(versionFile);
                 await this.saveVersionFile(filePath, versionFile);
                 this.versionCache.set(filePath, versionFile);
+                this.clearGlobalCache(); 
                 this.refreshVersionHistoryView();
-                this.clearGlobalCache(); // --- 极速秒开核心：数据改变，清除缓存 ---
             } catch (error: unknown) {}
         });
     }
@@ -1190,8 +1185,8 @@ export default class VersionControlPlugin extends Plugin {
                 this.buildVersionIndex(versionFile);
                 await this.saveVersionFile(filePath, versionFile);
                 this.versionCache.set(filePath, versionFile);
+                this.clearGlobalCache(); 
                 this.refreshVersionHistoryView();
-                this.clearGlobalCache(); // --- 极速秒开核心：数据改变，清除缓存 ---
             } catch (error: unknown) {}
         });
     }
@@ -1557,7 +1552,7 @@ class VersionHistoryView extends ItemView {
 
             const contentContainer = buffer.createEl('div', { cls: 'vc-content-area' });
             
-            // 彻底解决白屏闪烁：所有渲染都必须在这里被完全 await，确保 buffer 拼装完毕
+            // 下方渲染是异步的，所以在各渲染函数底部执行滚动条恢复
             if (this.currentViewMode === 'current') await this.renderCurrentFileHistory(contentContainer);
             else if (this.currentViewMode === 'modified') await this.renderModifiedFiles(contentContainer);
             else if (this.currentViewMode === 'global') await this.renderGlobalHistory(contentContainer);
@@ -2072,6 +2067,7 @@ class VersionHistoryView extends ItemView {
 
         const listWrapper = container.createEl('div', { cls: 'version-list-wrapper' });
         
+        // --- 极速秒开核心：如果缓存没有就绪，显示骨架屏（不阻塞界面切换） ---
         let loadingEl: HTMLElement | null = null;
         if (!this.plugin.globalHistoryCache) {
             loadingEl = listWrapper.createEl('div', { 
