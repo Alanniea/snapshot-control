@@ -175,6 +175,12 @@ export default class VersionControlPlugin extends Plugin {
     isRestoring: boolean = false; 
     isUnloaded: boolean = false;
 
+    // --- 新增：智能防抖刷新器（文件修改停止 1.5 秒后无缝刷新视图） ---
+    debouncedViewRefresh = debounce(() => {
+        if (this.isUnloaded) return;
+        this.refreshVersionHistoryView();
+    }, 1500, true);
+
     async onload() {
         this.isUnloaded = false;
         await this.loadSettings();
@@ -201,8 +207,12 @@ export default class VersionControlPlugin extends Plugin {
         this.registerEvent(
             this.app.vault.on('modify', (file) => {
                 if (this.isRestoring) return;
-                if (file instanceof TFile && this.settings.autoSave && this.settings.autoSaveOnModify) {
-                    this.handleFileModify(file);
+                if (file instanceof TFile) {
+                    if (this.settings.autoSave && this.settings.autoSaveOnModify) {
+                        this.handleFileModify(file);
+                    }
+                    // 新增：文件修改后，触发防抖刷新视图，实时更新修改时间
+                    this.debouncedViewRefresh();
                 }
             })
         );
