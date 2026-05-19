@@ -233,21 +233,17 @@ export default class VersionControlPlugin extends Plugin {
         await this.ensureVersionFolder();
 
         // --- 核心修复：绝对每秒刷新定时器 ---
-        let tick = 0;
         this.registerInterval(
             window.setInterval(() => { 
-                tick++;
                 
                 // 1. 状态栏：无论过去多久，每秒强制更新文本，彻底解决卡死问题
                 this.renderStatusBarTime();
 
-                // 2. 侧边栏视图：每 10 秒统一刷新一次相对时间
-                if (tick % 10 === 0) {
-                    const leaves = this.app.workspace.getLeavesOfType('version-history');
-                    leaves.forEach(leaf => { 
-                        if (leaf.view instanceof VersionHistoryView) leaf.view.updateRelativeTimes(); 
-                    });
-                }
+                // 2. 侧边栏视图：每秒强制统一刷新一次相对时间 (解决跳动滞后问题)
+                const leaves = this.app.workspace.getLeavesOfType('version-history');
+                leaves.forEach(leaf => { 
+                    if (leaf.view instanceof VersionHistoryView) leaf.view.updateRelativeTimes(); 
+                });
                 
             }, 1000)
         );
@@ -2113,9 +2109,9 @@ class VersionHistoryView extends ItemView {
 
                 const info = item.createEl('div', { cls: 'version-info' });
 
-                const headerRow = info.createEl('div', { cls: 'version-time-row', attr: { style: 'justify-content:flex-start; gap:8px;' } });
+                const headerRow = info.createEl('div', { cls: 'version-time-row', attr: { style: 'justify-content:flex-start; gap:8px; flex-wrap: nowrap;' } });
                 
-                const timeContainer = headerRow.createEl('div', { attr: { style: 'display: flex; align-items: baseline; gap: 4px; flex-wrap: wrap;' } });
+                const timeContainer = headerRow.createEl('div', { attr: { style: 'display: flex; align-items: baseline; gap: 4px; flex-shrink: 0; white-space: nowrap;' } });
                 timeContainer.createEl('span', { 
                     text: new Date(primaryTime).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second: '2-digit'}),
                     cls: 'version-time', attr: { style: 'font-family:var(--font-monospace); color:var(--text-accent); font-weight: bold;', title: isModifiedMode ? '文件最后修改时间' : '版本保存时间' }
