@@ -211,7 +211,7 @@ export default class VersionControlPlugin extends Plugin {
                     if (this.settings.autoSave && this.settings.autoSaveOnModify) {
                         this.handleFileModify(file);
                     }
-                    // 新增：文件修改后，触发防抖刷新视图，实时更新修改时间
+                    // 新增：文件修改后，触发防抖刷新视图，彻底解决不刷新的问题
                     this.debouncedViewRefresh();
                 }
             })
@@ -249,7 +249,7 @@ export default class VersionControlPlugin extends Plugin {
                 // 1. 状态栏：无论过去多久，每秒强制更新文本，彻底解决卡死问题
                 this.renderStatusBarTime();
 
-                // 2. 侧边栏视图：每秒强制统一刷新一次相对时间 (解决跳动滞后问题)
+                // 2. 侧边栏视图：每秒强制统一刷新一次相对时间 (无缝热更新DOM)
                 const leaves = this.app.workspace.getLeavesOfType('version-history');
                 leaves.forEach(leaf => { 
                     if (leaf.view instanceof VersionHistoryView) leaf.view.updateRelativeTimes(); 
@@ -1475,6 +1475,32 @@ class VersionHistoryView extends ItemView {
     }
 
     updateRelativeTimes() {
+        // --- 实时刻度注入：主动嗅探当前文件的修改时间并直接更新DOM ---
+        const activeFile = this.app.workspace.getActiveFile();
+        if (activeFile && this.currentViewMode === 'global' && this.plugin.settings.globalHistoryTimeMode === 'modified') {
+            const currentMtime = activeFile.stat.mtime;
+            const items = this.contentEl.querySelectorAll('.version-item');
+            items.forEach(item => {
+                const link = item.querySelector('.internal-link');
+                // 找到全库列表中属于当前打开文件的卡片
+                if (link && link.textContent === activeFile.path) {
+                    const absTimeEl = item.querySelector('.version-time') as HTMLElement;
+                    if (absTimeEl) {
+                        absTimeEl.dataset.timestamp = String(currentMtime);
+                        // 如果没有开启相对时间显示，才需要手动更新它的绝对时分秒
+                        if (!this.plugin.settings.useRelativeTime) {
+                            absTimeEl.textContent = new Date(currentMtime).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second: '2-digit'});
+                        }
+                    }
+                    const relTimeEl = item.querySelector('.version-global-relative-time-inline') as HTMLElement;
+                    if (relTimeEl) {
+                        relTimeEl.dataset.timestamp = String(currentMtime);
+                    }
+                }
+            });
+        }
+
+        // --- 标准的 DOM 遍历格式化相对时间 ---
         if (this.plugin.settings.useRelativeTime) {
             const timeElements = this.contentEl.querySelectorAll('.version-time');
             timeElements.forEach(el => {
@@ -1485,8 +1511,7 @@ class VersionHistoryView extends ItemView {
                 }
             });
         }
-        
-        // 强制定时刷新的内联相对时间元素
+
         const inlineRelativeElements = this.contentEl.querySelectorAll('.version-global-relative-time-inline');
         inlineRelativeElements.forEach(el => {
             const timestampStr = (el as HTMLElement).dataset.timestamp;
@@ -1532,13 +1557,25 @@ class VersionHistoryView extends ItemView {
 
             const contentContainer = buffer.createEl('div', { cls: 'vc-content-area' });
             
-            // 下方渲染是异步的，所以在各渲染函数底部执行滚动条恢复
+            // 彻底解决白屏闪烁：所有渲染都必须在这里被完全 await，确保 buffer 拼装完毕
             if (this.currentViewMode === 'current') await this.renderCurrentFileHistory(contentContainer);
             else if (this.currentViewMode === 'modified') await this.renderModifiedFiles(contentContainer);
             else if (this.currentViewMode === 'global') await this.renderGlobalHistory(contentContainer);
 
+            // 无缝替换 DOM，消除白屏
             realContainer.empty();
             realContainer.appendChild(buffer);
+
+            // 集中在这里恢复滚动条位置
+            requestAnimationFrame(() => {
+                const newScrollArea = realContainer.querySelector('.vc-content-area');
+                if (newScrollArea) {
+                    const savedScroll = this.scrollPositions.get(this.currentViewMode) || 0;
+                    if (savedScroll > 0) {
+                        newScrollArea.scrollTop = savedScroll;
+                    }
+                }
+            });
 
         } catch (error: unknown) {
             console.error("Version History Refresh Error:", getErrorMessage(error), error);
@@ -1824,14 +1861,6 @@ class VersionHistoryView extends ItemView {
         stats.createEl('span', { text: `共 ${this.totalVersions} 个版本` });
         if (this.searchQuery || this.showStarredOnly || this.filterTag) stats.createEl('span', { text: ` · 筛选后 ${filteredVersions.length} 个` });
 
-        // 恢复滚动条位置
-        requestAnimationFrame(() => {
-            const savedScroll = this.scrollPositions.get('current') || 0;
-            if (savedScroll > 0) {
-                container.scrollTop = savedScroll;
-            }
-        });
-
         // --- 异步执行后台 Diff 统计 (不阻塞主线程 UI) ---
         if (pendingStatsQueue.length > 0) {
             setTimeout(async () => {
@@ -2009,14 +2038,6 @@ class VersionHistoryView extends ItemView {
                 if (list.children.length === 0) this.refresh();
             });
         });
-
-        // 恢复滚动条位置
-        requestAnimationFrame(() => {
-            const savedScroll = this.scrollPositions.get('modified') || 0;
-            if (savedScroll > 0) {
-                container.scrollTop = savedScroll;
-            }
-        });
     }
 
     async renderGlobalHistory(container: HTMLElement) {
@@ -2051,7 +2072,6 @@ class VersionHistoryView extends ItemView {
 
         const listWrapper = container.createEl('div', { cls: 'version-list-wrapper' });
         
-        // --- 极速秒开核心：如果缓存没有就绪，显示骨架屏（不阻塞界面切换） ---
         let loadingEl: HTMLElement | null = null;
         if (!this.plugin.globalHistoryCache) {
             loadingEl = listWrapper.createEl('div', { 
@@ -2060,156 +2080,149 @@ class VersionHistoryView extends ItemView {
             });
         }
 
-        // --- 异步渲染机制，确保切页永不卡顿 ---
-        setTimeout(async () => {
-            let history = await this.plugin.getGlobalHistory(200); 
-            if (loadingEl) loadingEl.remove();
+        let history = await this.plugin.getGlobalHistory(200); 
+        if (loadingEl) loadingEl.remove();
 
-            if (history.length === 0) { 
-                this.renderEmptyState(listWrapper, '未找到任何版本记录'); 
-                return; 
-            }
+        if (history.length === 0) { 
+            this.renderEmptyState(listWrapper, '未找到任何版本记录'); 
+            return; 
+        }
 
-            if (this.showUniqueFilesOnly) {
-                const seen = new Set<string>();
-                history = history.filter(item => {
-                    if (seen.has(item.filePath)) return false;
-                    seen.add(item.filePath);
-                    return true;
-                });
-            }
+        if (this.showUniqueFilesOnly) {
+            const seen = new Set<string>();
+            history = history.filter(item => {
+                if (seen.has(item.filePath)) return false;
+                seen.add(item.filePath);
+                return true;
+            });
+        }
+        
+        const isModifiedMode = this.plugin.settings.globalHistoryTimeMode === 'modified';
+
+        // --- 重构：根据模式智能排序 ---
+        history.sort((a, b) => {
+            const timeA = isModifiedMode ? (a.file ? a.file.stat.mtime : a.version.timestamp) : a.version.timestamp;
+            const timeB = isModifiedMode ? (b.file ? b.file.stat.mtime : b.version.timestamp) : b.version.timestamp;
+            return timeB - timeA;
+        });
+
+        history = history.slice(0, 50);
+
+        const list = listWrapper.createEl('div', { cls: 'version-list' });
+
+        const globalDependentIds = new Set<string>();
+        history.forEach(item => {
+            if (item.version.baseVersionId) globalDependentIds.add(item.version.baseVersionId);
+        });
+
+        let currentDay = '';
+
+        history.forEach(({ version, filePath, file }) => {
             
-            const isModifiedMode = this.plugin.settings.globalHistoryTimeMode === 'modified';
+            const primaryTime = isModifiedMode ? (file ? file.stat.mtime : version.timestamp) : version.timestamp;
+            // 如果是修改模式，且有 file，副时间是 version；如果是保存模式，且有 file，副时间是 mtime
+            const secondaryTime = isModifiedMode ? version.timestamp : (file ? file.stat.mtime : null);
+            const secondaryLabel = isModifiedMode ? '保存时间' : '修改时间';
 
-            // --- 重构：根据模式智能排序 ---
-            history.sort((a, b) => {
-                const timeA = isModifiedMode ? (a.file ? a.file.stat.mtime : a.version.timestamp) : a.version.timestamp;
-                const timeB = isModifiedMode ? (b.file ? b.file.stat.mtime : b.version.timestamp) : b.version.timestamp;
-                return timeB - timeA;
-            });
+            const dateObj = new Date(primaryTime);
+            const dateStr = dateObj.toLocaleDateString();
 
-            history = history.slice(0, 50);
+            if (dateStr !== currentDay) {
+                currentDay = dateStr;
+                list.createEl('h4', { text: currentDay, cls: 'version-group-header' });
+            }
 
-            const list = listWrapper.createEl('div', { cls: 'version-list' });
+            const item = list.createEl('div', { cls: 'version-item' });
+            if (version.starred) item.addClass('version-starred');
 
-            const globalDependentIds = new Set<string>();
-            history.forEach(item => {
-                if (item.version.baseVersionId) globalDependentIds.add(item.version.baseVersionId);
-            });
+            const info = item.createEl('div', { cls: 'version-info' });
 
-            let currentDay = '';
-
-            history.forEach(({ version, filePath, file }) => {
-                
-                const primaryTime = isModifiedMode ? (file ? file.stat.mtime : version.timestamp) : version.timestamp;
-                // 如果是修改模式，且有 file，副时间是 version；如果是保存模式，且有 file，副时间是 mtime
-                const secondaryTime = isModifiedMode ? version.timestamp : (file ? file.stat.mtime : null);
-                const secondaryLabel = isModifiedMode ? '保存时间' : '修改时间';
-
-                const dateObj = new Date(primaryTime);
-                const dateStr = dateObj.toLocaleDateString();
-
-                if (dateStr !== currentDay) {
-                    currentDay = dateStr;
-                    list.createEl('h4', { text: currentDay, cls: 'version-group-header' });
+            const headerRow = info.createEl('div', { cls: 'version-time-row', attr: { style: 'justify-content:flex-start; gap:8px; flex-wrap: nowrap;' } });
+            
+            const timeContainer = headerRow.createEl('div', { attr: { style: 'display: flex; align-items: baseline; gap: 4px; flex-shrink: 0; white-space: nowrap;' } });
+            timeContainer.createEl('span', { 
+                text: new Date(primaryTime).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second: '2-digit'}),
+                cls: 'version-time', 
+                attr: { 
+                    'data-timestamp': String(primaryTime),
+                    'style': 'font-family:var(--font-monospace); color:var(--text-accent); font-weight: bold;', 
+                    'title': isModifiedMode ? '文件最后修改时间' : '版本保存时间' 
                 }
+            });
+            
+            // 将相对时间挂载在绝对时间的紧后方，并加入自动刷新类名
+            const primaryRelSpan = timeContainer.createEl('span', { attr: { style: 'color: var(--text-accent); font-size: 0.9em; white-space: nowrap;' } });
+            primaryRelSpan.appendText('(');
+            primaryRelSpan.createEl('span', {
+                text: this.plugin.getRelativeTime(primaryTime),
+                cls: 'version-global-relative-time-inline',
+                attr: { 'data-timestamp': String(primaryTime) }
+            });
+            primaryRelSpan.appendText(')');
 
-                const item = list.createEl('div', { cls: 'version-item' });
-                if (version.starred) item.addClass('version-starred');
+            const fileLink = headerRow.createEl('span', { text: filePath, cls: 'internal-link' });
+            fileLink.addEventListener('click', () => {
+                if (file) this.app.workspace.getLeaf(false).openFile(file);
+                else new Notice('文件已删除，无法打开');
+            });
+            if (!file) headerRow.createEl('span', { text: '(已删除)', attr: { style: 'color:var(--text-error); font-size:0.8em;' } });
 
-                const info = item.createEl('div', { cls: 'version-info' });
+            const msgRow = info.createEl('div', { cls: 'version-message-row' });
+            
+            const saveTypeLabel = this.plugin.getSaveTypeLabel(version.message);
+            let tagClass = 'version-tag-auto';
+            if (saveTypeLabel === '手动保存') tagClass = 'version-tag-manual';
+            else if (saveTypeLabel === '全库版本') tagClass = 'version-tag-snapshot';
+            else if (saveTypeLabel === '恢复前备份') tagClass = 'version-tag-backup';
+            msgRow.createEl('span', { text: saveTypeLabel, cls: `version-tag ${tagClass}` });
 
-                const headerRow = info.createEl('div', { cls: 'version-time-row', attr: { style: 'justify-content:flex-start; gap:8px; flex-wrap: nowrap;' } });
-                
-                const timeContainer = headerRow.createEl('div', { attr: { style: 'display: flex; align-items: baseline; gap: 4px; flex-shrink: 0; white-space: nowrap;' } });
-                timeContainer.createEl('span', { 
-                    text: new Date(primaryTime).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second: '2-digit'}),
-                    cls: 'version-time', attr: { style: 'font-family:var(--font-monospace); color:var(--text-accent); font-weight: bold;', title: isModifiedMode ? '文件最后修改时间' : '版本保存时间' }
+            if (version.diff) msgRow.createEl('span', { text: '增量', cls: 'version-tag version-tag-incremental' });
+            else if (version.content) msgRow.createEl('span', { text: '完整', cls: 'version-tag version-tag-full' });
+
+            if (globalDependentIds.has(version.id)) {
+                msgRow.createEl('span', { text: '🔒 依赖基准', cls: 'version-tag version-tag-locked', attr: { title: '被其他增量版本依赖，为保证数据完整性，不可删除' } });
+            }
+
+            if (version.tags && version.tags.length > 0) {
+                version.tags.forEach(tag => {
+                    msgRow.createEl('span', { text: tag, cls: 'version-tag version-tag-custom' });
                 });
-                
-                // 将相对时间挂载在绝对时间的紧后方，并加入自动刷新类名
-                const primaryRelSpan = timeContainer.createEl('span', { attr: { style: 'color: var(--text-accent); font-size: 0.9em; white-space: nowrap;' } });
-                primaryRelSpan.appendText('(');
-                primaryRelSpan.createEl('span', {
-                    text: this.plugin.getRelativeTime(primaryTime),
+            }
+
+            const pureMessage = version.message.replace(/\[.*?\]/g, '').trim();
+            if (pureMessage) {
+                msgRow.createEl('span', { text: pureMessage });
+            }
+
+            if (version.note && !this.plugin.settings.compactHistoryView) {
+                info.createEl('div', { text: `📝 ${version.note}`, cls: 'version-note' });
+            }
+
+            const statsRow = info.createEl('div', { cls: 'version-stats-row' });
+            statsRow.createEl('span', { text: this.plugin.formatFileSize(version.size), cls: 'version-size' });
+            
+            // 智能切换副时间的显示
+            if (secondaryTime) {
+                const secSpan = statsRow.createEl('span', { cls: 'version-size' });
+                secSpan.appendText(`| ${secondaryLabel}: ${new Date(secondaryTime).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second: '2-digit'})} (`);
+                secSpan.createEl('span', {
+                    text: this.plugin.getRelativeTime(secondaryTime),
                     cls: 'version-global-relative-time-inline',
-                    attr: { 'data-timestamp': String(primaryTime) }
+                    attr: { 'data-timestamp': String(secondaryTime) }
                 });
-                primaryRelSpan.appendText(')');
+                secSpan.appendText(`)`);
+            }
 
-                const fileLink = headerRow.createEl('span', { text: filePath, cls: 'internal-link' });
-                fileLink.addEventListener('click', () => {
-                    if (file) this.app.workspace.getLeaf(false).openFile(file);
-                    else new Notice('文件已删除，无法打开');
-                });
-                if (!file) headerRow.createEl('span', { text: '(已删除)', attr: { style: 'color:var(--text-error); font-size:0.8em;' } });
-
-                const msgRow = info.createEl('div', { cls: 'version-message-row' });
-                
-                const saveTypeLabel = this.plugin.getSaveTypeLabel(version.message);
-                let tagClass = 'version-tag-auto';
-                if (saveTypeLabel === '手动保存') tagClass = 'version-tag-manual';
-                else if (saveTypeLabel === '全库版本') tagClass = 'version-tag-snapshot';
-                else if (saveTypeLabel === '恢复前备份') tagClass = 'version-tag-backup';
-                msgRow.createEl('span', { text: saveTypeLabel, cls: `version-tag ${tagClass}` });
-
-                if (version.diff) msgRow.createEl('span', { text: '增量', cls: 'version-tag version-tag-incremental' });
-                else if (version.content) msgRow.createEl('span', { text: '完整', cls: 'version-tag version-tag-full' });
-
-                if (globalDependentIds.has(version.id)) {
-                    msgRow.createEl('span', { text: '🔒 依赖基准', cls: 'version-tag version-tag-locked', attr: { title: '被其他增量版本依赖，为保证数据完整性，不可删除' } });
+            const actions = item.createEl('div', { cls: 'version-actions' });
+            if (file) {
+                const diffBtn = actions.createEl('button', { text: '对比', cls: 'version-btn' });
+                diffBtn.addEventListener('click', () => { new DiffModal(this.app, this.plugin, file, version.id).open(); });
+                if (this.plugin.settings.enableQuickPreview) {
+                    const viewBtn = actions.createEl('button', { text: '预览', cls: 'version-btn' });
+                    viewBtn.addEventListener('click', () => { new QuickPreviewModal(this.app, this.plugin, file, version.id).open(); });
                 }
-
-                if (version.tags && version.tags.length > 0) {
-                    version.tags.forEach(tag => {
-                        msgRow.createEl('span', { text: tag, cls: 'version-tag version-tag-custom' });
-                    });
-                }
-
-                const pureMessage = version.message.replace(/\[.*?\]/g, '').trim();
-                if (pureMessage) {
-                    msgRow.createEl('span', { text: pureMessage });
-                }
-
-                if (version.note && !this.plugin.settings.compactHistoryView) {
-                    info.createEl('div', { text: `📝 ${version.note}`, cls: 'version-note' });
-                }
-
-                const statsRow = info.createEl('div', { cls: 'version-stats-row' });
-                statsRow.createEl('span', { text: this.plugin.formatFileSize(version.size), cls: 'version-size' });
-                
-                // 智能切换副时间的显示
-                if (secondaryTime) {
-                    const secSpan = statsRow.createEl('span', { cls: 'version-size' });
-                    secSpan.appendText(`| ${secondaryLabel}: ${new Date(secondaryTime).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second: '2-digit'})} (`);
-                    secSpan.createEl('span', {
-                        text: this.plugin.getRelativeTime(secondaryTime),
-                        cls: 'version-global-relative-time-inline',
-                        attr: { 'data-timestamp': String(secondaryTime) }
-                    });
-                    secSpan.appendText(`)`);
-                }
-
-                const actions = item.createEl('div', { cls: 'version-actions' });
-                if (file) {
-                    const diffBtn = actions.createEl('button', { text: '对比', cls: 'version-btn' });
-                    diffBtn.addEventListener('click', () => { new DiffModal(this.app, this.plugin, file, version.id).open(); });
-                    if (this.plugin.settings.enableQuickPreview) {
-                        const viewBtn = actions.createEl('button', { text: '预览', cls: 'version-btn' });
-                        viewBtn.addEventListener('click', () => { new QuickPreviewModal(this.app, this.plugin, file, version.id).open(); });
-                    }
-                }
-            });
-
-            // 恢复滚动条位置
-            requestAnimationFrame(() => {
-                const savedScroll = this.scrollPositions.get('global') || 0;
-                if (savedScroll > 0) {
-                    container.scrollTop = savedScroll;
-                }
-            });
-
-        }, 10); // 极短的延迟，优先让浏览器渲染页面框架，消除顿挫感
+            }
+        });
     }
     
     showVersionContextMenu(event: MouseEvent, file: TFile, version: VersionData, isLocked: boolean = false) {
