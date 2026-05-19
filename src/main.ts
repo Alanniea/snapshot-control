@@ -2115,14 +2115,14 @@ class VersionHistoryView extends ItemView {
 
                 const headerRow = info.createEl('div', { cls: 'version-time-row', attr: { style: 'justify-content:flex-start; gap:8px;' } });
                 
-                const timeContainer = headerRow.createEl('div', { attr: { style: 'display: flex; align-items: baseline; gap: 4px;' } });
+                const timeContainer = headerRow.createEl('div', { attr: { style: 'display: flex; align-items: baseline; gap: 4px; flex-wrap: wrap;' } });
                 timeContainer.createEl('span', { 
                     text: new Date(primaryTime).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second: '2-digit'}),
-                    cls: 'version-time', attr: { style: 'font-family:var(--font-monospace); color:var(--text-accent);', title: isModifiedMode ? '文件最后修改时间' : '版本保存时间' }
+                    cls: 'version-time', attr: { style: 'font-family:var(--font-monospace); color:var(--text-accent); font-weight: bold;', title: isModifiedMode ? '文件最后修改时间' : '版本保存时间' }
                 });
                 
                 // 将相对时间挂载在绝对时间的紧后方，并加入自动刷新类名
-                const primaryRelSpan = timeContainer.createEl('span', { attr: { style: 'color: var(--text-muted); font-size: 0.85em; font-weight: normal;' } });
+                const primaryRelSpan = timeContainer.createEl('span', { attr: { style: 'color: var(--text-accent); font-size: 0.9em; white-space: nowrap;' } });
                 primaryRelSpan.appendText('(');
                 primaryRelSpan.createEl('span', {
                     text: this.plugin.getRelativeTime(primaryTime),
