@@ -108,7 +108,7 @@ interface VersionControlSettings {
     
     deleteHistoryOnDelete: boolean; 
     compactHistoryView: boolean; 
-    globalHistoryTimeMode: 'modified' | 'saved'; // 新增：全库历史时间显示模式
+    globalHistoryTimeMode: 'modified' | 'saved'; // 全库历史时间显示模式
 }
 
 const DEFAULT_SETTINGS: VersionControlSettings = {
@@ -149,7 +149,7 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
     
     deleteHistoryOnDelete: false, 
     compactHistoryView: false, 
-    globalHistoryTimeMode: 'modified', // 默认显示文件修改时间
+    globalHistoryTimeMode: 'modified', 
 };
 
 // 视图模式类型定义
@@ -164,10 +164,10 @@ export default class VersionControlPlugin extends Plugin {
     versionCache: Map<string, VersionFile> = new Map();
     contentCache: LRUCache<string, string> = new LRUCache(50); 
     
-    // --- 极速秒开核心：全局历史内存缓存 ---
+    // --- 全局历史内存缓存 ---
     globalHistoryCache: { version: VersionData, filePath: string, file: TFile | null }[] | null = null;
     
-    // --- 智能变频刷新核心：状态栏内存锚点 ---
+    // --- 状态栏内存锚点 ---
     activeFileLastSaveTime: number | null = null;
     activeFileSaveLabel: string = '';
 
@@ -234,28 +234,24 @@ export default class VersionControlPlugin extends Plugin {
 
         await this.ensureVersionFolder();
 
-        // --- 核心修复：绝对每秒刷新定时器 ---
+        // 定时刷新定时器
         this.registerInterval(
             window.setInterval(() => { 
-                
-                // 1. 状态栏：无论过去多久，每秒强制更新文本，彻底解决卡死问题
                 this.renderStatusBarTime();
 
-                // 2. 侧边栏视图：每秒强制统一刷新一次相对时间 (无缝热更新DOM)
                 const leaves = this.app.workspace.getLeavesOfType('version-history');
                 leaves.forEach(leaf => { 
                     if (leaf.view instanceof VersionHistoryView) leaf.view.updateRelativeTimes(); 
                 });
-                
             }, 1000)
         );
 
-        // --- 极速秒开核心：后台静默预热缓存 ---
+        // 后台静默预热缓存
         setTimeout(() => {
             if (!this.isUnloaded) {
                 this.getGlobalHistory(200).catch(() => {});
             }
-        }, 5000); // 启动 5 秒后偷偷拉取数据
+        }, 5000);
 
         if (this.settings.showNotifications) {
             new Notice('✅ 版本控制插件已启动');
@@ -271,12 +267,13 @@ export default class VersionControlPlugin extends Plugin {
         this.globalHistoryCache = null;
     }
 
-    // --- 极速秒开核心：清理全局缓存的方法 ---
     clearGlobalCache() {
         this.globalHistoryCache = null;
     }
 
-    async yieldToMain() { return new Promise(resolve => setTimeout(resolve, 0)); }
+    async yieldToMain() { 
+        return new Promise(resolve => setTimeout(resolve, 0)); 
+    }
 
     async withLock(filePath: string, fn: () => Promise<void>, timeoutMs: number = 30000): Promise<void> {
         let currentLock = this.fileLocks.get(filePath) || Promise.resolve();
@@ -405,7 +402,7 @@ export default class VersionControlPlugin extends Plugin {
         return { mods, adds, rems };
     }
 
-    // --- 架构解耦：MVC 计算下沉 (提取独立业务逻辑) ---
+    // --- 异步计算差异统计数据 ---
     async calculateDiffStatsForVersionAsync(versionFile: VersionFile, versionId: string): Promise<boolean> {
         const versionIndex = versionFile.versionIndex?.get(versionId);
         if (versionIndex === undefined) return false;
@@ -450,7 +447,7 @@ export default class VersionControlPlugin extends Plugin {
             version.addedLines = added;
             version.removedLines = removed;
             version.modifiedLines = modified;
-            return true; // 标记已发生改变
+            return true; 
         } catch (error: unknown) {
             version.addedLines = 0; version.removedLines = 0; version.modifiedLines = 0;
             return true;
@@ -526,7 +523,7 @@ export default class VersionControlPlugin extends Plugin {
                     this.contentCache.deletePrefix(oldPath + "::");
                     this.lastModifiedTime.delete(oldPath);
                     this.lastModifiedTime.set(file.path, versionFile.lastModified);
-                    this.clearGlobalCache(); // --- 极速秒开核心：数据改变，清除缓存 ---
+                    this.clearGlobalCache(); 
                 } catch (e: unknown) { console.error("Rename Error", getErrorMessage(e), e); }
             }
         });
@@ -548,7 +545,7 @@ export default class VersionControlPlugin extends Plugin {
                 this.contentCache.deletePrefix(filePath + "::");
                 this.lastModifiedTime.delete(filePath);
                 this.debouncedSaves.delete(filePath);
-                this.clearGlobalCache(); // --- 极速秒开核心：数据改变，清除缓存 ---
+                this.clearGlobalCache(); 
             }
         });
     }
@@ -566,7 +563,6 @@ export default class VersionControlPlugin extends Plugin {
         return '手动保存';
     }
 
-    // --- 重写：智能剥离耗时逻辑与渲染逻辑 ---
     async updateStatusBar() {
         if (!this.settings.autoSave) { 
             this.statusBarItem.setText('⏸ 版本控制: 已暂停'); this.statusBarItem.title = '自动保存已暂停'; 
@@ -595,7 +591,6 @@ export default class VersionControlPlugin extends Plugin {
         }
     }
 
-    // --- 新增：极轻量级状态栏文字渲染 ---
     renderStatusBarTime() {
         if (this.activeFileLastSaveTime === null) return;
         const relativeTime = this.getRelativeTime(this.activeFileLastSaveTime);
@@ -678,9 +673,22 @@ export default class VersionControlPlugin extends Plugin {
         });
     }
 
+    // --- 极速增量检测 (避免对全文运行超高复杂度的 diffChars) ---
     countChanges(oldText: string, newText: string): number { 
-        const changes = Diff.diffChars(oldText, newText); let changeCount = 0;
-        for (const part of changes) { if (part.added || part.removed) { changeCount += part.value.length; } }
+        if (this.settings.autoSaveMinChanges <= 0) return 0;
+        
+        // 快速剪枝路径：当文本长度的绝对差异已大于设定阈值，即可直接通过判定，免去 Diff 算法
+        const lengthDiff = Math.abs(oldText.length - newText.length);
+        if (lengthDiff >= this.settings.autoSaveMinChanges) return lengthDiff;
+
+        // 如果未通过剪枝，在必须精准计数时，使用行级（或单词级）Diff 替代性能损耗极大的字符 Diff
+        const changes = Diff.diffLines(oldText, newText); 
+        let changeCount = 0;
+        for (const part of changes) { 
+            if (part.added || part.removed) { 
+                changeCount += part.value.length; 
+            } 
+        }
         return changeCount;
     }
     
@@ -702,7 +710,6 @@ export default class VersionControlPlugin extends Plugin {
         const existingDebouncer = this.debouncedSaves.get(file.path);
         if (existingDebouncer) this.debouncedSaves.delete(file.path);
 
-        // 直接保存版本，跳过输入界面，默认描述为 [Manual Save]
         await this.createVersion(file, '[Manual Save]', true, [], true);
     }
 
@@ -742,7 +749,7 @@ export default class VersionControlPlugin extends Plugin {
                             await this.saveVersionFile(file.path, versionFile);
                             this.versionCache.set(file.path, versionFile);
                             
-                            this.clearGlobalCache(); // --- 极速秒开核心：必须先清除缓存！ ---
+                            this.clearGlobalCache(); 
                             this.refreshVersionHistoryView();
                             this.updateStatusBar();
                             
@@ -755,19 +762,17 @@ export default class VersionControlPlugin extends Plugin {
                 }
             }
 
-            let addedLines = 0, removedLines = 0;
-            if (versionFile.versions.length > 0) {
-                try {
-                    const previousContentRaw = await this.getVersionContent(file.path, versionFile.versions[0]!.id);
-                    const previousContent = this.normalizeText(previousContentRaw);
-                    const diffResult = Diff.diffLines(previousContent + '\n', content + '\n');
-                    diffResult.forEach(part => {
-                        if (part.added) addedLines += part.count || 0;
-                        if (part.removed) removedLines += part.count || 0;
-                    });
-                } catch (e: unknown) {}
-            } else {
+            // 让出主线程，保障用户输入顺滑
+            await this.yieldToMain();
+
+            // --- 核心性能优化：移除前置全量 Diff (让侧边栏按需异步计算) ---
+            let addedLines = undefined;
+            let removedLines = undefined;
+            
+            // 只有当这是库中的首个版本时，才做低损耗的行数统计
+            if (versionFile.versions.length === 0) {
                 addedLines = content.split('\n').length;
+                removedLines = 0;
             }
 
             let newVersion: VersionData = {
@@ -786,6 +791,7 @@ export default class VersionControlPlugin extends Plugin {
 
                     if (chainLength < this.settings.rebuildBaseInterval) {
                         try {
+                            await this.yieldToMain(); // 进行较重算法前，温和释放CPU
                             const reversePatch = this.createDiff(content, prevVersion.content);
                             const testApply = Diff.applyPatch(content, reversePatch);
                             if (testApply !== false && this.normalizeText(testApply) === prevVersion.content) {
@@ -804,15 +810,20 @@ export default class VersionControlPlugin extends Plugin {
             versionFile.versions.unshift(newVersion);
             versionFile.lastModified = timestamp;
 
-            if (this.settings.autoClear) await this.cleanupVersionsInMemory(versionFile);
+            if (this.settings.autoClear) {
+                await this.yieldToMain();
+                await this.cleanupVersionsInMemory(versionFile);
+            }
 
             this.buildVersionIndex(versionFile);
+            
+            await this.yieldToMain(); // 在磁盘存储序列化前再度让出CPU
             await this.saveVersionFile(file.path, versionFile);
             
             this.versionCache.set(file.path, versionFile);
             this.contentCache.set(`${file.path}::${newVersion.id}`, content);
 
-            this.clearGlobalCache(); // --- 极速秒开核心：必须先清除缓存！ ---
+            this.clearGlobalCache(); 
             this.refreshVersionHistoryView();
             this.lastModifiedTime.set(file.path, timestamp);
             this.updateStatusBar();
@@ -820,7 +831,7 @@ export default class VersionControlPlugin extends Plugin {
             if (showNotification && this.settings.showNotifications) new Notice(`✅ 版本已保存: ${message}`);
         } catch (error: unknown) {
             console.error('保存版本失败:', getErrorMessage(error), error);
-            new Notice('❌ 保存版本失败,请查看控制台');
+            if (showNotification) new Notice('❌ 保存版本失败,请查看控制台');
         }
     }
 
@@ -886,7 +897,7 @@ export default class VersionControlPlugin extends Plugin {
         }
 
         versionFile.versions = proposedList;
-        this.clearGlobalCache(); // --- 极速秒开核心：数据改变，清除缓存 ---
+        this.clearGlobalCache(); 
         return originalCount - versionFile.versions.length;
     }
 
@@ -960,7 +971,10 @@ export default class VersionControlPlugin extends Plugin {
         try {
             const dataToSave: any = { filePath: versionFile.filePath, versions: versionFile.versions, lastModified: versionFile.lastModified };
             if (versionFile.baseVersion !== undefined) dataToSave.baseVersion = versionFile.baseVersion;
-            const content = JSON.stringify(dataToSave, null, 2);
+            
+            // --- 核心优化：移除冗余缩进，大幅降低大文件 JSON 序列化运算耗时 ---
+            const content = JSON.stringify(dataToSave);
+            
             if (this.settings.enableCompression) {
                 const compressed = pako.gzip(content);
                 const safeBuffer = compressed.buffer.slice(compressed.byteOffset, compressed.byteOffset + compressed.byteLength);
@@ -1223,19 +1237,16 @@ export default class VersionControlPlugin extends Plugin {
                 try {
                     const stat = await this.app.vault.adapter.stat(versionPath);
                     if (!stat) continue;
-                    // 第一层拦截：如果文件修改时间确实更新了
                     if (file.stat.mtime > stat.mtime + 2000) {
                         const versionFile = await this.loadVersionFile(file.path);
                         const lastVersion = versionFile.versions.length > 0 ? versionFile.versions[0] : null;
                         
                         if (lastVersion) {
-                            // --- 内容真实性校验 (防止改了又删回去的情况) ---
                             const rawContent = await this.app.vault.read(file);
                             const content = this.normalizeText(rawContent);
                             const currentHash = this.hashContent(content);
                             const currentHashOld = this.legacyStringHash(content);
                             
-                            // 如果当前内容算出来的哈希，跟上一个版本的哈希完全一样，说明内容其实没变！直接跳过。
                             if (lastVersion.hash === currentHash || lastVersion.hash === currentHashOld) {
                                 continue;
                             }
@@ -1250,7 +1261,6 @@ export default class VersionControlPlugin extends Plugin {
         return modifiedFiles.sort((a, b) => b.file.stat.mtime - a.file.stat.mtime);
     }
 
-    // --- 智能相对时间格式化（平滑过渡到 1 分钟） ---
     getRelativeTime(timestamp: number): string { 
         const diff = Math.max(0, Date.now() - timestamp);
         if (diff < 60000) {
@@ -1263,7 +1273,6 @@ export default class VersionControlPlugin extends Plugin {
     }
 
     async getGlobalHistory(limit: number = 100): Promise<{ version: VersionData, filePath: string, file: TFile | null }[]> {
-        // --- 极速秒开核心：如果内存里有缓存，直接 0 毫秒返回！ ---
         if (this.globalHistoryCache) {
             return this.globalHistoryCache.slice(0, limit);
         }
@@ -1280,14 +1289,12 @@ export default class VersionControlPlugin extends Plugin {
         }));
         fileStats.sort((a, b) => b.mtime - a.mtime);
 
-        // 为了极速响应，首次提取时只读取最近修改的前 20 个文件
         const targetFiles = fileStats.slice(0, 20).map(item => item.file);
         const allVersions: { version: VersionData, filePath: string, file: TFile | null }[] = [];
 
         let count = 0;
         for (const vFile of targetFiles) {
             count++; 
-            // 增加防卡顿频率，每处理 4 个文件释放一下主线程，防假死
             if (count % 4 === 0) await this.yieldToMain();
             try {
                 const contentStr = await this.readCompressedOrRaw(vFile);
@@ -1295,7 +1302,6 @@ export default class VersionControlPlugin extends Plugin {
                 const data = JSON.parse(contentStr) as VersionFile;
                 if (!data.versions) continue;
 
-                // 顺手塞进内存缓存，一会儿点击“对比”或者“预览”时就能秒开了
                 this.versionCache.set(data.filePath, data);
 
                 const tFile = this.app.vault.getAbstractFileByPath(data.filePath);
@@ -1306,7 +1312,6 @@ export default class VersionControlPlugin extends Plugin {
         }
         allVersions.sort((a, b) => b.version.timestamp - a.version.timestamp);
         
-        // --- 极速秒开核心：保存到全局缓存 ---
         this.globalHistoryCache = allVersions;
         return allVersions.slice(0, limit);
     }
@@ -1418,7 +1423,6 @@ class QuickPreviewModal extends Modal {
     onClose() { this.contentEl.empty(); }
 }
 
-// --- 性能重构：侧边栏视图全面解耦、事件委托与局部刷新 ---
 class VersionHistoryView extends ItemView {
     plugin: VersionControlPlugin;
     selectedVersions: Set<string> = new Set();
@@ -1433,7 +1437,7 @@ class VersionHistoryView extends ItemView {
     currentViewMode: ViewMode = 'current';
     isRefreshing: boolean = false;
     collapsedGroups: Set<string> = new Set(); 
-    scrollPositions: Map<ViewMode, number> = new Map(); // 新增：分 Tab 记忆滚动条位置
+    scrollPositions: Map<ViewMode, number> = new Map(); 
 
     constructor(leaf: WorkspaceLeaf, plugin: VersionControlPlugin) {
         super(leaf);
@@ -1470,19 +1474,16 @@ class VersionHistoryView extends ItemView {
     }
 
     updateRelativeTimes() {
-        // --- 实时刻度注入：主动嗅探当前文件的修改时间并直接更新DOM ---
         const activeFile = this.app.workspace.getActiveFile();
         if (activeFile && this.currentViewMode === 'global' && this.plugin.settings.globalHistoryTimeMode === 'modified') {
             const currentMtime = activeFile.stat.mtime;
             const items = this.contentEl.querySelectorAll('.version-item');
             items.forEach(item => {
                 const link = item.querySelector('.internal-link');
-                // 找到全库列表中属于当前打开文件的卡片
                 if (link && link.textContent === activeFile.path) {
                     const absTimeEl = item.querySelector('.version-time') as HTMLElement;
                     if (absTimeEl) {
                         absTimeEl.dataset.timestamp = String(currentMtime);
-                        // 如果没有开启相对时间显示，才需要手动更新它的绝对时分秒
                         if (!this.plugin.settings.useRelativeTime) {
                             absTimeEl.textContent = new Date(currentMtime).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second: '2-digit'});
                         }
@@ -1495,7 +1496,6 @@ class VersionHistoryView extends ItemView {
             });
         }
 
-        // --- 标准的 DOM 遍历格式化相对时间 ---
         if (this.plugin.settings.useRelativeTime) {
             const timeElements = this.contentEl.querySelectorAll('.version-time');
             timeElements.forEach(el => {
@@ -1537,7 +1537,6 @@ class VersionHistoryView extends ItemView {
 
         const realContainer = this.contentEl;
         
-        // 刷新前，捕获并保存当前的滚动条位置
         const currentScrollArea = realContainer.querySelector('.vc-content-area');
         if (currentScrollArea) {
             this.scrollPositions.set(this.currentViewMode, currentScrollArea.scrollTop);
@@ -1552,16 +1551,13 @@ class VersionHistoryView extends ItemView {
 
             const contentContainer = buffer.createEl('div', { cls: 'vc-content-area' });
             
-            // 下方渲染是异步的，所以在各渲染函数底部执行滚动条恢复
             if (this.currentViewMode === 'current') await this.renderCurrentFileHistory(contentContainer);
             else if (this.currentViewMode === 'modified') await this.renderModifiedFiles(contentContainer);
             else if (this.currentViewMode === 'global') await this.renderGlobalHistory(contentContainer);
 
-            // 无缝替换 DOM，消除白屏
             realContainer.empty();
             realContainer.appendChild(buffer);
 
-            // 集中在这里恢复滚动条位置
             requestAnimationFrame(() => {
                 const newScrollArea = realContainer.querySelector('.vc-content-area');
                 if (newScrollArea) {
@@ -1592,12 +1588,11 @@ class VersionHistoryView extends ItemView {
             btn.addEventListener('click', () => { 
                 this.currentViewMode = tab.id; 
                 this.currentPage = 0; 
-                this.scrollPositions.set(tab.id, 0); // 切换 Tab 时重置滚动条为顶部
+                this.scrollPositions.set(tab.id, 0); 
                 this.refresh(); 
             });
         });
 
-        // 紧凑模式切换按钮
         const compactBtn = tabBar.createEl('button', { 
             cls: 'vc-global-refresh', 
             attr: { 'aria-label': '切换紧凑/宽松视图', 'title': '切换紧凑视图' } 
@@ -1617,11 +1612,10 @@ class VersionHistoryView extends ItemView {
             if (this.isRefreshing) return; 
             refreshBtn.addClass('is-spinning'); 
             
-            // 手动点击刷新按钮时，强制清空缓存
             if (this.currentViewMode === 'current' && this.currentFile) this.plugin.versionCache.delete(this.currentFile.path);
             else if (this.currentViewMode === 'global' || this.currentViewMode === 'modified') {
                 this.plugin.versionCache.clear(); 
-                this.plugin.clearGlobalCache(); // --- 极速秒开核心：手动刷新强制清除全局缓存 ---
+                this.plugin.clearGlobalCache(); 
             }
             
             await this.refresh(); 
@@ -1629,13 +1623,11 @@ class VersionHistoryView extends ItemView {
         });
     }
 
-    // 更新批量操作工具栏（局部刷新）
     updateBatchToolbar(container: HTMLElement, file: TFile) {
         let toolbar = container.querySelector('.version-batch-toolbar') as HTMLElement;
         if (this.selectedVersions.size > 0) {
             if (!toolbar) {
                 toolbar = container.createEl('div', { cls: 'version-toolbar version-batch-toolbar' });
-                // 插入到 header 下方，list 上方
                 const header = container.querySelector('.version-header');
                 if (header && header.nextSibling) {
                     header.parentNode?.insertBefore(toolbar, header.nextSibling);
@@ -1664,7 +1656,6 @@ class VersionHistoryView extends ItemView {
         this.currentFile = file;
         if (!file) { this.renderEmptyState(container, '请先打开一个文件'); return; }
 
-        // --- Header 吸顶 ---
         const header = container.createEl('div', { cls: 'version-header' });
         const title = header.createEl('div', { cls: 'version-title' });
         title.createEl('h3', { text: file.basename });
@@ -1683,7 +1674,6 @@ class VersionHistoryView extends ItemView {
         searchInput.value = this.searchQuery;
         searchInput.addEventListener('input', (e) => { this.searchQuery = (e.target as HTMLInputElement).value; this.currentPage = 0; this.refresh(); });
 
-        // --- 重构：为按钮添加图标以便在移动端显示 ---
         const starFilterBtn = actions.createEl('button', { 
             cls: this.showStarredOnly ? 'mod-cta' : '',
             attr: { 'aria-label': '仅显示星标版本' }
@@ -1708,18 +1698,15 @@ class VersionHistoryView extends ItemView {
             menu.showAtMouseEvent(e as MouseEvent);
         });
 
-        // 异步加载版本文件
         const versionFile = await this.plugin.loadVersionFile(file.path);
         const allVersions = versionFile.versions;
         this.totalVersions = allVersions.length;
 
-        // 收集被依赖的基准版本 ID (锁定标记)
         const dependentIds = new Set<string>();
         allVersions.forEach(v => { if (v.baseVersionId) dependentIds.add(v.baseVersionId); });
 
         if (this.totalVersions === 0) { this.renderEmptyState(container, '暂无版本历史'); return; }
 
-        // 过滤
         let filteredVersions = allVersions;
         if (this.showStarredOnly) filteredVersions = filteredVersions.filter(v => v.starred);
         if (this.filterTag) filteredVersions = filteredVersions.filter(v => v.tags && v.tags.includes(this.filterTag!));
@@ -1733,7 +1720,6 @@ class VersionHistoryView extends ItemView {
 
         if (filteredVersions.length === 0) { this.renderEmptyState(container, `未找到匹配的版本`); return; }
 
-        // 分页
         const perPage = this.plugin.settings.versionsPerPage > 0 ? this.plugin.settings.versionsPerPage : filteredVersions.length;
         const totalPages = Math.ceil(filteredVersions.length / perPage);
         if (this.currentPage >= totalPages) this.currentPage = Math.max(0, totalPages - 1);
@@ -1745,7 +1731,6 @@ class VersionHistoryView extends ItemView {
 
         const listContainer = container.createEl('div', { cls: 'version-list' });
 
-        // --- 事件委托：统一拦截所有版本卡片的点击事件 ---
         listContainer.addEventListener('click', async (e) => {
             const target = e.target as HTMLElement;
             const actionEl = target.closest('[data-action]');
@@ -1757,7 +1742,6 @@ class VersionHistoryView extends ItemView {
 
             if (action === 'star') {
                 e.stopPropagation();
-                // 局部刷新：先乐观修改 DOM
                 const isStarred = actionEl.textContent === '⭐';
                 actionEl.textContent = isStarred ? '☆' : '⭐';
                 const itemEl = actionEl.closest('.version-item');
@@ -1765,7 +1749,6 @@ class VersionHistoryView extends ItemView {
                     if (isStarred) itemEl.classList.remove('version-starred');
                     else itemEl.classList.add('version-starred');
                 }
-                // 后台更新文件
                 await this.plugin.toggleVersionStar(file.path, versionId);
             } else if (action === 'restore') {
                 this.confirmRestore(file, versionId);
@@ -1781,7 +1764,6 @@ class VersionHistoryView extends ItemView {
             }
         });
 
-        // 统一拦截复选框
         listContainer.addEventListener('change', (e) => {
             const target = e.target as HTMLInputElement;
             if (target.matches('.version-checkbox')) {
@@ -1794,7 +1776,6 @@ class VersionHistoryView extends ItemView {
             }
         });
 
-        // --- 渲染卡片分组 ---
         const groupedVersions: { [key: string]: VersionData[] } = {};
         pageVersions.forEach(version => {
             const group = this.getRelativeDateGroup(version.timestamp);
@@ -1802,12 +1783,11 @@ class VersionHistoryView extends ItemView {
             groupedVersions[group]!.push(version);
         });
 
-        const pendingStatsQueue: string[] = []; // 用于异步计算差异统计的任务队列
+        const pendingStatsQueue: string[] = []; 
 
         for (const groupName in groupedVersions) {
             const versionsInGroup = groupedVersions[groupName]!;
             
-            // 可折叠分组 Header
             const groupHeader = listContainer.createEl('h4', { cls: 'version-group-header' });
             const isCollapsed = this.collapsedGroups.has(groupName);
             groupHeader.innerHTML = `<span class="group-chevron">${isCollapsed ? '▶' : '▼'}</span> ${groupName} <span class="group-count">(${versionsInGroup.length})</span>`;
@@ -1828,18 +1808,15 @@ class VersionHistoryView extends ItemView {
                 }
             });
 
-            // 渲染组内的卡片
             for (const version of versionsInGroup) {
                 this.createVersionCard(groupContent, version, dependentIds);
                 
-                // 收集需要异步计算差异的任务
                 if (typeof version.addedLines !== 'number') {
                     pendingStatsQueue.push(version.id);
                 }
             }
         }
 
-        // 分页组件
         if (totalPages > 1) {
             const pagination = container.createEl('div', { cls: 'version-pagination' });
             const prevBtn = pagination.createEl('button', { text: '←', cls: 'version-pagination-btn' });
@@ -1851,12 +1828,11 @@ class VersionHistoryView extends ItemView {
             nextBtn.addEventListener('click', () => { if (this.currentPage < totalPages - 1) { this.currentPage++; this.refresh(); } });
         }
 
-        // 底部统计
         const stats = container.createEl('div', { cls: 'version-footer' });
         stats.createEl('span', { text: `共 ${this.totalVersions} 个版本` });
         if (this.searchQuery || this.showStarredOnly || this.filterTag) stats.createEl('span', { text: ` · 筛选后 ${filteredVersions.length} 个` });
 
-        // --- 异步执行后台 Diff 统计 (不阻塞主线程 UI) ---
+        // --- 后台异步静默计算并渲染行数 Diff (完美防止打字保存时卡顿) ---
         if (pendingStatsQueue.length > 0) {
             setTimeout(async () => {
                 let changed = false;
@@ -1864,21 +1840,19 @@ class VersionHistoryView extends ItemView {
                     const success = await this.plugin.calculateDiffStatsForVersionAsync(versionFile, id);
                     if (success) {
                         changed = true;
-                        // 局部刷新 DOM：找到对应的进度条并替换
                         const version = versionFile.versions.find(v => v.id === id);
                         if (version) {
                             const statsContainer = listContainer.querySelector(`#stats-${id}`) as HTMLElement;
                             if (statsContainer) this.renderDiffStatsBar(statsContainer, version);
                         }
                     }
-                    await this.plugin.yieldToMain(); // 防卡死
+                    await this.plugin.yieldToMain(); 
                 }
                 if (changed) await this.plugin.saveVersionFile(file.path, versionFile);
             }, 100);
         }
     }
 
-    // 创建独立的版本卡片 DOM
     createVersionCard(container: HTMLElement, version: VersionData, dependentIds: Set<string>) {
         const item = container.createEl('div', { cls: 'version-item' });
         if (version.starred) item.addClass('version-starred');
@@ -1898,7 +1872,6 @@ class VersionHistoryView extends ItemView {
         const info = item.createEl('div', { cls: 'version-info' });
         const timeRow = info.createEl('div', { cls: 'version-time-row' });
         
-        // 星标使用 data-action 委托
         timeRow.createEl('span', { 
             text: version.starred ? '⭐' : '☆', 
             cls: 'version-star-btn',
@@ -1944,7 +1917,6 @@ class VersionHistoryView extends ItemView {
         const statsRow = info.createEl('div', { cls: 'version-stats-row' });
         statsRow.createEl('span', { text: this.plugin.formatFileSize(version.size), cls: 'version-size' });
 
-        // Diff 统计占位符或渲染
         const diffStatsContainer = statsRow.createEl('div', { cls: 'version-diff-stats', attr: { id: `stats-${version.id}` } });
         if (typeof version.addedLines === 'number') {
             this.renderDiffStatsBar(diffStatsContainer, version);
@@ -1952,7 +1924,6 @@ class VersionHistoryView extends ItemView {
             diffStatsContainer.innerHTML = `<span style="color:var(--text-faint); font-size:10px;">计算中...</span>`;
         }
 
-        // 按钮全部使用 data-action 事件委托
         const actions = item.createEl('div', { cls: 'version-actions' });
         if (this.plugin.settings.enableQuickPreview) {
             actions.createEl('button', { text: '预览', cls: 'version-btn', attr: { 'data-action': 'preview', 'data-version-id': version.id } });
@@ -1962,7 +1933,6 @@ class VersionHistoryView extends ItemView {
         actions.createEl('button', { text: '更多', cls: 'version-btn', attr: { 'data-action': 'more', 'data-version-id': version.id } });
     }
 
-    // 独立渲染统计红绿条的方法
     renderDiffStatsBar(container: HTMLElement, version: VersionData) {
         container.empty();
         const vAdded = version.addedLines || 0;
@@ -2041,7 +2011,6 @@ class VersionHistoryView extends ItemView {
         
         const btnGroup = header.createEl('div', { attr: { style: 'display: flex; gap: 8px;' } });
 
-        // --- 新增：时间模式切换按钮 ---
         const timeModeBtn = btnGroup.createEl('button', {
             cls: this.plugin.settings.globalHistoryTimeMode === 'modified' ? 'mod-cta' : '',
             attr: { 'aria-label': '切换全库排序与显示时间', style: 'padding: 4px 10px; font-size: 12px; display: flex; align-items: center; gap: 4px;' }
@@ -2067,7 +2036,6 @@ class VersionHistoryView extends ItemView {
 
         const listWrapper = container.createEl('div', { cls: 'version-list-wrapper' });
         
-        // --- 极速秒开核心：如果缓存没有就绪，显示骨架屏（不阻塞界面切换） ---
         let loadingEl: HTMLElement | null = null;
         if (!this.plugin.globalHistoryCache) {
             loadingEl = listWrapper.createEl('div', { 
@@ -2095,7 +2063,6 @@ class VersionHistoryView extends ItemView {
         
         const isModifiedMode = this.plugin.settings.globalHistoryTimeMode === 'modified';
 
-        // --- 重构：根据模式智能排序 ---
         history.sort((a, b) => {
             const timeA = isModifiedMode ? (a.file ? a.file.stat.mtime : a.version.timestamp) : a.version.timestamp;
             const timeB = isModifiedMode ? (b.file ? b.file.stat.mtime : b.version.timestamp) : b.version.timestamp;
@@ -2116,7 +2083,6 @@ class VersionHistoryView extends ItemView {
         history.forEach(({ version, filePath, file }) => {
             
             const primaryTime = isModifiedMode ? (file ? file.stat.mtime : version.timestamp) : version.timestamp;
-            // 如果是修改模式，且有 file，副时间是 version；如果是保存模式，且有 file，副时间是 mtime
             const secondaryTime = isModifiedMode ? version.timestamp : (file ? file.stat.mtime : null);
             const secondaryLabel = isModifiedMode ? '保存时间' : '修改时间';
 
@@ -2146,7 +2112,6 @@ class VersionHistoryView extends ItemView {
                 }
             });
             
-            // 将相对时间挂载在绝对时间的紧后方，并加入自动刷新类名
             const primaryRelSpan = timeContainer.createEl('span', { attr: { style: 'color: var(--text-accent); font-size: 0.9em; white-space: nowrap;' } });
             primaryRelSpan.appendText('(');
             primaryRelSpan.createEl('span', {
@@ -2197,7 +2162,6 @@ class VersionHistoryView extends ItemView {
             const statsRow = info.createEl('div', { cls: 'version-stats-row' });
             statsRow.createEl('span', { text: this.plugin.formatFileSize(version.size), cls: 'version-size' });
             
-            // 智能切换副时间的显示
             if (secondaryTime) {
                 const secSpan = statsRow.createEl('span', { cls: 'version-size' });
                 secSpan.appendText(`| ${secondaryLabel}: ${new Date(secondaryTime).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second: '2-digit'})} (`);
@@ -2301,7 +2265,6 @@ class VersionHistoryView extends ItemView {
     }
 
     async batchDelete(file: TFile) {
-        // --- 补全：在 UI 层面提供更友好的拦截 ---
         new ConfirmModal(
             this.app,
             '确认批量删除',
@@ -2559,7 +2522,7 @@ class DiffModal extends Modal {
         this.resizeHandler = () => {
              if (this.textDiffContainer && this.textDiffContainer.hasClass('diff-split')) {
                 this.alignSplitViewLines();
-            }
+             }
         };
     }
 
@@ -2591,7 +2554,6 @@ class DiffModal extends Modal {
             contentEl.addClass('is-mobile');
         }
 
-        // 使用原生事件监听，并在 onClose 中安全移除
         window.addEventListener('resize', this.resizeHandler);
 
         const headerContainer = contentEl.createEl('div', { cls: 'diff-modal-header' });
@@ -2695,14 +2657,12 @@ class DiffModal extends Modal {
             const isLineBased = this.currentGranularity === 'line';
             const isUnified = modeSelect.value === 'unified';
 
-            // --- 组 1：基础差异粒度 (最核心的底层逻辑) ---
             menu.addItem(item => item.setTitle('行级对比').setIcon('list').setChecked(isLineBased).onClick(() => this.updateGranularity('line')));
             menu.addItem(item => item.setTitle('单词级对比').setIcon('whole-word').setChecked(this.currentGranularity === 'word').onClick(() => this.updateGranularity('word')));
             menu.addItem(item => item.setTitle('字符级对比').setIcon('type').setChecked(this.currentGranularity === 'char').onClick(() => this.updateGranularity('char')));
 
             menu.addSeparator();
 
-            // --- 组 2：视图模式 (整体 UI 框架) ---
             menu.addItem(item => item.setTitle('统一视图').setIcon('align-justify').setChecked(isUnified).onClick(() => { modeSelect.value = 'unified'; modeSelect.dispatchEvent(new Event('change')); }));
             menu.addItem(item => item.setTitle('左右分栏').setIcon('columns').setChecked(!isUnified).onClick(() => { modeSelect.value = 'split'; modeSelect.dispatchEvent(new Event('change')); }));
             
@@ -2716,7 +2676,6 @@ class DiffModal extends Modal {
 
             menu.addSeparator();
 
-            // --- 组 3：行内高亮算法 (作为行级对比的细化，紧跟其后) ---
             if (isLineBased) {
                 menu.addItem(item => item.setTitle('行内高亮: 按行').setIcon('rows').setChecked(this.plugin.settings.inlineDiffAlgorithm === 'line').onClick(async () => {
                     this.plugin.settings.inlineDiffAlgorithm = 'line';
@@ -2737,7 +2696,6 @@ class DiffModal extends Modal {
                 menu.addSeparator();
             }
 
-            // --- 组 4：通用显示与辅助排版 ---
             menu.addItem(item => item.setTitle('自动换行').setIcon('wrap-text').setChecked(this.wrapLines).onClick(() => { this.wrapLines = !this.wrapLines; this.renderTextDiff(); }));
             
             if (isLineBased) {
@@ -2992,9 +2950,9 @@ class DiffModal extends Modal {
         }, 50);
     }
 
-    // 🚀 性能重构：时间切片渲染引擎 (Time-Slicing Render Engine)
+    // 时间切片渲染引擎 (确保大量差异行渲染时无阻塞)
     async executeRenderTasks(container: HTMLElement, tasks: ((frag: DocumentFragment) => void)[]) {
-        const CHUNK_SIZE = 100; // 每一帧渲染 100 行差异
+        const CHUNK_SIZE = 100; 
         this.loadingOverlay.style.display = 'flex';
         const msgEl = this.loadingOverlay.querySelector('.diff-loading-message') as HTMLElement;
         
@@ -3046,7 +3004,6 @@ class DiffModal extends Modal {
 
         this.totalDiffs = this.diffElements.length;
 
-        // === 【新增：空白恐慌 空状态 (Empty State)】 ===
         if (this.totalDiffs === 0) {
             container.empty();
             container.removeClass('diff-split');
@@ -3057,7 +3014,6 @@ class DiffModal extends Modal {
             emptyState.createEl('h3', { text: '这两个版本完全一致', attr: { style: 'color: var(--text-normal); margin: 0 0 8px 0; font-size: 16px;' } });
             emptyState.createEl('p', { text: '没有检测到任何修改内容' + (this.ignoreWhitespace ? ' (已忽略空白字符)' : ''), attr: { style: 'margin: 0; font-size: 13px;' } });
         }
-        // ==============================================
 
         this.updateNavState();
         if (this.totalDiffs > 0) setTimeout(() => this.scrollToDiff(), 100);
@@ -3074,7 +3030,6 @@ class DiffModal extends Modal {
         let leftProcessed = this.leftContent;
         let rightProcessed = this.rightContent;
         
-        // 强制无条件追加 \n 确保底层统计不出错
         const safeLeft = leftProcessed + '\n';
         const safeRight = rightProcessed + '\n';
         
@@ -3423,7 +3378,6 @@ class DiffModal extends Modal {
              if (this.plugin.settings.inlineDiffAlgorithm === 'line') {
                  return Diff.diffLines(text1, text2);
              } else if (this.plugin.settings.inlineDiffAlgorithm === 'char') {
-                 // @ts-ignore
                  return Diff.diffChars(text1, text2);
              } else {
                  return this.diffWordsCJK(text1, text2);
@@ -3459,7 +3413,6 @@ class DiffModal extends Modal {
 
         const renderLine = (content: string | DocumentFragment, type: ProcessedDiff['type'], lineNumLeft: number | null, lineNumRight: number | null) => {
             renderTasks.push((frag: DocumentFragment) => {
-                // @ts-ignore Obsidian 的 createEl 绑定在 Node 原型上，可以直接给 fragment 使用
                 const lineEl = frag.createEl('div', { cls: `diff-line diff-${type}` });
                 
                 if (type === 'added') lineEl.addClass('diff-line-bg-added');
@@ -3624,7 +3577,6 @@ class DiffModal extends Modal {
                         if (showLine) {
                              if (lineIdx > lastLineShown + 1 && this.contextLines < 9999) {
                                  renderTasks.push((frag: DocumentFragment) => {
-                                     // @ts-ignore
                                      const skippedEl = frag.createEl('div', { cls: 'diff-line diff-context-gap' });
                                      skippedEl.createEl('span', { cls: 'line-number-container' });
                                      skippedEl.createEl('span', { cls: 'diff-marker', text: '...' });
@@ -3675,12 +3627,10 @@ class DiffModal extends Modal {
                 diffResult.forEach(part => {
                     const text = this.showWhitespace ? this.visualizeWhitespace(part.value) : part.value;
                     if (part.removed) {
-                        // @ts-ignore
                         const span = frag.createEl('span', { text, cls: 'diff-word-removed' });
                         span.dataset.diffIndex = String(diffIdx);
                         this.diffElements.push(span);
                     } else if (!part.added && this.contextLines > 0) {
-                        // @ts-ignore
                         frag.createEl('span', { text });
                     }
                 });
@@ -3691,12 +3641,10 @@ class DiffModal extends Modal {
                 diffResult.forEach(part => {
                     const text = this.showWhitespace ? this.visualizeWhitespace(part.value) : part.value;
                     if (part.added) {
-                        // @ts-ignore
                         const span = frag.createEl('span', { text, cls: 'diff-word-added' });
                         span.dataset.diffIndex = String(rightDiffIdx++);
                         this.diffElements.push(span);
                     } else if (!part.removed && this.contextLines > 0) {
-                        // @ts-ignore
                         frag.createEl('span', { text });
                         rightDiffIdx++;
                     }
@@ -3728,7 +3676,6 @@ class DiffModal extends Modal {
             if (this.plugin.settings.inlineDiffAlgorithm === 'line') {
                 return Diff.diffLines(text1, text2);
             } else if (this.plugin.settings.inlineDiffAlgorithm === 'char') {
-                // @ts-ignore
                 return Diff.diffChars(text1, text2);
             } else {
                 return this.diffWordsCJK(text1, text2);
@@ -3760,7 +3707,6 @@ class DiffModal extends Modal {
     
         const renderLine = (isLeft: boolean, content: string | DocumentFragment, type: string, lineNum: number | null) => {
             const task = (frag: DocumentFragment) => {
-                // @ts-ignore
                 const lineEl = frag.createEl('div', { cls: `diff-line diff-${type}` });
 
                 if (type === 'added') lineEl.addClass('diff-line-bg-added');
@@ -3910,7 +3856,7 @@ class DiffModal extends Modal {
                         renderLine(false, line, 'added', rightLineNum++);
                     });
                 }
-                i++; // 跳过下一个已处理的 part
+                i++; 
             } else if (part.added) {
                 const lines = part.value.replace(/\n$/, '').split('\n');
                 for (const line of lines) {
@@ -3947,13 +3893,11 @@ class DiffModal extends Modal {
                     if (showLine) {
                         if (lineIdx > lastLineShown + 1 && this.contextLines < 9999) {
                             renderTasksLeft.push((frag: DocumentFragment) => {
-                                // @ts-ignore
                                 const skippedLeft = frag.createEl('div', { cls: 'diff-line diff-context-gap' });
                                 skippedLeft.createEl('span', { cls: 'line-number-container' });
                                 skippedLeft.createEl('span', { cls: 'diff-marker', text: '...' });
                             });
                             renderTasksRight.push((frag: DocumentFragment) => {
-                                // @ts-ignore
                                 const skippedRight = frag.createEl('div', { cls: 'diff-line diff-context-gap' });
                                 skippedRight.createEl('span', { cls: 'line-number-container' });
                                 skippedRight.createEl('span', { cls: 'diff-marker', text: '...' });
@@ -4022,7 +3966,6 @@ class VersionControlSettingTab extends PluginSettingTab {
             const stats = await this.plugin.getStorageStats();
             const statsEl = containerEl.createEl('div', { cls: 'version-stats' });
             
-            // 头部：标题与刷新按钮同行
             const headerEl = statsEl.createEl('div', { cls: 'stats-header' });
             headerEl.createEl('h3', { text: '📊 存储统计' });
             const refreshBtn = headerEl.createEl('button', { text: '🔄 刷新', cls: 'stats-refresh-btn' });
@@ -4030,10 +3973,8 @@ class VersionControlSettingTab extends PluginSettingTab {
                 this.display();
             });
 
-            // 数据网格
             const statsGrid = statsEl.createEl('div', { cls: 'stats-grid' });
             
-            // 辅助函数：创建单个数据卡片
             const createStatCard = (label: string, value: string | number, highlight: boolean = false) => {
                 const card = statsGrid.createEl('div', { cls: 'stat-card' });
                 const valEl = card.createEl('div', { text: String(value), cls: 'stat-value' });
