@@ -1,16 +1,16 @@
 /* ======================================================================= */
 /* ======================== 快速预览模态框 (QuickPreviewModal) =========== */
 /* ======================================================================= */
-.quick-preview-modal .preview-content-container,
-.quick-preview-modal pre,
-.quick-preview-modal code,
-.quick-preview-modal .preview-rendered-content {
-    user-select: text !important;
-    -webkit-user-select: text !important;
+.modal.quick-preview-modal .preview-content-container,
+.modal.quick-preview-modal pre,
+.modal.quick-preview-modal code,
+.modal.quick-preview-modal .preview-rendered-content {
+    user-select: text;
+    -webkit-user-select: text;
     cursor: text;
 }
 
-.quick-preview-modal .preview-content-container {
+.modal.quick-preview-modal .preview-content-container {
     margin: 15px 0;
     max-height: 60vh;
     overflow-y: auto;
@@ -18,23 +18,26 @@
     border-radius: 6px;
     background: var(--background-primary);
 }
-.quick-preview-modal .preview-rendered-content {
+
+.modal.quick-preview-modal .preview-rendered-content {
     padding: 15px;
 }
 
-.quick-preview-modal .preview-raw-container {
+.modal.quick-preview-modal .preview-raw-container {
     display: flex;
     flex-direction: column;
     background: var(--background-primary-alt);
     padding: 15px 0;
     overflow-x: hidden;
 }
-.quick-preview-modal .preview-line-row {
+
+.modal.quick-preview-modal .preview-line-row {
     display: flex;
     flex-direction: row;
     width: 100%;
 }
-.quick-preview-modal .preview-line-number {
+
+.modal.quick-preview-modal .preview-line-number {
     min-width: 45px;
     padding-right: 12px;
     padding-left: 10px;
@@ -47,7 +50,8 @@
     flex-shrink: 0;
     line-height: 1.6;
 }
-.quick-preview-modal .preview-line-code {
+
+.modal.quick-preview-modal .preview-line-code {
     font-family: var(--font-monospace);
     font-size: var(--font-ui-small);
     line-height: 1.6;
@@ -63,8 +67,8 @@
 .quick-preview-modal .preview-toolbar { display: flex; gap: 8px; flex-wrap: wrap; }
 .quick-preview-modal .preview-stats-bar { display: flex; gap: 15px; font-size: 0.9em; color: var(--text-muted); margin-top: 10px;}
 
-.quick-preview-modal { width: 80vw; max-width: 1000px; height: 80vh; }
-.quick-preview-modal .modal-content { display: flex; flex-direction: column; height: 100%; }
+.modal.quick-preview-modal { width: 80vw; max-width: 1000px; height: 80vh; }
+.modal.quick-preview-modal .modal-content { display: flex; flex-direction: column; height: 100%; }
 .preview-info { display: flex; gap: 15px; flex-wrap: wrap; font-size: 12px; }
 .preview-time, .preview-message, .preview-size { color: var(--text-muted); }
 
@@ -89,7 +93,6 @@
 .vc-batch-bar { display: flex; justify-content: flex-end; padding: 4px; background: var(--background-secondary); border-radius: 4px; margin-bottom: 10px; border: 1px solid var(--background-modifier-border);}
 .vc-desc { color: var(--text-muted); font-size: 0.9em; margin-top: -8px; margin-bottom: 16px; }
 
-/* 内部链接，支持超长路径自动换行防止撑爆 */
 .internal-link { 
     color: var(--text-accent); 
     text-decoration: none; 
@@ -107,7 +110,6 @@
 .vc-global-refresh.is-spinning svg { animation: vc-spin 1s linear infinite; color: var(--text-accent); }
 @keyframes vc-spin { 100% { transform: rotate(360deg); } }
 
-/* 头部信息与搜索栏吸顶 */
 .version-header { 
     position: sticky; 
     top: 0; 
@@ -127,12 +129,11 @@
 .version-search { flex: 1; min-width: 200px; padding: 6px 12px; background: var(--background-primary); color: var(--text-normal); border: 1px solid var(--background-modifier-border); border-radius: 4px; font-size: 13px; }
 .version-search:focus { outline: none; border-color: var(--interactive-accent); }
 .version-header-actions button { display: flex; align-items: center; gap: 6px; padding: 6px 12px; background: var(--interactive-normal); color: var(--text-normal); border: 1px solid var(--background-modifier-border); border-radius: 4px; cursor: pointer; font-size: 13px; transition: all 0.2s ease; }
-.version-header-actions button .lucide { display: none; } /* 桌面端默认隐藏图标 */
+.version-header-actions button .lucide { display: none; } 
 .version-header-actions button:hover { background: var(--interactive-hover); }
 .version-header-actions button.mod-cta { background: var(--interactive-accent); color: var(--text-on-accent); border-color: var(--interactive-accent); }
 .version-header-actions button.mod-cta:hover { background: var(--interactive-accent-hover); }
 
-/* 日期分组 Header (支持折叠) */
 .version-group-header { 
     font-size: 1.1em; 
     font-weight: bold; 
@@ -162,7 +163,6 @@
 .version-toolbar button.mod-warning { background: var(--color-red); color: white; border-color: var(--color-red); }
 .version-list { display: flex; flex-direction: column; gap: 12px; }
 
-/* 版本卡片基础样式 */
 .version-item { display: flex; align-items: center; gap: 12px; padding: 12px; background: var(--background-secondary); border-radius: 6px; border: 1px solid var(--background-modifier-border); transition: all 0.2s ease; }
 .version-item:hover { background: var(--background-secondary-alt); border-color: var(--interactive-accent); }
 .version-item.version-starred { border-left: 3px solid gold; background: rgba(255, 215, 0, 0.05); }
@@ -174,14 +174,12 @@
 .version-time { font-weight: 600; font-size: 13px; color: var(--text-normal); }
 .version-message-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 
-/* 紧凑模式增强 */
 .version-history-view.is-compact .version-item { padding: 6px 10px; gap: 8px; }
 .version-history-view.is-compact .version-message-row span:not(.version-tag) { font-size: 11px; }
 .version-history-view.is-compact .version-diff-stats { display: none; }
 .version-history-view.is-compact .version-note { display: none; }
 .version-history-view.is-compact .version-actions button { padding: 3px 6px; font-size: 11px; }
 
-/* 各种版本的标签颜色样式 */
 .version-tag { display: inline-block; padding: 2px 8px; font-size: 11px; border-radius: 3px; font-weight: 500; }
 .version-tag-auto { background: rgba(100, 149, 237, 0.2); color: cornflowerblue; }
 .version-tag-manual { background: rgba(150, 150, 150, 0.2); color: var(--text-normal); }
@@ -219,37 +217,100 @@
 /* ======================== 差异对比模态框 (DiffModal) =================== */
 /* ======================================================================= */
 
-/* 标题栏布局 */
 .diff-modal-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--background-modifier-border); }
 .diff-modal-title-group { display: flex; flex-direction: column; gap: 2px; flex-grow: 1; overflow: hidden; }
-.diff-modal-title { margin: 0 !important; line-height: 1.2; }
+.diff-modal-title { margin: 0; line-height: 1.2; }
 .diff-file-path { font-size: 0.8em; color: var(--text-muted); font-family: var(--font-monospace); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .diff-header-actions { display: flex; align-items: center; gap: 8px; margin-left: 10px; }
 .diff-fullscreen-btn { background: transparent; border: none; box-shadow: none; padding: 4px 8px; cursor: pointer; opacity: 0.7; transition: opacity 0.2s; font-size: 1.2em; }
 .diff-fullscreen-btn:hover { opacity: 1; background-color: var(--background-modifier-hover); border-radius: 4px; }
 
-/* 基础 Diff 行布局调整 */
-.diff-line { display: flex !important; align-items: stretch !important; flex-direction: row !important; padding-left: 0 !important; }
-.diff-gutter-column { display: flex; flex-direction: column; justify-content: center; align-items: center; min-width: 48px; padding: 2px 4px; background-color: var(--background-secondary); border-right: 1px solid var(--background-modifier-border); margin-right: 8px; flex-shrink: 0; user-select: none !important; -webkit-user-select: none !important; }
+/* 通过特异性嵌套，成功剥离 !important */
+.diff-modal .diff-container .diff-line { 
+    display: flex; 
+    align-items: stretch; 
+    flex-direction: row; 
+    padding-left: 0; 
+}
+
+.diff-modal .diff-container .diff-gutter-column { 
+    display: flex; 
+    flex-direction: column; 
+    justify-content: center; 
+    align-items: center; 
+    min-width: 48px; 
+    padding: 2px 4px; 
+    background-color: var(--background-secondary); 
+    border-right: 1px solid var(--background-modifier-border); 
+    margin-right: 8px; 
+    flex-shrink: 0; 
+    user-select: none; 
+    -webkit-user-select: none; 
+}
+
 .diff-gutter-nums { display: flex; justify-content: center; gap: 4px; font-family: var(--font-monospace); font-size: 0.65em; color: var(--text-muted); line-height: 1.2; margin-bottom: 2px; width: 100%; }
 .diff-gutter-ops { display: flex; justify-content: center; gap: 6px; line-height: 1; font-size: 0.85em; width: 100%; opacity: 0.6; transition: opacity 0.2s; }
 .diff-gutter-ops:hover { opacity: 1; }
-.diff-line .line-content { padding-top: 4px; padding-bottom: 4px; flex-grow: 1; word-break: break-all; user-select: text !important; -webkit-user-select: text !important; cursor: text; }
-.diff-word-added, .diff-word-removed { user-select: text !important; -webkit-user-select: text !important; text-decoration: none !important; }
-.diff-line-bg-removed .line-content { text-decoration: none !important; }
-.diff-line .diff-marker { margin-right: 6px; opacity: 0.5; font-family: var(--font-monospace); align-self: center; user-select: none !important; -webkit-user-select: none !important; }
 
-/* 差异上下文折叠提示 (...) */
-.diff-line.diff-context-gap { background-color: rgba(var(--background-modifier-border-rgb), 0.2) !important; justify-content: center; color: var(--text-muted); font-style: italic; padding: 4px 0; cursor: default; border-top: 1px dashed var(--background-modifier-border); border-bottom: 1px dashed var(--background-modifier-border); }
-.diff-line.diff-context-gap:hover { transform: none; }
-.diff-line.diff-context-gap .diff-marker { letter-spacing: 4px; opacity: 0.6; margin: 0; }
+.diff-modal .diff-container .diff-line .line-content { 
+    padding-top: 4px; 
+    padding-bottom: 4px; 
+    flex-grow: 1; 
+    word-break: break-all; 
+    user-select: text; 
+    -webkit-user-select: text; 
+    cursor: text; 
+}
 
-/* 完全空文件的居中提示 */
+.diff-word-added, .diff-word-removed { 
+    user-select: text; 
+    -webkit-user-select: text; 
+    text-decoration: none; 
+}
+
+.diff-line-bg-removed .line-content { text-decoration: none; }
+
+.diff-modal .diff-container .diff-line .diff-marker { 
+    margin-right: 6px; 
+    opacity: 0.5; 
+    font-family: var(--font-monospace); 
+    align-self: center; 
+    user-select: none; 
+    -webkit-user-select: none; 
+}
+
+.diff-modal .diff-container .diff-line.diff-context-gap { 
+    background-color: rgba(var(--background-modifier-border-rgb), 0.2); 
+    justify-content: center; 
+    color: var(--text-muted); 
+    font-style: italic; 
+    padding: 4px 0; 
+    cursor: default; 
+    border-top: 1px dashed var(--background-modifier-border); 
+    border-bottom: 1px dashed var(--background-modifier-border); 
+}
+.diff-modal .diff-container .diff-line.diff-context-gap:hover { transform: none; }
+.diff-modal .diff-container .diff-line.diff-context-gap .diff-marker { letter-spacing: 4px; opacity: 0.6; margin: 0; }
+
 .diff-empty-notice { display: flex; align-items: center; justify-content: center; height: 100%; min-height: 150px; color: var(--text-muted); font-size: 1.1em; font-style: italic; background: var(--background-secondary); border-radius: 6px; }
 
-/* 移动端 Diff 适配基础 (桌面端保留) */
-.is-mobile .diff-line.actions-visible .line-number-container { width: auto !important; min-width: 45px !important; display: flex !important; flex-direction: row !important; align-items: center !important; justify-content: flex-start !important; background: var(--background-primary); z-index: 5; }
-.is-mobile .diff-line.actions-visible .line-number { display: inline-block !important; opacity: 1 !important; margin-right: 4px !important; font-size: 0.7em !important; }
+/* 移动端 Diff 适配 */
+.is-mobile .diff-line.actions-visible .line-number-container { 
+    width: auto; 
+    min-width: 45px; 
+    display: flex; 
+    flex-direction: row; 
+    align-items: center; 
+    justify-content: flex-start; 
+    background: var(--background-primary); 
+    z-index: 5; 
+}
+.is-mobile .diff-line.actions-visible .line-number { 
+    display: inline-block; 
+    opacity: 1; 
+    margin-right: 4px; 
+    font-size: 0.7em; 
+}
 
 .diff-modal .modal-content { display: flex; flex-direction: column; height: 100%; }
 .diff-main-container { flex: 1; overflow: hidden; position: relative; display: flex; }
@@ -261,7 +322,6 @@
 .diff-swap-btn { background: none; border: none; cursor: pointer; font-size: 1.2em; padding: 0 10px; opacity: 0.7; }
 .diff-swap-btn:hover { opacity: 1; color: var(--interactive-accent); }
 
-/* 差异信息横幅 */
 .diff-info-banner-compact { display: flex; align-items: center; gap: 10px; padding: 6px 12px; margin-bottom: 10px; background: var(--background-secondary); border-radius: 4px; font-size: 11px; flex-wrap: wrap; }
 @keyframes diff-info-flash { 0% { background-color: var(--background-secondary); } 50% { background-color: var(--background-modifier-hover); } 100% { background-color: var(--background-secondary); } }
 .diff-info-banner-compact.diff-info-updated { animation: diff-info-flash 0.5s ease-in-out; }
@@ -271,7 +331,6 @@
 .diff-info-changed { color: #d29922; font-weight: 600; padding: 1px 5px; background: rgba(210, 153, 34, 0.1); border-radius: 3px; }
 .diff-info-percent { color: var(--text-accent); font-weight: 600; margin-left: auto; }
 
-/* 工具栏 */
 .diff-toolbar { display: flex; align-items: center; gap: 10px; padding: 10px; background: var(--background-secondary); border-radius: 6px; margin-bottom: 15px; flex-wrap: wrap; }
 .diff-toolbar button, .diff-toolbar select, .diff-toolbar input[type="number"] { padding: 6px 12px; background: var(--interactive-normal); color: var(--text-normal); border: 1px solid var(--background-modifier-border); border-radius: 4px; cursor: pointer; font-size: 12px; transition: all 0.2s ease; position: relative; }
 .diff-toolbar button:hover::after, .diff-toolbar select:hover::after { content: attr(aria-label); position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); padding: 4px 8px; background: var(--background-modifier-border); color: var(--text-normal); border-radius: 4px; font-size: 11px; white-space: nowrap; pointer-events: none; margin-bottom: 5px; z-index: 1000; animation: tooltipFade 0.2s ease; }
@@ -287,7 +346,6 @@
 .diff-select:hover { border-color: var(--interactive-accent); }
 .diff-stats { padding: 6px 12px; background: var(--background-primary); border-radius: 4px; font-size: 12px; font-weight: 600; color: var(--text-accent); min-width: 80px; text-align: center; }
 
-/* 工具栏重构 */
 .diff-toolbar-redesigned { display: flex; align-items: center; gap: 8px; padding: 6px; background: var(--background-secondary); border-radius: 6px; margin-bottom: 15px; flex-wrap: wrap; }
 .diff-toolbar-group { display: flex; align-items: center; background: var(--background-primary); border-radius: 4px; border: 1px solid var(--background-modifier-border); }
 .diff-toolbar-redesigned button { padding: 6px 12px; background: transparent; color: var(--text-normal); border: none; border-right: 1px solid var(--background-modifier-border); cursor: pointer; font-size: 13px; transition: all 0.2s ease; }
@@ -296,7 +354,6 @@
 .diff-toolbar-redesigned button:disabled { opacity: 0.4; cursor: not-allowed; background: transparent; }
 .diff-toolbar-redesigned .diff-stats { padding: 6px 12px; font-size: 12px; font-weight: 600; color: var(--text-accent); min-width: 70px; text-align: center; border-right: 1px solid var(--background-modifier-border); }
 
-/* Diff 搜索 */
 .diff-search-container { display: flex; align-items: center; gap: 10px; padding: 10px 15px; background: var(--background-secondary); margin-bottom: 15px; animation: slideDown 0.2s ease; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15); border: 1px solid var(--background-modifier-border-hover); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); background-color: rgba(var(--background-secondary-rgb), 0.85); border-radius: 8px; z-index: 20; }
 @keyframes slideDown { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
 .diff-search-input { flex: 1; padding: 6px 12px; color: var(--text-normal); border: 1px solid var(--background-modifier-border); font-size: 13px; background-color: rgba(var(--background-primary-rgb), 0.6); border-radius: 6px; transition: all 0.2s; }
@@ -307,7 +364,6 @@
 .diff-search-match { background: rgba(255, 255, 0, 0.2) !important; outline: 1px solid rgba(255, 255, 0, 0.5); }
 .diff-search-current { background: rgba(255, 165, 0, 0.3) !important; outline: 2px solid orange; }
 
-/* Diff 内容容器 */
 .diff-container { flex: 1; overflow: auto; background: var(--background-primary); border: 1px solid var(--background-modifier-border); border-radius: 6px; padding: 15px; font-family: var(--font-monospace); font-size: 13px; line-height: 1.6; position: relative; }
 .diff-container.diff-wrap-lines .line-content { white-space: pre-wrap; word-break: break-word; }
 .diff-container:not(.diff-wrap-lines) .line-content { white-space: pre; overflow-x: auto; }
@@ -316,7 +372,6 @@
 .diff-line .diff-marker { display: inline-block; width: 20px; text-align: center; margin-right: 10px; font-weight: bold; flex-shrink: 0; }
 .diff-line .line-content { flex: 1; white-space: pre; overflow-x: auto; }
 
-/* 行内差异视觉优化 */
 .diff-line-bg-added, .diff-added { background: rgba(46, 160, 67, 0.15); color: var(--text-normal); border-left: 3px solid #2ea043; }
 .diff-line-bg-removed, .diff-removed { background: rgba(248, 81, 73, 0.15); color: var(--text-normal); border-left: 3px solid #f85149; }
 .diff-line-bg-modified, .diff-modified { background: rgba(219, 174, 14, 0.15); color: var(--text-normal); border-left: 3px solid #d29922; }
@@ -330,18 +385,15 @@
 .diff-modified:hover { background: rgba(219, 174, 14, 0.25) !important; }
 .diff-modified .line-content span { display: inline; }
 
-/* 具体的文字高亮 (兼容紧凑模式) */
 .diff-word-added { background-color: rgba(100, 255, 100, 0.25); color: var(--text-normal); font-weight: normal; }
-.diff-word-removed { background-color: rgba(255, 100, 100, 0.25); color: var(--text-muted); text-decoration: none !important; font-weight: normal; }
+.diff-word-removed { background-color: rgba(255, 100, 100, 0.25); color: var(--text-muted); text-decoration: none; font-weight: normal; }
 
-/* 其他行状态 */
 .diff-context { background: transparent; }
 .diff-context:hover { background: var(--background-secondary) !important; }
 .diff-current { outline: 2px solid var(--interactive-accent); outline-offset: -2px; background: rgba(100, 149, 237, 0.15) !important; animation: pulse 1s ease-in-out; z-index: 10; }
 @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(100, 149, 237, 0.4); } 50% { box-shadow: 0 0 0 6px rgba(100, 149, 237, 0); } }
 .diff-placeholder { background: repeating-linear-gradient( 45deg, transparent, transparent 10px, var(--background-modifier-border) 10px, var(--background-modifier-border) 11px ); opacity: 0.3; min-height: 20px; }
 
-/* 分栏视图 */
 .diff-split { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; height: 100%; }
 .diff-split .diff-line { display: flex; align-items: stretch; }
 .diff-split .line-content { white-space: pre-wrap; word-break: break-all; flex: 1; }
@@ -350,7 +402,6 @@
 .diff-panel h3::before { content: '📄'; font-size: 16px; }
 .diff-content { flex: 1; overflow: auto; padding: 10px; background: var(--background-primary); }
 
-/* 深色模式适配 */
 .theme-dark .diff-added, .theme-dark .diff-line-bg-added { background: rgba(46, 160, 67, 0.2); border-left-color: #3fb950; }
 .theme-dark .diff-removed, .theme-dark .diff-line-bg-removed { background: rgba(248, 81, 73, 0.2); border-left-color: #f85149; }
 .theme-dark .diff-modified, .theme-dark .diff-line-bg-modified { background: rgba(210, 153, 34, 0.15); border-left-color: #d29922; }
@@ -362,23 +413,33 @@
 .theme-dark .version-item:hover { background: rgba(255, 255, 255, 0.08); }
 .theme-dark .diff-line.diff-context:nth-child(even) { background-color: rgba(255, 255, 255, 0.015); }
 
-/* Diff Modal 加载蒙层样式 */
 .diff-loading-overlay { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background-color: rgba(var(--background-primary-rgb), 0.6); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); z-index: 10; display: flex; align-items: center; justify-content: center; color: var(--text-normal); border-radius: var(--radius-m); transition: opacity 0.2s ease-in-out; }
 .diff-loading-message { font-size: 1.2em; padding: 12px 24px; background-color: var(--background-secondary-alt); border-radius: var(--radius-s); box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
 
-/* 空白字符显示 */
 .diff-container.show-whitespace-active .line-content { color: var(--text-faint); }
 .diff-container.show-whitespace-active .diff-word-added, .diff-container.show-whitespace-active .diff-word-removed { color: var(--text-normal); }
 
-/* 行号容器与操作按钮 */
-.line-number-container { display: flex; align-items: center; justify-content: flex-end; width: 80px; text-align: right; margin-right: 15px; color: var(--text-faint); user-select: none; flex-shrink: 0; background-color: var(--background-primary-alt); border-right: 1px solid var(--background-modifier-border); margin-right: 8px; padding-right: 10px; opacity: 0.8; }
+.diff-modal .diff-container .line-number-container { 
+    display: flex; 
+    align-items: center; 
+    justify-content: flex-end; 
+    width: 80px; 
+    text-align: right; 
+    margin-right: 15px; 
+    color: var(--text-faint); 
+    user-select: none; 
+    flex-shrink: 0; 
+    background-color: var(--background-primary-alt); 
+    border-right: 1px solid var(--background-modifier-border); 
+    padding-right: 10px; 
+    opacity: 0.8; 
+}
 .diff-container:not(.diff-split) .line-number-container { background-color: transparent; border-right: 1px solid var(--background-modifier-border); display: flex; justify-content: flex-end; min-width: 80px;}
 
 /* ======================================================================= */
 /* ======================== 其他组件样式 ================================= */
 /* ======================================================================= */
 
-/* 版本完整性检查报告样式 */
 .integrity-report-modal { max-width: 800px; }
 .integrity-success { text-align: center; padding: 20px; color: var(--text-success); }
 .integrity-icon { font-size: 48px; display: block; margin-bottom: 10px; }
@@ -392,7 +453,6 @@
 .integrity-item button.mod-warning { margin-top: 8px; font-size: 0.8em; height: 24px; }
 .integrity-item button.mod-warning:hover { background-color: var(--color-red); }
 
-/* 标签编辑 */
 .tag-edit-container { margin-top: 15px; }
 .tag-section { margin-bottom: 20px; }
 .tag-section h3 { margin: 0 0 10px 0; font-size: 14px; font-weight: 600; }
@@ -406,7 +466,6 @@
 .tag-input-container { display: flex; gap: 10px; margin-top: 10px; }
 .tag-input-container input { flex: 1; padding: 6px 12px; background: var(--background-primary); color: var(--text-normal); border: 1px solid var(--background-modifier-border); border-radius: 4px; }
 
-/* 版本选择模态框 */
 .version-select-modal .version-select-list { max-height: 400px; overflow-y: auto; margin-top: 15px; }
 .version-select-item { display: flex; align-items: center; gap: 12px; padding: 12px; background: var(--background-secondary); border-radius: 6px; border: 1px solid var(--background-modifier-border); margin-bottom: 10px; transition: all 0.2s ease; }
 .version-select-item:hover { background: var(--background-secondary-alt); border-color: var(--interactive-accent); }
@@ -414,7 +473,6 @@
 .version-select-item button { padding: 6px 12px; background: var(--interactive-accent); color: var(--text-on-accent); border: none; border-radius: 4px; cursor: pointer; }
 .version-select-item button:hover { background: var(--interactive-accent-hover); }
 
-/* 确认对话框 & 模态框通用 */
 .confirm-message { color: var(--text-normal); line-height: 1.6; }
 .modal-button-container { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
 .modal-button-container button { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 500; transition: all 0.2s ease; }
@@ -429,18 +487,14 @@
 /* =================== 全局 UX 及响应式适配 ============================== */
 /* ======================================================================= */
 
-/* 字体与排版优化 */
 .diff-container, .diff-content, .preview-raw-container pre { font-family: 'JetBrains Mono', 'Fira Code', 'Source Code Pro', 'Menlo', 'Consolas', 'Roboto Mono', monospace; line-height: 1.65; -webkit-font-smoothing: antialiased; font-variant-ligatures: normal; }
 
-/* 模态框进入动画 */
 .diff-modal .modal-content, .quick-preview-modal .modal-content, .integrity-report-modal .modal-content { animation: modal-pop-in 0.25s cubic-bezier(0.2, 0.9, 0.4, 1.1); transform-origin: center center; }
 @keyframes modal-pop-in { 0% { opacity: 0; transform: scale(0.96) translateY(10px); } 100% { opacity: 1; transform: scale(1) translateY(0); } }
 
-/* 按钮触感优化 */
 .diff-toolbar-redesigned button, .version-btn, .modal-button-container button { transition: all 0.15s ease-out; }
 .diff-toolbar-redesigned button:active, .version-btn:active, .modal-button-container button:active { transform: scale(0.96); }
 
-/* 统一滚动条样式 */
 .version-history-view::-webkit-scrollbar, .preview-raw-container pre::-webkit-scrollbar, .version-select-list::-webkit-scrollbar,
 .diff-container::-webkit-scrollbar, .diff-content::-webkit-scrollbar, .line-content::-webkit-scrollbar { width: 8px; height: 8px; }
 .version-history-view::-webkit-scrollbar-track, .preview-raw-container pre::-webkit-scrollbar-track, .version-select-list::-webkit-scrollbar-track,
@@ -467,7 +521,7 @@
     margin-bottom: 16px; 
 }
 .stats-header h3 { 
-    margin: 0 !important; 
+    margin: 0; 
     font-size: 15px; 
     color: var(--text-normal);
 }
@@ -486,7 +540,7 @@
 
 .stats-grid { 
     display: grid; 
-    grid-template-columns: repeat(3, 1fr); /* 电脑端默认3列 */
+    grid-template-columns: repeat(3, 1fr); 
     gap: 12px; 
 }
 
@@ -522,7 +576,6 @@
 /* ======================== 设置面板底部 UI 深度打磨 ===================== */
 /* ======================================================================= */
 
-/* 1. 【使用说明】卡片化排版 */
 .version-info-section {
     background: var(--background-secondary);
     border-radius: 12px;
@@ -555,16 +608,15 @@
     margin-bottom: 6px;
 }
 
-/* 2. 【危险操作】红色实心警示按钮 */
 button.mod-warning {
-    background-color: var(--color-red) !important;
-    color: white !important;
-    border: none !important;
-    font-weight: bold !important;
+    background-color: var(--color-red);
+    color: white;
+    border: none;
+    font-weight: bold;
     box-shadow: 0 2px 6px rgba(var(--color-red-rgb), 0.3);
 }
 button.mod-warning:hover {
-    background-color: #d32f2f !important; /* 稍微深一点的红色 */
+    background-color: #d32f2f; 
 }
 
 /* ======================================================================= */
@@ -588,9 +640,8 @@ button.mod-warning:hover {
     .quick-preview-modal { width: 96vw; height: 94vh; }
     
     .diff-modal-header { margin-bottom: 8px; padding-bottom: 6px; }
-    .diff-modal-title { font-size: 16px !important; }
+    .diff-modal-title { font-size: 16px; }
 
-    /* === 1. 极致压扁的版本卡片 === */
     .diff-version-selector-container { 
         flex-direction: column; 
         align-items: stretch; 
@@ -615,10 +666,10 @@ button.mod-warning:hover {
     }
     .diff-selector-btn { 
         flex: unset; 
-        background: transparent !important; 
-        border: none !important; 
-        padding: 0 !important; 
-        font-size: 13px !important; 
+        background: transparent; 
+        border: none; 
+        padding: 0; 
+        font-size: 13px; 
         font-family: var(--font-monospace);
         color: var(--text-accent); 
         text-align: right;
@@ -643,7 +694,6 @@ button.mod-warning:hover {
         font-size: 12px;
     }
 
-    /* === 2. 统计面板：自然流动的标签式排版 === */
     .diff-info-banner-compact { 
         flex-direction: row; 
         flex-wrap: wrap; 
@@ -655,16 +705,15 @@ button.mod-warning:hover {
         background: var(--background-primary);
     }
     .diff-info-item { 
-        width: auto !important; 
+        width: auto; 
         flex: 1 1 45%; 
-        margin: 0 !important; 
+        margin: 0; 
         font-size: 11px; 
         white-space: nowrap; 
     }
     .diff-info-added, .diff-info-removed { padding: 1px 6px; font-size: 10px; border-radius: 12px; }
     .diff-info-percent { margin-left: auto; font-size: 11px; }
 
-    /* === 3. 完美的胶囊导航条 === */
     .diff-toolbar-redesigned { 
         justify-content: space-between; 
         flex-wrap: nowrap; 
@@ -681,25 +730,25 @@ button.mod-warning:hover {
         display: flex;
     }
     #diff-nav-group button { 
-        background: transparent !important;
-        border: none !important;
-        border-right: 1px solid var(--background-modifier-border) !important;
-        border-radius: 0 !important;
+        background: transparent;
+        border: none;
+        border-right: 1px solid var(--background-modifier-border);
+        border-radius: 0;
         padding: 6px 10px; 
         font-size: 14px;
-        margin: 0 !important; 
+        margin: 0; 
     }
-    #diff-nav-group button:last-child { border-right: none !important; }
+    #diff-nav-group button:last-child { border-right: none; }
     
     .diff-toolbar-redesigned .diff-stats { 
-        border: none !important;
-        border-right: 1px solid var(--background-modifier-border) !important;
-        background: transparent !important;
+        border: none;
+        border-right: 1px solid var(--background-modifier-border);
+        background: transparent;
         padding: 6px 8px;
         font-size: 12px;
         color: var(--text-normal); 
         min-width: 40px;
-        margin: 0 !important;
+        margin: 0;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -707,14 +756,13 @@ button.mod-warning:hover {
     
     .diff-toolbar-group:last-child button {
         background: var(--background-secondary);
-        border: 1px solid var(--background-modifier-border) !important;
-        border-radius: 8px !important;
+        border: 1px solid var(--background-modifier-border);
+        border-radius: 8px;
         padding: 6px 12px;
     }
     
     .diff-toolbar button:hover::after, .diff-toolbar select:hover::after { display: none; }
     
-    /* 侧边栏头部按钮响应式：图标化 */
     .version-header-actions {
         flex-direction: row;
         flex-wrap: nowrap;
@@ -743,7 +791,6 @@ button.mod-warning:hover {
         margin: 0;
     }
 
-    /* === 4. 设置面板手机端适配 === */
     .stats-grid { 
         grid-template-columns: repeat(2, 1fr); 
         gap: 10px;
@@ -752,7 +799,6 @@ button.mod-warning:hover {
         font-size: 16px; 
     }
 
-    /* 针对设置项中只有按钮的行进行通栏排版 */
     .setting-item-control .mod-cta,
     .setting-item-control button {
         width: 100%;
@@ -763,7 +809,6 @@ button.mod-warning:hover {
         border-radius: 8px;
     }
     
-    /* 隐藏原生 setting-item 的 flex 布局，让按钮独占一行 */
     .setting-item:has(> .setting-item-info + .setting-item-control button:only-child) {
         flex-direction: column;
         align-items: stretch;

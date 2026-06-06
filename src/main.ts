@@ -10,14 +10,18 @@ export function getErrorMessage(error: unknown): string {
     return 'Unknown error occurred';
 }
 
-// --- LRU 缓存：元数据高速缓存器 ---
+// --- LRU 缓存：元数据高速缓存器 (避免线性扫描优化版) ---
 class LRUCache<K, V> {
     private max: number;
     private cache: Map<K, V>;
+    private prefixGroups: Map<string, Set<K>>;
+
     constructor(max = 50) {
         this.max = max;
         this.cache = new Map();
+        this.prefixGroups = new Map();
     }
+
     get(key: K): V | undefined {
         if (!this.cache.has(key)) return undefined;
         const val = this.cache.get(key)!;
@@ -25,25 +29,67 @@ class LRUCache<K, V> {
         this.cache.set(key, val);
         return val;
     }
+
     set(key: K, val: V) {
-        if (this.cache.has(key)) this.cache.delete(key);
-        else if (this.cache.size >= this.max) this.cache.delete(this.cache.keys().next().value);
+        if (this.cache.has(key)) {
+            this.cache.delete(key);
+        } else if (this.cache.size >= this.max) {
+            const oldestKey = this.cache.keys().next().value;
+            if (oldestKey !== undefined) {
+                this.deleteFromTracking(oldestKey);
+                this.cache.delete(oldestKey);
+            }
+        }
         this.cache.set(key, val);
+        this.addToTracking(key);
     }
+
     delete(key: K): boolean {
+        this.deleteFromTracking(key);
         return this.cache.delete(key);
     }
-    clear() { this.cache.clear(); }
+
+    clear() {
+        this.cache.clear();
+        this.prefixGroups.clear();
+    }
+
+    private addToTracking(key: K) {
+        if (typeof key === 'string' && key.includes('::')) {
+            const prefix = key.split('::')[0]!;
+            if (!this.prefixGroups.has(prefix)) {
+                this.prefixGroups.set(prefix, new Set());
+            }
+            this.prefixGroups.get(prefix)!.add(key);
+        }
+    }
+
+    private deleteFromTracking(key: K) {
+        if (typeof key === 'string' && key.includes('::')) {
+            const prefix = key.split('::')[0]!;
+            const group = this.prefixGroups.get(prefix);
+            if (group) {
+                group.delete(key);
+                if (group.size === 0) {
+                    this.prefixGroups.delete(prefix);
+                }
+            }
+        }
+    }
+
     deletePrefix(prefix: string) {
-        for (const key of this.cache.keys()) {
-            if (typeof key === 'string' && key.startsWith(prefix)) {
+        const cleanPrefix = prefix.endsWith('::') ? prefix.slice(0, -2) : prefix;
+        const group = this.prefixGroups.get(cleanPrefix);
+        if (group) {
+            for (const key of group) {
                 this.cache.delete(key);
             }
+            this.prefixGroups.delete(cleanPrefix);
         }
     }
 }
 
-// VersionData 接口 (合并回单笔记单文件，保留 blobId 用于平滑向后兼容迁移)
+// VersionData 接口
 interface VersionData {
     id: string;
     timestamp: number;
@@ -59,8 +105,8 @@ interface VersionData {
     addedLines?: number;
     removedLines?: number;
     modifiedLines?: number;
-    blobId?: string;      // 迁移过渡用
-    isIncremental?: boolean; // 迁移过渡用
+    blobId?: string;      
+    isIncremental?: boolean; 
 }
 
 interface VersionFile {
@@ -164,7 +210,6 @@ export default class VersionControlPlugin extends Plugin {
     isRestoring: boolean = false; 
     isUnloaded: boolean = false;
 
-    // 状态栏防抖函数，避免频繁读取磁盘与解压
     debouncedUpdateStatusBar: () => void;
 
     async onload() {
@@ -173,7 +218,6 @@ export default class VersionControlPlugin extends Plugin {
 
         this.statusBarItem = this.addStatusBarItem();
         
-        // 初始化状态栏更新防抖，设置为 300ms
         this.debouncedUpdateStatusBar = debounce(() => {
             this.updateStatusBar();
         }, 300, true);
@@ -231,6 +275,7 @@ export default class VersionControlPlugin extends Plugin {
         }
 
         await this.ensureVersionFolder();
+        await this.cleanupTempFiles();
 
         this.registerInterval(
             window.setInterval(() => { 
@@ -273,19 +318,16 @@ export default class VersionControlPlugin extends Plugin {
         return new Promise(resolve => setTimeout(resolve, 0)); 
     }
 
-    // --- 原生异步管道 Gzip 压缩 ---
     async compressText(text: string): Promise<ArrayBuffer> {
         const stream = new Blob([text]).stream().pipeThrough(new CompressionStream('gzip'));
         return await new Response(stream).arrayBuffer();
     }
 
-    // --- 原生异步管道 Gzip 解压 ---
     async decompressText(buffer: ArrayBuffer): Promise<string> {
         const stream = new Blob([buffer]).stream().pipeThrough(new DecompressionStream('gzip'));
         return await new Response(stream).text();
     }
 
-    // --- 临时写入交换机制，保障磁盘写入安全 ---
     async safeWrite(adapter: DataAdapter, path: string, data: string | ArrayBuffer, isBinary: boolean): Promise<void> {
         const tempPath = path + '.tmp';
         try {
@@ -306,7 +348,27 @@ export default class VersionControlPlugin extends Plugin {
         }
     }
 
-    // --- 迁移兼容用：历史残存碎文件物理删除 ---
+    async cleanupTempFiles() {
+        const adapter = this.app.vault.adapter;
+        const folderPath = this.settings.versionFolder;
+        try {
+            if (await adapter.exists(folderPath)) {
+                const filesData = await adapter.list(folderPath);
+                for (const file of filesData.files) {
+                    if (file.endsWith('.tmp')) {
+                        try {
+                            await adapter.remove(file);
+                        } catch (e: unknown) {
+                            console.warn(`[VersionControl] Failed to remove residual temp file ${file}:`, e);
+                        }
+                    }
+                }
+            }
+        } catch (err: unknown) {
+            console.error('[VersionControl] Error cleaning up temp files:', err);
+        }
+    }
+
     async deleteBlob(blobId: string): Promise<void> {
         const objectsFolder = normalizePath(`${this.settings.versionFolder}/objects`);
         const adapter = this.app.vault.adapter;
@@ -320,7 +382,6 @@ export default class VersionControlPlugin extends Plugin {
         }
     }
 
-    // --- 迁移兼容用：历史残存碎文件安全读取 ---
     async readBlob(filePath: string, blobId: string): Promise<string> {
         const objectsFolder = normalizePath(`${this.settings.versionFolder}/objects`);
         const adapter = this.app.vault.adapter;
@@ -336,21 +397,28 @@ export default class VersionControlPlugin extends Plugin {
         }
     }
 
+    // --- 互斥队列锁控制：保证异常安全穿透 (不吞没 error 优化版) ---
     async withLock(filePath: string, fn: () => Promise<void>, timeoutMs: number = 30000): Promise<void> {
-        let currentLock = this.fileLocks.get(filePath) || Promise.resolve();
-        const nextLock = currentLock
-            .then(() => {
-                const timeoutPromise = new Promise<void>((_, reject) => {
-                    setTimeout(() => reject(new Error(`Lock operation timed out after ${timeoutMs}ms`)), timeoutMs);
-                });
-                return Promise.race([fn(), timeoutPromise]);
-            })
-            .catch((error: unknown) => {
-                console.error(`[VersionControl] Error in locked operation for ${filePath}:`, getErrorMessage(error), error);
-            })
-            .finally(() => {
-                if (this.fileLocks.get(filePath) === nextLock) this.fileLocks.delete(filePath);
+        const currentLock = this.fileLocks.get(filePath) || Promise.resolve();
+        const releasePrevious = currentLock.catch(() => {});
+
+        const runTask = async () => {
+            await releasePrevious;
+            let timeoutId: any;
+            const timeoutPromise = new Promise<void>((_, reject) => {
+                timeoutId = setTimeout(() => reject(new Error(`Lock operation timed out after ${timeoutMs}ms`)), timeoutMs);
             });
+            try {
+                await Promise.race([fn(), timeoutPromise]);
+            } finally {
+                clearTimeout(timeoutId);
+            }
+        };
+
+        const nextLock = runTask().finally(() => {
+            if (this.fileLocks.get(filePath) === nextLock) this.fileLocks.delete(filePath);
+        });
+
         this.fileLocks.set(filePath, nextLock);
         await nextLock;
     }
@@ -894,13 +962,21 @@ export default class VersionControlPlugin extends Plugin {
     applyDiff(baseContent: string, diffStr: string, suppressNotice: boolean = false): string { try { const result = Diff.applyPatch(baseContent, diffStr); if (result === false) { console.error('应用差异补丁失败'); if (!suppressNotice) { new Notice('应用差异补丁失败，版本内容可能不完整。'); } return baseContent; } return result; } catch (error: unknown) { return baseContent; } }
     buildVersionIndex(versionFile: VersionFile) { const index = new Map<string, number>(); versionFile.versions.forEach((version, idx) => { index.set(version.id, idx); }); versionFile.versionIndex = index; }
     
+    // --- 还原依赖链条逻辑：引入已访问集合校验环路依赖 ---
     resolveContentFromList(versions: VersionData[], versionId: string): string { 
         let currentId = versionId;
         let currentVersion = versions.find(v => v.id === currentId);
         if (!currentVersion) throw new Error(`无法在内存中找到版本: ${versionId}`);
 
         const patches: string[] = [];
+        const visited = new Set<string>();
+
         while (currentVersion) {
+            if (visited.has(currentId)) {
+                throw new Error(`检测到循环依赖，还原终止。路径起点: ${versionId} -> 节点: ${currentId}`);
+            }
+            visited.add(currentId);
+
             if (currentVersion.content !== undefined && currentVersion.content !== null) {
                 let content = this.normalizeText(currentVersion.content);
                 for (let i = patches.length - 1; i >= 0; i--) {
@@ -997,7 +1073,6 @@ export default class VersionControlPlugin extends Plugin {
 
         if (!finalVersionFile.versionIndex) this.buildVersionIndex(finalVersionFile);
 
-        // --- 核心升级：逆向自适应迁移：读取 objects 碎文件并合并回单一大包，然后物理清除散落的文件 ---
         let migrated = false;
         for (const version of finalVersionFile.versions) {
             if (version.blobId) {
@@ -1081,6 +1156,7 @@ export default class VersionControlPlugin extends Plugin {
     sanitizeFileName(path: string): string { return path.replace(/[\/\\:*?"<>|]/g, '_'); }
     async getAllVersions(filePath: string): Promise<VersionData[]> { try { const versionFile = await this.loadVersionFile(filePath); return versionFile.versions; } catch (error: unknown) { return []; } }
     
+    // --- 链式逆向差异合并：引入已访问 ID 集合，避开循环链接死循环 ---
     async getVersionContent(filePath: string, versionId: string, suppressNotice: boolean = false, strictMode: boolean = false): Promise<string> { 
         const cacheKey = `${filePath}::${versionId}`;
         const cached = this.contentCache.get(cacheKey);
@@ -1091,8 +1167,14 @@ export default class VersionControlPlugin extends Plugin {
             let currentId = versionId;
             const patches: string[] = [];
             let baseContent = "";
+            const visited = new Set<string>();
 
             while (true) {
+                if (visited.has(currentId)) {
+                    throw new Error(`检测到循环依赖，还原终止。路径: ${currentId}`);
+                }
+                visited.add(currentId);
+
                 const index = versionFile.versionIndex?.get(currentId);
                 const version = index !== undefined ? versionFile.versions[index] : versionFile.versions.find(v => v.id === currentId);
                 if (!version) throw new Error(`版本不存在`);
@@ -2280,7 +2362,7 @@ class VersionHistoryView extends ItemView {
         });
     }
     
-    showVersionContextMenu(event: MouseEvent, file: TFile, version: VersionData, isLocked: boolean = false) {
+    showVersionContextMenu(event: WorkspaceLeaf | any, file: TFile, version: VersionData, isLocked: boolean = false) {
         const menu = new Menu();
         menu.addSeparator();
         if (this.plugin.settings.enableVersionTags) {
@@ -3461,8 +3543,8 @@ class DiffModal extends Modal {
                     lineEl.dataset.diffIndex = String(diffIdx++);
                     this.diffElements.push(lineEl);
                 }
-                if (lineNumLeft) lineEl.dataset.lineNumberLeft = String(lineNumLeft);
-                if (lineNumRight) lineEl.dataset.lineNumberRight = String(lineNumRight);
+                if (lineNumLeft) lineEl.dataset.lineNumLeft = String(lineNumLeft);
+                if (lineNumRight) lineEl.dataset.lineNumRight = String(lineNumRight);
                 
                 const gutterCol = lineEl.createEl('div', { cls: 'diff-gutter-column' });
                 const numsRow = gutterCol.createEl('div', { cls: 'diff-gutter-nums' });
@@ -3635,6 +3717,7 @@ class DiffModal extends Modal {
         await this.renderSplitViewAdvancedAsync(leftContentEl, rightContentEl, left, right);
     }
 
+    // --- 双栏同步滚动控制：引入 activeScrollSource 帧锁机制防止回环 ---
     async renderSplitViewAdvancedAsync(leftPanel: HTMLElement, rightPanel: HTMLElement, leftText: string, rightText: string) {
         const renderTasksLeft: ((frag: DocumentFragment) => void)[] = [];
         const renderTasksRight: ((frag: DocumentFragment) => void)[] = [];
@@ -3921,6 +4004,26 @@ class DiffModal extends Modal {
             this.executeRenderTasks(leftPanel, renderTasksLeft),
             this.executeRenderTasks(rightPanel, renderTasksRight)
         ]);
+
+        let activeScrollSource: HTMLElement | null = null;
+        const onScrollLeft = () => {
+            if (activeScrollSource === null) {
+                activeScrollSource = leftPanel;
+                rightPanel.scrollTop = leftPanel.scrollTop;
+                rightPanel.scrollLeft = leftPanel.scrollLeft;
+                requestAnimationFrame(() => { activeScrollSource = null; });
+            }
+        };
+        const onScrollRight = () => {
+            if (activeScrollSource === null) {
+                activeScrollSource = rightPanel;
+                leftPanel.scrollTop = rightPanel.scrollTop;
+                leftPanel.scrollLeft = rightPanel.scrollLeft;
+                requestAnimationFrame(() => { activeScrollSource = null; });
+            }
+        };
+        leftPanel.addEventListener('scroll', onScrollLeft);
+        rightPanel.addEventListener('scroll', onScrollRight);
     }
 
     scrollToDiff() {
@@ -4279,10 +4382,10 @@ class VersionControlSettingTab extends PluginSettingTab {
             }
         }
 
-        containerEl.createEl('h3', { text: '🎨 显示设置' });
+        containerEl.createEl('h3', { text: '🌍 呈现设定' });
         new Setting(containerEl)
             .setName('全库历史默认时间模式')
-            .setDesc('在全库版本历史中，默认按“文件修改时间”还是“版本保存时间”进行排序 and 展示。')
+            .setDesc('在全库版本历史中，默认按“文件修改时间”还是“版本保存时间”进行排序并展示。')
             .addDropdown(dropdown => dropdown
                 .addOption('modified', '文件修改时间')
                 .addOption('saved', '版本保存时间')
