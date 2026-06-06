@@ -1,5 +1,5 @@
 
-import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, Modal, ItemView, WorkspaceLeaf, Menu, MarkdownRenderer, Platform, TFolder, setIcon, moment, normalizePath, debounce } from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, Modal, ItemView, WorkspaceLeaf, Menu, MarkdownRenderer, Platform, TFolder, setIcon, moment, normalizePath, debounce, DataAdapter } from 'obsidian';
 import * as Diff from 'diff';
 
 // --- 工具函数：安全地提取错误信息 ---
@@ -164,12 +164,21 @@ export default class VersionControlPlugin extends Plugin {
     isRestoring: boolean = false; 
     isUnloaded: boolean = false;
 
+    // 状态栏防抖函数，避免频繁读取磁盘与解压
+    debouncedUpdateStatusBar: () => void;
+
     async onload() {
         this.isUnloaded = false;
         await this.loadSettings();
 
         this.statusBarItem = this.addStatusBarItem();
-        this.updateStatusBar();
+        
+        // 初始化状态栏更新防抖，设置为 300ms
+        this.debouncedUpdateStatusBar = debounce(() => {
+            this.updateStatusBar();
+        }, 300, true);
+
+        this.debouncedUpdateStatusBar();
 
         if (this.settings.enableStatusBarDiff) {
             this.statusBarItem.addClass('version-control-statusbar-clickable');
@@ -199,6 +208,12 @@ export default class VersionControlPlugin extends Plugin {
         );
 
         this.registerEvent(
+            this.app.workspace.on('active-leaf-change', () => {
+                this.debouncedUpdateStatusBar();
+            })
+        );
+
+        this.registerEvent(
             this.app.vault.on('rename', async (file, oldPath) => {
                 if (file instanceof TFile) await this.handleRename(file, oldPath);
                 else if (file instanceof TFolder) await this.handleFolderRename(file, oldPath);
@@ -208,12 +223,6 @@ export default class VersionControlPlugin extends Plugin {
         this.registerEvent(
             this.app.vault.on('delete', async (file) => {
                 if (file instanceof TFile) await this.handleDelete(file.path);
-            })
-        );
-
-        this.registerEvent(
-            this.app.workspace.on('active-leaf-change', () => {
-                this.updateStatusBar();
             })
         );
 
@@ -230,7 +239,7 @@ export default class VersionControlPlugin extends Plugin {
                 leaves.forEach(leaf => { 
                     if (leaf.view instanceof VersionHistoryView) leaf.view.updateRelativeTimes(); 
                 });
-            }, 1000)
+            }, 1000) as unknown as number
         );
 
         setTimeout(() => {
@@ -246,7 +255,10 @@ export default class VersionControlPlugin extends Plugin {
 
     onunload() {
         this.isUnloaded = true;
-        if (this.autoSaveTimer) window.clearInterval(this.autoSaveTimer);
+        if (this.autoSaveTimer) {
+            window.clearInterval(this.autoSaveTimer);
+            this.autoSaveTimer = null;
+        }
         this.debouncedSaves.clear();
         this.versionCache.clear();
         this.contentCache.clear();
@@ -274,7 +286,7 @@ export default class VersionControlPlugin extends Plugin {
     }
 
     // --- 临时写入交换机制，保障磁盘写入安全 ---
-    async safeWrite(adapter: any, path: string, data: string | ArrayBuffer, isBinary: boolean): Promise<void> {
+    async safeWrite(adapter: DataAdapter, path: string, data: string | ArrayBuffer, isBinary: boolean): Promise<void> {
         const tempPath = path + '.tmp';
         try {
             if (isBinary) {
@@ -554,7 +566,6 @@ export default class VersionControlPlugin extends Plugin {
     async handleRename(file: TFile, oldPath: string) {
         await this.withLock(oldPath, async () => {
             const adapter = this.app.vault.adapter;
-            // --- 升级修复：添加 this. 前缀，修正实例成员作用域引用 ---
             let oldVersionPath = await this.findExistingVersionPath(oldPath);
 
             if (oldVersionPath) {
@@ -600,7 +611,7 @@ export default class VersionControlPlugin extends Plugin {
     }
 
     async loadSettings() { this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData()); }
-    async saveSettings() { await this.saveData(this.settings); this.updateStatusBar(); }
+    async saveSettings() { await this.saveData(this.settings); this.debouncedUpdateStatusBar(); }
 
     getSaveTypeLabel(message: string): string { 
         if (message.includes('[Auto Save - On Modify]')) return '修改保存';
@@ -672,10 +683,12 @@ export default class VersionControlPlugin extends Plugin {
     }
 
     startAutoSave() { 
-        if (this.autoSaveTimer) { window.clearInterval(this.autoSaveTimer); this.autoSaveTimer = null; }
-        if (this.settings.autoSaveOnInterval) { 
+        if (this.autoSaveTimer) { 
+            window.clearInterval(this.autoSaveTimer); 
+            this.autoSaveTimer = null; 
+        }
+        if (this.settings.autoSave && this.settings.autoSaveOnInterval) { 
             this.autoSaveTimer = window.setInterval(() => { this.autoSaveAllModifiedFiles(); }, this.settings.autoSaveInterval * 60 * 1000);
-            this.registerInterval(this.autoSaveTimer);
         }
     }
 
@@ -797,7 +810,7 @@ export default class VersionControlPlugin extends Plugin {
                             
                             this.clearGlobalCache(); 
                             this.refreshVersionHistoryView();
-                            this.updateStatusBar();
+                            this.debouncedUpdateStatusBar();
                             
                             if (showNotification && this.settings.showNotifications) new Notice(`✅ 版本已保存 (自动保存已更新)`);
                             return;
@@ -816,9 +829,6 @@ export default class VersionControlPlugin extends Plugin {
                 addedLines = content.split('\n').length;
                 removedLines = 0;
             }
-
-            let storageContent = content;
-            let isIncremental = false;
 
             if (this.settings.enableIncrementalStorage && versionFile.versions.length > 0) {
                 const prevVersion = versionFile.versions[0]!;
@@ -871,7 +881,7 @@ export default class VersionControlPlugin extends Plugin {
             this.clearGlobalCache(); 
             this.refreshVersionHistoryView();
             this.lastModifiedTime.set(file.path, timestamp);
-            this.updateStatusBar();
+            this.debouncedUpdateStatusBar();
             
             if (showNotification && this.settings.showNotifications) new Notice(`✅ 版本已保存: ${message}`);
         } catch (error: unknown) {
@@ -1045,7 +1055,16 @@ export default class VersionControlPlugin extends Plugin {
         const versionPath = this.getVersionFilePath(filePath);
         const adapter = this.app.vault.adapter;
         try {
-            const dataToSave: any = { filePath: versionFile.filePath, versions: versionFile.versions, lastModified: versionFile.lastModified };
+            const dataToSave: {
+                filePath: string;
+                versions: VersionData[];
+                lastModified: number;
+                baseVersion?: string;
+            } = { 
+                filePath: versionFile.filePath, 
+                versions: versionFile.versions, 
+                lastModified: versionFile.lastModified 
+            };
             if (versionFile.baseVersion !== undefined) dataToSave.baseVersion = versionFile.baseVersion;
             
             const content = JSON.stringify(dataToSave);
@@ -2306,7 +2325,6 @@ class VersionHistoryView extends ItemView {
         new Notice(`📊 ${file.basename} 统计\n\n总版本数: ${versions.length}\n⭐ 星标: ${starredCount}\n🏷️ 已标签: ${taggedCount}\n🤖 自动: ${autoSaveCount}\n✋ 手动: ${manualSaveCount}\n📦 总大小: ${this.plugin.formatFileSize(totalSize)}\n📅 时间跨度: ${timeSpan}`, 8000);
     }
 
-    // --- 升级修复：单文件存储架构下，手动清理直接调用 cleanupVersionsInMemory 并反馈清理数 ---
     async cleanupOldVersions(file: TFile) {
         new ConfirmModal(this.app, '清理旧版本', '根据设置的清理规则删除旧版本。\n星标版本将被保留。\n\n是否继续?', async () => {
             const versionFile = await this.plugin.loadVersionFile(file.path);
@@ -2615,7 +2633,7 @@ class DiffModal extends Modal {
     }
 
     async onOpen() {
-        const { contentEl, modalEl } = this; 
+        const { contentEl } = this; 
         contentEl.addClass('diff-modal');
 
         if (Platform.isMobile) {
@@ -3395,7 +3413,7 @@ class DiffModal extends Modal {
             ? this.plugin.getCompactDiffLines(safeLeft, safeRight, this.ignoreWhitespace)
             : Diff.diffLines(safeLeft, safeRight, { ignoreWhitespace: this.ignoreWhitespace });
         
-        const processedDiff: ProcessedDiff[] = rawDiff.map(part => ({ ...part, type: (part.added ? 'added' : part.removed ? 'removed' : 'context') as any }));
+        const processedDiff: ProcessedDiff[] = rawDiff.map(part => ({ ...part, type: (part.added ? 'added' : part.removed ? 'removed' : 'context') as 'added' | 'removed' | 'context' }));
 
         let leftLineNum = 1;
         let rightLineNum = 1;
@@ -3669,7 +3687,7 @@ class DiffModal extends Modal {
             ? this.plugin.getCompactDiffLines(safeLeft, safeRight, this.ignoreWhitespace)
             : Diff.diffLines(safeLeft, safeRight, { ignoreWhitespace: this.ignoreWhitespace });
         
-        const diff: ProcessedDiff[] = rawDiff.map(p => ({ ...p, type: (p.added ? 'added' : p.removed ? 'removed' : 'context') as any }));
+        const diff: ProcessedDiff[] = rawDiff.map(p => ({ ...p, type: (p.added ? 'added' : p.removed ? 'removed' : 'context') as 'added' | 'removed' | 'context' }));
 
         let leftLineNum = 1;
         let rightLineNum = 1;
@@ -3987,7 +4005,7 @@ class VersionControlSettingTab extends PluginSettingTab {
                     } else {
                         this.plugin.statusBarItem.removeClass('version-control-statusbar-clickable');
                     }
-                    this.plugin.updateStatusBar();
+                    this.plugin.debouncedUpdateStatusBar();
                 }));
 
         new Setting(containerEl)
@@ -4264,7 +4282,7 @@ class VersionControlSettingTab extends PluginSettingTab {
         containerEl.createEl('h3', { text: '🎨 显示设置' });
         new Setting(containerEl)
             .setName('全库历史默认时间模式')
-            .setDesc('在全库版本历史中，默认按“文件修改时间”还是“版本保存时间”进行排序和展示。')
+            .setDesc('在全库版本历史中，默认按“文件修改时间”还是“版本保存时间”进行排序 and 展示。')
             .addDropdown(dropdown => dropdown
                 .addOption('modified', '文件修改时间')
                 .addOption('saved', '版本保存时间')
@@ -4524,7 +4542,7 @@ class VersionSelectModal extends Modal {
                 timestamp: Date.now(),
                 message: '📄 当前编辑器中的内容',
                 size: 0
-            } as any, true);
+            } as VersionData, true);
         }
 
         this.versions.forEach(v => {
