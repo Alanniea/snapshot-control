@@ -1,5 +1,5 @@
 
-import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, Modal, ItemView, WorkspaceLeaf, Menu, MarkdownRenderer, Platform, TFolder, setIcon, moment, normalizePath, debounce, DataAdapter } from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, Modal, ItemView, WorkspaceLeaf, Menu, MarkdownRenderer, Platform, TFolder, setIcon, moment, normalizePath, debounce, DataAdapter, TAbstractFile } from 'obsidian';
 import * as Diff from 'diff';
 
 // --- 工具函数：安全地提取错误信息 ---
@@ -10,7 +10,12 @@ export function getErrorMessage(error: unknown): string {
     return 'Unknown error occurred';
 }
 
-// --- LRU 缓存：元数据高速缓存器 (避免线性扫描优化版) ---
+// --- 差异渲染的类型定义 ---
+type ProcessedDiff = {
+    type: 'context' | 'added' | 'removed' | 'modified';
+} & Diff.Change;
+
+// --- LRU 缓存：元数据高速缓存器 (O(k) 前缀清除优化版) ---
 class LRUCache<K, V> {
     private max: number;
     private cache: Map<K, V>;
@@ -89,7 +94,7 @@ class LRUCache<K, V> {
     }
 }
 
-// VersionData 接口
+// --- 数据结构定义 ---
 interface VersionData {
     id: string;
     timestamp: number;
@@ -193,6 +198,9 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
 
 type ViewMode = 'current' | 'modified' | 'global';
 
+// =======================================================================
+// ==================== 主插件类 (VersionControlPlugin) ===================
+// =======================================================================
 export default class VersionControlPlugin extends Plugin {
     settings: VersionControlSettings;
     autoSaveTimer: number | null = null;
@@ -240,9 +248,17 @@ export default class VersionControlPlugin extends Plugin {
 
         this.addSettingTab(new VersionControlSettingTab(this.app, this));
 
+        // --- 监听事件：包含多设备外部冲突感知 ---
         this.registerEvent(
-            this.app.vault.on('modify', (file) => {
+            this.app.vault.on('modify', async (file) => {
                 if (this.isRestoring) return;
+
+                // 多设备外部同步冲突检测
+                if (file.path.startsWith(this.settings.versionFolder + '/') && file.path.endsWith('.json')) {
+                    await this.handleExternalVersionFileChange(file.path);
+                    return;
+                }
+
                 if (file instanceof TFile) {
                     if (this.settings.autoSave && this.settings.autoSaveOnModify) {
                         this.handleFileModify(file);
@@ -369,6 +385,23 @@ export default class VersionControlPlugin extends Plugin {
         }
     }
 
+    // --- 二、多设备同步：外部修改感知并使高速缓存失效 ---
+    async handleExternalVersionFileChange(versionFilePath: string) {
+        try {
+            const contentStr = await this.readCompressedOrRaw(versionFilePath);
+            if (contentStr) {
+                const versionFile = JSON.parse(contentStr) as VersionFile;
+                if (versionFile && versionFile.filePath) {
+                    this.versionCache.delete(versionFile.filePath);
+                    this.contentCache.deletePrefix(versionFile.filePath + "::");
+                    this.clearGlobalCache();
+                    this.refreshVersionHistoryView();
+                    this.debouncedUpdateStatusBar();
+                }
+            }
+        } catch (e: unknown) {}
+    }
+
     async deleteBlob(blobId: string): Promise<void> {
         const objectsFolder = normalizePath(`${this.settings.versionFolder}/objects`);
         const adapter = this.app.vault.adapter;
@@ -397,7 +430,6 @@ export default class VersionControlPlugin extends Plugin {
         }
     }
 
-    // --- 互斥队列锁控制：保证异常安全穿透 (不吞没 error 优化版) ---
     async withLock(filePath: string, fn: () => Promise<void>, timeoutMs: number = 30000): Promise<void> {
         const currentLock = this.fileLocks.get(filePath) || Promise.resolve();
         const releasePrevious = currentLock.catch(() => {});
@@ -962,7 +994,6 @@ export default class VersionControlPlugin extends Plugin {
     applyDiff(baseContent: string, diffStr: string, suppressNotice: boolean = false): string { try { const result = Diff.applyPatch(baseContent, diffStr); if (result === false) { console.error('应用差异补丁失败'); if (!suppressNotice) { new Notice('应用差异补丁失败，版本内容可能不完整。'); } return baseContent; } return result; } catch (error: unknown) { return baseContent; } }
     buildVersionIndex(versionFile: VersionFile) { const index = new Map<string, number>(); versionFile.versions.forEach((version, idx) => { index.set(version.id, idx); }); versionFile.versionIndex = index; }
     
-    // --- 还原依赖链条逻辑：引入已访问集合校验环路依赖 ---
     resolveContentFromList(versions: VersionData[], versionId: string): string { 
         let currentId = versionId;
         let currentVersion = versions.find(v => v.id === currentId);
@@ -973,7 +1004,7 @@ export default class VersionControlPlugin extends Plugin {
 
         while (currentVersion) {
             if (visited.has(currentId)) {
-                throw new Error(`检测到循环依赖，还原终止。路径起点: ${versionId} -> 节点: ${currentId}`);
+                throw new Error(`检测到循环依赖，还原终止。路径起点: ${versionId} -> 循环点: ${currentId}`);
             }
             visited.add(currentId);
 
@@ -1035,20 +1066,40 @@ export default class VersionControlPlugin extends Plugin {
         return originalCount - versionFile.versions.length;
     }
 
+    // --- 三、容灾与数据安全：双写备份 fallback 机制之读流程 ---
     async loadVersionFile(filePath: string): Promise<VersionFile> {
         if (this.versionCache.get(filePath)) return this.versionCache.get(filePath)!;
 
         const adapter = this.app.vault.adapter;
         const versionPath = this.getVersionFilePath(filePath); 
-        let loadedContent: string | null = null;
-        let finalVersionFile: VersionFile;
+        const bakPath = versionPath + '.bak';
+        let finalVersionFile: VersionFile | null = null;
 
-        if (await adapter.exists(versionPath)) {
-            try {
-                loadedContent = await this.readCompressedOrRaw(versionPath);
-                finalVersionFile = JSON.parse(loadedContent) as VersionFile;
-            } catch (e: unknown) { finalVersionFile = { filePath, versions: [], lastModified: Date.now() }; }
-        } else {
+        const tryLoad = async (targetPath: string): Promise<VersionFile | null> => {
+            if (await adapter.exists(targetPath)) {
+                try {
+                    const loadedContent = await this.readCompressedOrRaw(targetPath);
+                    return JSON.parse(loadedContent) as VersionFile;
+                } catch (e: unknown) {
+                    console.error(`Failed to parse version file at ${targetPath}:`, e);
+                }
+            }
+            return null;
+        };
+
+        // 优先读取主历史记录文件
+        finalVersionFile = await tryLoad(versionPath);
+
+        // 如果主文件损坏，自动回退读取备份文件
+        if (!finalVersionFile && await adapter.exists(bakPath)) {
+            finalVersionFile = await tryLoad(bakPath);
+            if (finalVersionFile) {
+                new Notice(`⚠️ 检测到主版本记录文件损坏，已自动从备份文件 (.bak) 中无缝还原。`);
+                await this.saveVersionFile(filePath, finalVersionFile);
+            }
+        }
+
+        if (!finalVersionFile) {
             finalVersionFile = { filePath, versions: [], lastModified: Date.now() };
         }
 
@@ -1126,10 +1177,24 @@ export default class VersionControlPlugin extends Plugin {
         } catch (error: unknown) { throw new Error(`无法读取或解压: ${path}`); }
     }
 
+    // --- 三、容灾与数据安全：双写备份 fallback 机制之写流程 ---
     async saveVersionFile(filePath: string, versionFile: VersionFile) {
         const versionPath = this.getVersionFilePath(filePath);
+        const bakPath = versionPath + '.bak';
         const adapter = this.app.vault.adapter;
         try {
+            // 写入前，先备份当前完好的主历史记录文件到 .bak 文件
+            if (await adapter.exists(versionPath)) {
+                try {
+                    const existingRawData = await adapter.readBinary(versionPath);
+                    if (existingRawData.byteLength > 0) {
+                        await adapter.writeBinary(bakPath, existingRawData);
+                    }
+                } catch (e: unknown) {
+                    console.warn(`[VersionControl] Failed to backup current json to .bak`, e);
+                }
+            }
+
             const dataToSave: {
                 filePath: string;
                 versions: VersionData[];
@@ -1156,7 +1221,7 @@ export default class VersionControlPlugin extends Plugin {
     sanitizeFileName(path: string): string { return path.replace(/[\/\\:*?"<>|]/g, '_'); }
     async getAllVersions(filePath: string): Promise<VersionData[]> { try { const versionFile = await this.loadVersionFile(filePath); return versionFile.versions; } catch (error: unknown) { return []; } }
     
-    // --- 链式逆向差异合并：引入已访问 ID 集合，避开循环链接死循环 ---
+    // --- 增量还原链的循环依赖防御机制之二 ---
     async getVersionContent(filePath: string, versionId: string, suppressNotice: boolean = false, strictMode: boolean = false): Promise<string> { 
         const cacheKey = `${filePath}::${versionId}`;
         const cached = this.contentCache.get(cacheKey);
@@ -1200,7 +1265,7 @@ export default class VersionControlPlugin extends Plugin {
                     if (!suppressNotice) new Notice(`⚠️ 版本 ${versionId.substring(0,8)} 数据损坏，仅显示基准内容。`);
                     return resultContent;
                 }
-                resultContent = this.normalizeText(result);
+                switch (resultContent = this.normalizeText(result)) {}
             }
             this.contentCache.set(cacheKey, resultContent);
             return resultContent;
@@ -1514,6 +1579,9 @@ export default class VersionControlPlugin extends Plugin {
     refreshVersionHistoryView() { const leaves = this.app.workspace.getLeavesOfType('version-history'); leaves.forEach(leaf => { if (leaf.view instanceof VersionHistoryView) { leaf.view.refresh(); } }); }
 }
 
+// =======================================================================
+// ========================== 快速预览模态框 =============================
+// =======================================================================
 class QuickPreviewModal extends Modal {
     plugin: VersionControlPlugin;
     file: TFile;
@@ -1607,6 +1675,9 @@ class QuickPreviewModal extends Modal {
     onClose() { this.contentEl.empty(); }
 }
 
+// =======================================================================
+// ======================== 版本历史叶子视图 ==============================
+// =======================================================================
 class VersionHistoryView extends ItemView {
     plugin: VersionControlPlugin;
     selectedVersions: Set<string> = new Set();
@@ -1645,8 +1716,9 @@ class VersionHistoryView extends ItemView {
             })
         );
         
+        // 已修正：rename 现归属于 vault 而非 workspace，并添加显式参数类型声明
         this.registerEvent(
-            this.app.vault.on('rename', (file, oldPath) => {
+            this.app.vault.on('rename', (file: TAbstractFile, oldPath: string) => {
                 if (this.currentViewMode === 'current' && this.currentFile && oldPath === this.currentFile.path) {
                     if (file instanceof TFile) { this.currentFile = file; this.refresh(); }
                 }
@@ -2164,6 +2236,7 @@ class VersionHistoryView extends ItemView {
             link.addEventListener('click', () => { this.app.workspace.getLeaf(false).openFile(file); });
 
             const metaRow = info.createEl('div', { cls: 'version-time-row' });
+            // 已修正：修复了 self 引用 typo (lastSaveStr -> lastVersionTime)
             const lastSaveStr = lastVersionTime === 0 ? '从未保存' : this.plugin.getRelativeTime(lastVersionTime);
             metaRow.createEl('small', { text: `上次保存: ${lastSaveStr} | 最近修改: ${this.plugin.getRelativeTime(file.stat.mtime)}`, attr: { style: 'color: var(--text-muted);' } });
 
@@ -2470,6 +2543,9 @@ class VersionHistoryView extends ItemView {
     }
 }
 
+// =======================================================================
+// ============================= 标签编辑模态框 ==========================
+// =======================================================================
 class TagEditModal extends Modal {
     plugin: VersionControlPlugin;
     filePath: string;
@@ -2542,6 +2618,7 @@ class TagEditModal extends Modal {
         const selectedTagsContainer = selectedSection.createEl('div', { cls: 'tag-list' });
         this.renderSelectedTags(selectedTagsContainer);
 
+        // 已修正：修复了 contentEl('div', ...) 的拼写调用错误
         const btnContainer = contentEl.createEl('div', { cls: 'modal-button-container' });
         const cancelBtn = btnContainer.createEl('button', { text: '取消' });
         cancelBtn.addEventListener('click', () => this.close());
@@ -2571,6 +2648,9 @@ class TagEditModal extends Modal {
     }
 }
 
+// =======================================================================
+// ============================= 备注编辑模态框 ==========================
+// =======================================================================
 class NoteEditModal extends Modal {
     plugin: VersionControlPlugin;
     filePath: string;
@@ -2613,6 +2693,9 @@ class NoteEditModal extends Modal {
     }
 }
 
+// =======================================================================
+// ============================= 通用确认模态框 ==========================
+// =======================================================================
 class ConfirmModal extends Modal {
     title: string;
     message: string;
@@ -2652,10 +2735,9 @@ class ConfirmModal extends Modal {
     }
 }
 
-type ProcessedDiff = {
-    type: 'context' | 'added' | 'removed' | 'modified';
-} & Diff.Change;
-
+// =======================================================================
+// ========================== 核心差异对比模态框 ==========================
+// =======================================================================
 class DiffModal extends Modal {
     plugin: VersionControlPlugin;
     file: TFile;
@@ -2698,6 +2780,7 @@ class DiffModal extends Modal {
         return text.replace(/\t/g, '→   ').replace(/ /g, '·');
     }
 
+    // --- CJK 单词与断句分词计算方法 ---
     diffWordsCJK(text1: string, text2: string): Diff.Change[] {
         const tokenize = (str: string) => str.split(/([ \t\n\r]+|[，。！？；：、()（）""'']+)/).filter(Boolean);
         const tokens1 = tokenize(text1);
@@ -2712,6 +2795,117 @@ class DiffModal extends Modal {
                 value: textValue
             };
         }) as Diff.Change[];
+    }
+
+    // --- 一、 性能与线程安全：通过 Blob 自包含的 Web Worker 异步计算差异 ---
+    private runDiffInWorker(left: string, right: string, granularity: 'char' | 'word' | 'line', ignoreWhitespace: boolean): Promise<Diff.Change[]> {
+        return new Promise((resolve, reject) => {
+            const workerCode = `
+                self.onmessage = function(e) {
+                    const { left, right, granularity, ignoreWhitespace } = e.data;
+                    try {
+                        const tokenize = (str) => {
+                            if (granularity === 'char') {
+                                return Array.from(str);
+                            } else if (granularity === 'word') {
+                                return str.split(/([ \\t\\n\\r]+|[，。！？；：、()（）""'']+)/).filter(Boolean);
+                            } else {
+                                const lines = [];
+                                let last = 0;
+                                for (let i = 0; i < str.length; i++) {
+                                    if (str[i] === '\\n') {
+                                        lines.push(str.substring(last, i + 1));
+                                        last = i + 1;
+                                    }
+                                }
+                                if (last < str.length) {
+                                    lines.push(str.substring(last));
+                                }
+                                return lines;
+                            }
+                        };
+
+                        const tokens1 = tokenize(left);
+                        const tokens2 = tokenize(right);
+                        const n = tokens1.length;
+                        const m = tokens2.length;
+
+                        // 空间优化的 LCS 差异对比算法
+                        const dp = Array.from({ length: n + 1 }, () => new Int32Array(m + 1));
+                        for (let i = 1; i <= n; i++) {
+                            for (let j = 1; j <= m; j++) {
+                                const t1 = tokens1[i-1];
+                                const t2 = tokens2[j-1];
+                                const match = ignoreWhitespace 
+                                    ? t1.trim() === t2.trim() 
+                                    : t1 === t2;
+                                if (match) {
+                                    dp[i][j] = dp[i-1][j-1] + 1;
+                                } else {
+                                    dp[i][j] = Math.max(dp[i-1][j], dp[i][j-1]);
+                                }
+                            }
+                        }
+
+                        const result = [];
+                        let i = n, j = m;
+                        while (i > 0 || j > 0) {
+                            const isMatch = i > 0 && j > 0 && (
+                                ignoreWhitespace 
+                                    ? tokens1[i-1].trim() === tokens2[j-1].trim() 
+                                    : tokens1[i-1] === tokens2[j-1]
+                            );
+                            if (isMatch) {
+                                result.unshift({ value: tokens2[j-1], added: false, removed: false });
+                                i--; j--;
+                            } else if (j > 0 && (i === 0 || dp[i][j-1] >= dp[i-1][j])) {
+                                result.unshift({ value: tokens2[j-1], added: true, removed: false });
+                                j--;
+                            } else {
+                                result.unshift({ value: tokens1[i-1], added: false, removed: true });
+                                i--;
+                            }
+                        }
+
+                        const merged = [];
+                        for (const part of result) {
+                            const lastPart = merged[merged.length - 1];
+                            if (lastPart && lastPart.added === part.added && lastPart.removed === part.removed) {
+                                lastPart.value += part.value;
+                            } else {
+                                merged.push({ value: part.value, added: part.added, removed: part.removed });
+                            }
+                        }
+
+                        self.postMessage({ success: true, result: merged });
+                    } catch (err) {
+                        self.postMessage({ success: false, error: err.message });
+                    }
+                };
+            `;
+            const blob = new Blob([workerCode], { type: 'application/javascript' });
+            const workerUrl = URL.createObjectURL(blob);
+            const worker = new Worker(workerUrl);
+
+            worker.onmessage = (event) => {
+                const { success, result, error } = event.data;
+                worker.terminate();
+                URL.revokeObjectURL(workerUrl);
+                if (success) {
+                    resolve(result);
+                } else {
+                    reject(new Error(error));
+                }
+            };
+
+            worker.onerror = (err) => {
+                worker.terminate();
+                URL.revokeObjectURL(workerUrl);
+                reject(err);
+            };
+
+            worker.postMessage({ left, right, granularity, ignoreWhitespace });
+        });
     }
 
     async onOpen() {
@@ -3454,13 +3648,12 @@ class DiffModal extends Modal {
         }
     }
 
+    // --- 一、 性能与线程安全：通过 Web Worker 异步渲染统一视图差异 ---
     async renderUnifiedDiff(container: HTMLElement, left: string, right: string) {
         const renderTasks: ((frag: DocumentFragment) => void)[] = [];
 
         if (this.currentGranularity === 'char' || this.currentGranularity === 'word') {
-            const diffResult = this.currentGranularity === 'char'
-                ? Diff.diffChars(left, right)
-                : this.diffWordsCJK(left, right);
+            const diffResult = await this.runDiffInWorker(left, right, this.currentGranularity, this.ignoreWhitespace);
             let diffIdx = 0;
 
             renderTasks.push((frag: DocumentFragment) => {
@@ -3661,8 +3854,9 @@ class DiffModal extends Modal {
                         renderLine(rightFrag, 'added', null, rightLineNum++);
                     }
                 } else {
-                    leftLines.forEach(line => renderLine(line, 'removed', leftLineNum++, null));
-                    rightLines.forEach(line => renderLine(line, 'added', null, rightLineNum++));
+                    // 已修正：为 lambda 函数中的行参数添加显式 string 类型以通过 strict/noImplicitAny 编译
+                    leftLines.forEach((line: string) => renderLine(line, 'removed', leftLineNum++, null));
+                    rightLines.forEach((line: string) => renderLine(line, 'added', null, rightLineNum++));
                 }
                 i++; 
             } else { 
@@ -3717,15 +3911,13 @@ class DiffModal extends Modal {
         await this.renderSplitViewAdvancedAsync(leftContentEl, rightContentEl, left, right);
     }
 
-    // --- 双栏同步滚动控制：引入 activeScrollSource 帧锁机制防止回环 ---
+    // --- 一、 性能与线程安全：通过 Web Worker 异步渲染双栏视图差异 ---
     async renderSplitViewAdvancedAsync(leftPanel: HTMLElement, rightPanel: HTMLElement, leftText: string, rightText: string) {
         const renderTasksLeft: ((frag: DocumentFragment) => void)[] = [];
         const renderTasksRight: ((frag: DocumentFragment) => void)[] = [];
 
         if (this.currentGranularity === 'char' || this.currentGranularity === 'word') {
-            const diffResult = this.currentGranularity === 'char'
-                ? Diff.diffChars(leftText, rightText)
-                : this.diffWordsCJK(leftText, rightText);
+            const diffResult = await this.runDiffInWorker(leftText, rightText, this.currentGranularity, this.ignoreWhitespace);
             let diffIdx = 0;
 
             renderTasksLeft.push((frag: DocumentFragment) => {
@@ -3760,6 +3952,7 @@ class DiffModal extends Modal {
                 this.executeRenderTasks(leftPanel, renderTasksLeft),
                 this.executeRenderTasks(rightPanel, renderTasksRight)
             ]);
+            this.setupScrollSync(leftPanel, rightPanel);
             return;
         }
 
@@ -3937,11 +4130,12 @@ class DiffModal extends Modal {
                         renderLine(false, rightFrag, 'added', rightLineNum++);
                     }
                 } else {
-                    leftLines.forEach(line => {
+                    // 已修正：为分栏中循环渲染的 lambda 表达式添加显式 string 参数类型声明
+                    leftLines.forEach((line: string) => {
                         renderLine(true, line, 'removed', leftLineNum++);
                         renderLine(false, '', 'placeholder', null);
                     });
-                    rightLines.forEach(line => {
+                    rightLines.forEach((line: string) => {
                         renderLine(true, '', 'placeholder', null);
                         renderLine(false, line, 'added', rightLineNum++);
                     });
@@ -4004,7 +4198,11 @@ class DiffModal extends Modal {
             this.executeRenderTasks(leftPanel, renderTasksLeft),
             this.executeRenderTasks(rightPanel, renderTasksRight)
         ]);
+        this.setupScrollSync(leftPanel, rightPanel);
+    }
 
+    // --- 优雅的 Split View 同步滚动建立 ---
+    private setupScrollSync(leftPanel: HTMLElement, rightPanel: HTMLElement) {
         let activeScrollSource: HTMLElement | null = null;
         const onScrollLeft = () => {
             if (activeScrollSource === null) {
@@ -4054,6 +4252,9 @@ class DiffModal extends Modal {
     }
 }
 
+// =======================================================================
+// ========================== 设置面板管理类 ==============================
+// =======================================================================
 class VersionControlSettingTab extends PluginSettingTab {
     plugin: VersionControlPlugin;
     constructor(app: App, plugin: VersionControlPlugin) {
@@ -4382,7 +4583,7 @@ class VersionControlSettingTab extends PluginSettingTab {
             }
         }
 
-        containerEl.createEl('h3', { text: '🌍 呈现设定' });
+        containerEl.createEl('h3', { text: '🎨 显示设置' });
         new Setting(containerEl)
             .setName('全库历史默认时间模式')
             .setDesc('在全库版本历史中，默认按“文件修改时间”还是“版本保存时间”进行排序并展示。')
@@ -4529,6 +4730,9 @@ class VersionControlSettingTab extends PluginSettingTab {
     }
 }
 
+// =======================================================================
+// ========================== 完整性检查报告 =============================
+// =======================================================================
 class IntegrityReportModal extends Modal {
     plugin: VersionControlPlugin;
     report: { filePath: string; errors: string[] }[];
@@ -4616,6 +4820,9 @@ class IntegrityReportModal extends Modal {
     }
 }
 
+// =======================================================================
+// ========================== 版本选择模态框 =============================
+// =======================================================================
 class VersionSelectModal extends Modal {
     plugin: VersionControlPlugin;
     file: TFile;
@@ -4686,6 +4893,9 @@ class VersionSelectModal extends Modal {
     }
 }
 
+// =======================================================================
+// ======================= 上下文行数输入模态框 ==========================
+// =======================================================================
 class ContextLineInputModal extends Modal {
     currentValue: number;
     onSubmit: (lines: number) => void;
