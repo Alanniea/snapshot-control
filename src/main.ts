@@ -1387,7 +1387,7 @@ export default class VersionControlPlugin extends Plugin {
     sanitizeFileName(path: string): string { return path.replace(/[\/\\:*?"<>|]/g, '_'); }
     async getAllVersions(filePath: string): Promise<VersionData[]> { try { const versionFile = await this.loadVersionFile(filePath); return versionFile.versions; } catch (error: unknown) { return []; } }
     
-    // --- 增量还原链的循环依赖防御机制 ---
+    // --- 增量还原链 of 循环依赖防御机制 ---
     async getVersionContent(filePath: string, versionId: string, suppressNotice: boolean = false, strictMode: boolean = false): Promise<string> { 
         const cacheKey = filePath + "::" + versionId;
         const cached = this.contentCache.get(cacheKey);
@@ -2110,6 +2110,7 @@ class VersionHistoryView extends ItemView {
     selectedModifiedFiles: Set<string> = new Set(); // 存放待保存面板中的选中文件路径
     currentFile: TFile | null = null;
     searchQuery: string = '';
+    globalSearchQuery: string = ''; // 全局历史搜索关键字
     currentPage: number = 0;
     totalVersions: number = 0;
     filterTag: string | null = null;
@@ -2788,9 +2789,10 @@ class VersionHistoryView extends ItemView {
         });
     }
 
+    // --- 重构全库历史仪表盘 (1000条池防丢深度去重、脏文件呼吸灯、极速搜索过滤) ---
     async renderGlobalHistory(container: HTMLElement) {
         const header = container.createEl('div', { attr: { style: 'display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;' } });
-        header.createEl('h3', { text: '🌍 全库版本时间轴', attr: { style: 'margin: 0;' } });
+        header.createEl('h3', { text: '🌍 全库历史看板', attr: { style: 'margin: 0;' } });
         
         const btnGroup = header.createEl('div', { attr: { style: 'display: flex; gap: 8px;' } });
 
@@ -2818,7 +2820,23 @@ class VersionHistoryView extends ItemView {
         });
 
         const listWrapper = container.createEl('div', { cls: 'version-list-wrapper' });
+
+        // 全局时间轴搜索栏
+        const searchContainer = listWrapper.createEl('div', { attr: { style: 'margin-bottom: 12px; display: flex; gap: 8px;' } });
+        const searchInput = searchContainer.createEl('input', { 
+            type: 'text', 
+            placeholder: '搜索历史文件或备注...', 
+            cls: 'version-search',
+            attr: { style: 'width: 100%; padding: 4px 10px; font-size: 12px;' }
+        }) as HTMLInputElement;
+        searchInput.value = this.globalSearchQuery;
         
+        const debouncedSearch = debounce((val: string) => {
+            this.globalSearchQuery = val;
+            this.refresh();
+        }, 300);
+        searchInput.addEventListener('input', () => debouncedSearch(searchInput.value));
+
         let loadingEl: HTMLElement | null = null;
         if (!this.plugin.globalHistoryCache) {
             loadingEl = listWrapper.createEl('div', { 
@@ -2827,7 +2845,8 @@ class VersionHistoryView extends ItemView {
             });
         }
 
-        let history = await this.plugin.getGlobalHistory(200); 
+        // 大索引池防丢拉取：获取最高 1000 条索引数据，防止单文件最新由于高频保存被推出去
+        let history = await this.plugin.getGlobalHistory(1000); 
         if (loadingEl) loadingEl.remove();
 
         if (history.length === 0) { 
@@ -2835,6 +2854,7 @@ class VersionHistoryView extends ItemView {
             return; 
         }
 
+        // 先去重过滤，保证“单文件最新”的绝对正确
         if (this.showUniqueFilesOnly) {
             const seen = new Set<string>();
             history = history.filter(item => {
@@ -2843,16 +2863,34 @@ class VersionHistoryView extends ItemView {
                 return true;
             });
         }
-        
+
+        // 再过滤全局搜索，提升索引响应
+        if (this.globalSearchQuery) {
+            const query = this.globalSearchQuery.toLowerCase();
+            history = history.filter(item => 
+                item.filePath.toLowerCase().includes(query) || 
+                (item.version.message && item.version.message.toLowerCase().includes(query)) ||
+                (item.version.note && item.version.note.toLowerCase().includes(query)) ||
+                (item.version.tags && item.version.tags.some(t => t.toLowerCase().includes(query)))
+            );
+        }
+
         const isModifiedMode = this.plugin.settings.globalHistoryTimeMode === 'modified';
 
+        // 重新排序并裁剪展现
         history.sort((a, b) => {
             const timeA = isModifiedMode ? (a.file ? a.file.stat.mtime : a.version.timestamp) : a.version.timestamp;
             const timeB = isModifiedMode ? (b.file ? b.file.stat.mtime : b.version.timestamp) : b.version.timestamp;
             return timeB - timeA;
         });
 
+        // 取前 50 条渲染
         history = history.slice(0, 50);
+
+        if (history.length === 0) {
+            this.renderEmptyState(listWrapper, '未找到匹配的历史文件');
+            return;
+        }
 
         const list = listWrapper.createEl('div', { cls: 'version-list' });
 
@@ -2900,7 +2938,7 @@ class VersionHistoryView extends ItemView {
                 cls: 'version-global-relative-time-inline',
                 attr: { 'data-timestamp': String(primaryTime) }
             });
-            primaryRelSpan.appendText(')');
+            primaryRelSpan.appendText(")");
 
             const fileLink = headerRow.createEl('span', { text: filePath, cls: 'internal-link' });
             fileLink.addEventListener('click', () => {
@@ -2908,6 +2946,33 @@ class VersionHistoryView extends ItemView {
                 else new Notice('文件已删除，无法打开');
             });
             if (!file) headerRow.createEl('span', { text: '(已删除)', attr: { style: 'color:var(--text-error); font-size:0.8em;' } });
+
+            // 整合脏文件追踪机制（呼吸灯闪烁标签）
+            const isDirty = this.plugin.dirtyFiles.has(filePath);
+            if (isDirty && file) {
+                const dirtyBadge = headerRow.createEl('span', { 
+                    text: '● 有改动', 
+                    cls: 'version-tag diff-info-removed',
+                    attr: { 
+                        style: 'font-size:10px; font-weight:bold; padding:1px 5px; animation: vc-pulse 2s infinite;',
+                        title: '该文件目前在磁盘中有修改，尚未保存新版本快照'
+                    }
+                });
+                
+                // 给呼吸灯注入动画效果
+                if (!document.getElementById('vc-pulse-animation')) {
+                    const styleEl = document.createElement('style');
+                    styleEl.id = 'vc-pulse-animation';
+                    styleEl.textContent = `
+                        @keyframes vc-pulse {
+                            0% { opacity: 0.6; }
+                            50% { opacity: 1; box-shadow: 0 0 4px var(--text-danger); }
+                            100% { opacity: 0.6; }
+                        }
+                    `;
+                    document.head.appendChild(styleEl);
+                }
+            }
 
             const msgRow = info.createEl('div', { cls: 'version-message-row' });
             const saveTypeLabel = this.plugin.getSaveTypeLabel(version.message);
@@ -2953,8 +3018,24 @@ class VersionHistoryView extends ItemView {
                 secSpan.appendText(")");
             }
 
+            // 动作栏注入：若有待保存改动，直接暴露出快速保存按钮（全流程看板化）
             const actions = item.createEl('div', { cls: 'version-actions' });
             if (file) {
+                if (isDirty) {
+                    const quickSaveBtn = actions.createEl('button', { 
+                        text: '保存改动', 
+                        cls: 'version-btn mod-cta',
+                        attr: { style: 'padding: 4px 8px; font-size:11px; background:var(--background-modifier-success); color:var(--text-success); border:none;' } 
+                    }) as HTMLButtonElement;
+                    quickSaveBtn.addEventListener('click', async (e) => {
+                        e.stopPropagation();
+                        quickSaveBtn.disabled = true;
+                        quickSaveBtn.setText('...');
+                        await this.plugin.createVersion(file, '[Manual] 看板快照', true);
+                        this.refresh();
+                    });
+                }
+
                 const diffBtn = actions.createEl('button', { text: '对比', cls: 'version-btn' }) as HTMLButtonElement;
                 diffBtn.addEventListener('click', () => { new DiffModal(this.app, this.plugin, file, version.id).open(); });
                 if (this.plugin.settings.enableQuickPreview) {
@@ -3051,7 +3132,7 @@ class VersionHistoryView extends ItemView {
             async () => {
                 const versionIds = Array.from(this.selectedVersions);
                 const versionFile = await this.plugin.loadVersionFile(file.path);
-                const dependentIds = new Set(versionFile.versions.map(v => v.baseVersionId).filter(Boolean));
+                const dependentIds = new Set(versionFile.versions.map((v: VersionData) => v.baseVersionId).filter(Boolean));
                 const hasLocked = versionIds.some(id => dependentIds.has(id));
 
                 if (hasLocked) {
@@ -4211,7 +4292,7 @@ class DiffModal extends Modal {
     
         const renderLine = (isLeft: boolean, content: string | DocumentFragment, type: string, lineNum: number | null) => {
             const task = (frag: DocumentFragment) => {
-                const lineEl = frag.createEl('div', { cls: "diff-line diff-" + type });
+                const lineEl = frag.createEl('div', { cls: `diff-line diff-${type}` });
 
                 if (type === 'added') lineEl.addClass('diff-line-bg-added');
                 else if (type === 'removed') lineEl.addClass('diff-line-bg-removed');
@@ -5060,16 +5141,17 @@ class ContextLineInputModal extends Modal {
         contentEl.createEl('p', { text: '输入在差异行周围显示的未修改行数 (0 表示只显示修改行, 9999 表示显示全部)。' });
 
         const inputContainer = contentEl.createEl('div', { attr: { style: 'margin: 20px 0;' } });
-        const input = inputContainer.createEl('input', { type: 'number' });
+        const input = inputContainer.createEl('input', { type: 'number' }) as HTMLInputElement;
         input.value = String(this.currentValue);
         input.focus();
 
         const btnContainer = contentEl.createEl('div', { cls: 'modal-button-container' });
-        btnContainer.createEl('button', { text: '取消' }).addEventListener('click', () => this.close());
+        const cancelBtn = btnContainer.createEl('button', { text: '取消' }) as HTMLButtonElement;
+        cancelBtn.addEventListener('click', () => this.close());
         
-        const saveBtn = btnContainer.createEl('button', { text: '保存', cls: 'mod-cta' });
+        const saveBtn = btnContainer.createEl('button', { text: '保存', cls: 'mod-cta' }) as HTMLButtonElement;
         saveBtn.addEventListener('click', () => {
-            const val = parseInt(input.value);
+            const val = parseInt(input.value, 10);
             if (!isNaN(val) && val >= 0) {
                 this.onSubmit(val);
                 this.close();
