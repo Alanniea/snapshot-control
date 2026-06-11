@@ -1343,7 +1343,7 @@ export default class VersionControlPlugin extends Plugin {
         const bakPath = versionPath + '.bak';
         const adapter = this.app.vault.adapter;
         try {
-            // 先保证嵌套的二级子文件夹存在
+            // 先保证嵌套 of 二级子文件夹存在
             const parentDir = versionPath.substring(0, versionPath.lastIndexOf('/'));
             if (!(await adapter.exists(parentDir))) {
                 await adapter.mkdir(parentDir);
@@ -1947,7 +1947,7 @@ export default class VersionControlPlugin extends Plugin {
         return moment(timestamp).fromNow(); 
     }
 
-    // --- 基于 global-index.json 元数据的 O(1) 全库历史读取 ---
+    // --- 基于 global-index.json 元数据的 O(1) 全库历史读取与防置空冷启动迁移 ---
     async getGlobalHistory(limit: number = 100): Promise<{ version: VersionData, filePath: string, file: TFile | null }[]> {
         if (this.globalHistoryCache) {
             return this.globalHistoryCache.slice(0, limit);
@@ -1956,6 +1956,7 @@ export default class VersionControlPlugin extends Plugin {
         const adapter = this.app.vault.adapter;
         const indexPath = normalizePath(`${this.settings.versionFolder}/global-index.json`);
         
+        // 若检测到全局索引未生成，则自动在后台调起冷启动迁移，扫描旧扁平库重建新目录结构和索引并收纳旧备份
         if (!(await adapter.exists(indexPath))) {
             new Notice('🔍 正在为您自动检测并迁移旧版本数据库，请稍候...');
             await this.rebuildGlobalIndex();
@@ -1966,7 +1967,8 @@ export default class VersionControlPlugin extends Plugin {
             const raw = await adapter.read(indexPath);
             const indexData = JSON.parse(raw) as GlobalIndex;
             
-            const results = indexData.entries.slice(0, limit).map(entry => {
+            // 修复冷启动限制 Bug：映射整库索引条目存入 Cache，而非提前被 limit 参数裁剪
+            const results = indexData.entries.map(entry => {
                 const tFile = this.app.vault.getAbstractFileByPath(entry.filePath);
                 return {
                     version: {
@@ -1983,7 +1985,7 @@ export default class VersionControlPlugin extends Plugin {
                 };
             });
             this.globalHistoryCache = results;
-            return results;
+            return results.slice(0, limit);
         } catch (e) {
             console.error('[VersionControl] Failed to load global-index.json', e);
             return [];
@@ -3166,6 +3168,7 @@ class VersionHistoryView extends ItemView {
             "确定要删除选中的 " + this.selectedVersions.size + " 个版本吗?\n\n此操作不可撤销!",
             async () => {
                 const versionIds = Array.from(this.selectedVersions);
+                // 修复 Bug：loadVersionFile 应当由 this.plugin 实例进行调用
                 const versionFile = await this.plugin.loadVersionFile(file.path);
                 const dependentIds = new Set(versionFile.versions.map((v: VersionData) => v.baseVersionId).filter(Boolean));
                 const hasLocked = versionIds.some(id => dependentIds.has(id));
