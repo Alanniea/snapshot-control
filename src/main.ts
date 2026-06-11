@@ -1726,7 +1726,7 @@ export default class VersionControlPlugin extends Plugin {
         this.clearGlobalCache();
     }
 
-    // --- 离线脏文件引擎持久化逻辑 ---
+    // --- 自动保存脏文件引擎持久化逻辑 ---
     async saveDirtyFiles() {
         const adapter = this.app.vault.adapter;
         const path = normalizePath(`${this.settings.versionFolder}/dirty-files.json`);
@@ -1906,7 +1906,7 @@ export default class VersionControlPlugin extends Plugin {
     async exportVersions(filePath: string): Promise<void> { try { const versionFile = await this.loadVersionFile(filePath); const exportPath = normalizePath(`${this.settings.versionFolder}/export_${this.sanitizeFileName(filePath)}_${Date.now()}.json`); await this.app.vault.adapter.write(exportPath, JSON.stringify(versionFile, null, 2)); new Notice(`✅ 已导出到: ${exportPath}`); } catch (error: unknown) { new Notice('❌ 导出失败'); } }
     async exportVersionAsFile(filePath: string, versionId: string): Promise<void> { try { const content = await this.getVersionContent(filePath, versionId); const fileName = filePath.replace(/\.[^/.]+$/, ''); const exportPath = normalizePath(`${fileName}_v${versionId.substring(0,8)}.md`); await this.app.vault.create(exportPath, content); new Notice(`✅ 已导出为: ${exportPath}`); } catch (error: unknown) { new Notice('❌ 导出失败'); } }
     
-    // --- 极速增量脏文件获取引擎 (不读取整库，0ms I/O) ---
+    // --- 极速脏文件获取引擎 (不读取整库，0ms I/O) ---
     async getModifiedFiles(): Promise<{ file: TFile, lastVersionTime: number, sizeDiff: number }[]> {
         const modifiedFiles: { file: TFile, lastVersionTime: number, sizeDiff: number }[] = [];
         for (const path of this.dirtyFiles) {
@@ -1947,7 +1947,7 @@ export default class VersionControlPlugin extends Plugin {
         return moment(timestamp).fromNow(); 
     }
 
-    // --- 基于 global-index.json 元数据的 O(1) 全库历史读取与防空自动冷启动迁移 ---
+    // --- 基于 global-index.json 元数据的 O(1) 全库历史读取 ---
     async getGlobalHistory(limit: number = 100): Promise<{ version: VersionData, filePath: string, file: TFile | null }[]> {
         if (this.globalHistoryCache) {
             return this.globalHistoryCache.slice(0, limit);
@@ -1956,7 +1956,6 @@ export default class VersionControlPlugin extends Plugin {
         const adapter = this.app.vault.adapter;
         const indexPath = normalizePath(`${this.settings.versionFolder}/global-index.json`);
         
-        // 若检测到全局索引未生成，则自动在后台调起冷启动迁移，扫描旧扁平库重建新目录结构和索引并收纳旧备份
         if (!(await adapter.exists(indexPath))) {
             new Notice('🔍 正在为您自动检测并迁移旧版本数据库，请稍候...');
             await this.rebuildGlobalIndex();
@@ -2983,7 +2982,7 @@ class VersionHistoryView extends ItemView {
             });
             if (!file) headerRow.createEl('span', { text: '(已删除)', attr: { style: 'color:var(--text-error); font-size:0.8em;' } });
 
-            // 整合脏文件追踪（呼吸灯闪烁标签）
+            // 整合脏文件追踪机制（呼吸灯闪烁标签）
             const isDirty = this.plugin.dirtyFiles.has(filePath);
             if (isDirty && file) {
                 const dirtyBadge = headerRow.createEl('span', { 
@@ -2995,6 +2994,7 @@ class VersionHistoryView extends ItemView {
                     }
                 });
                 
+                // 给呼吸灯注入动画效果
                 if (!document.getElementById('vc-pulse-animation')) {
                     const styleEl = document.createElement('style');
                     styleEl.id = 'vc-pulse-animation';
@@ -3053,13 +3053,14 @@ class VersionHistoryView extends ItemView {
                 secSpan.appendText(")");
             }
 
+            // 动作栏注入：采用兼容高对比配色的快速保存按钮
             const actions = item.createEl('div', { cls: 'version-actions' });
             if (file) {
                 if (isDirty) {
                     const quickSaveBtn = actions.createEl('button', { 
                         text: '保存改动', 
-                        cls: 'version-btn mod-cta',
-                        attr: { style: 'padding: 4px 8px; font-size:11px; background:var(--background-modifier-success); color:var(--text-success); border:none;' } 
+                        cls: 'version-btn',
+                        attr: { style: 'padding: 4px 8px; font-size:11px; background: hsla(130, 60%, 40%, 0.12); color: var(--text-success); border: 1px solid rgba(46, 160, 67, 0.4);' } 
                     }) as HTMLButtonElement;
                     quickSaveBtn.addEventListener('click', async (e) => {
                         e.stopPropagation();
@@ -4277,7 +4278,7 @@ class DiffModal extends Modal {
 
             await Promise.all([
                 this.executeRenderTasks(leftPanel, renderTasksLeft),
-                this.executeRenderTasks(rightPanel, rightDiffIdx as any) // Align type signature
+                this.executeRenderTasks(rightPanel, renderTasksRight)
             ]);
             this.setupScrollSync(leftPanel, rightPanel);
             return;
