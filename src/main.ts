@@ -319,7 +319,7 @@ class PersistentDiffWorker {
         };
 
         this.worker.onerror = (err) => {
-            console.error('[VersionControl Worker Error]', err);
+            console.error('[VersionControl] Worker Error', err);
             this.activeRequests.forEach((callbacks) => callbacks.reject(err));
             this.activeRequests.clear();
             this.initWorker();
@@ -1274,7 +1274,7 @@ export default class VersionControlPlugin extends Plugin {
         if (!finalVersionFile && await adapter.exists(bakPath)) {
             finalVersionFile = await tryLoad(bakPath);
             if (finalVersionFile) {
-                new Notice("⚠️ 检测到主版本记录文件损坏，已自动从备份文件 (.bak) 中无缝还原。");
+                new Notice("⚠️ 检测到主版本记录文件损坏，已自动从备份文件 (.bak) 中还原。");
                 await this.saveVersionFile(filePath, finalVersionFile);
             }
         }
@@ -1431,7 +1431,7 @@ export default class VersionControlPlugin extends Plugin {
                     if (!suppressNotice) new Notice("⚠️ 版本 " + versionId.substring(0,8) + " 数据损坏，仅显示基准内容。");
                     return resultContent;
                 }
-                switch (resultContent = this.normalizeText(result)) {}
+                resultContent = this.normalizeText(result);
             }
             this.contentCache.set(cacheKey, resultContent);
             return resultContent;
@@ -2121,9 +2121,15 @@ class VersionHistoryView extends ItemView {
     collapsedGroups: Set<string> = new Set(); 
     scrollPositions: Map<ViewMode, number> = new Map(); 
 
+    // 新增防抖刷新函数声明，防止频繁触发刷新导致性能损耗
+    private debouncedRefresh: () => void;
+
     constructor(leaf: WorkspaceLeaf, plugin: VersionControlPlugin) {
         super(leaf);
         this.plugin = plugin;
+        this.debouncedRefresh = debounce(() => {
+            this.refresh();
+        }, 800, true);
     }
 
     getViewType(): string { return 'version-history'; }
@@ -2148,7 +2154,39 @@ class VersionHistoryView extends ItemView {
             this.app.vault.on('rename', (file: TAbstractFile, oldPath: string) => {
                 if (this.currentViewMode === 'current' && this.currentFile && oldPath === this.currentFile.path) {
                     if (file instanceof TFile) { this.currentFile = file; this.refresh(); }
+                } else {
+                    this.debouncedRefresh();
                 }
+            })
+        );
+
+        // 监听文件修改，动态刷新“待保存”和“全库历史”的修改状态及指示灯
+        this.registerEvent(
+            this.app.vault.on('modify', (file) => {
+                if (file instanceof TFile) {
+                    if (this.currentViewMode === 'modified' || this.currentViewMode === 'global') {
+                        this.debouncedRefresh();
+                    }
+                }
+            })
+        );
+
+        // 监听文件删除，及时更新历史树
+        this.registerEvent(
+            this.app.vault.on('delete', (file) => {
+                if (this.currentViewMode === 'current' && this.currentFile && file.path === this.currentFile.path) {
+                    this.currentFile = null;
+                    this.refresh();
+                } else {
+                    this.debouncedRefresh();
+                }
+            })
+        );
+
+        // 监听文件创建，及时更新历史树
+        this.registerEvent(
+            this.app.vault.on('create', (file) => {
+                this.debouncedRefresh();
             })
         );
         
@@ -2637,7 +2675,7 @@ class VersionHistoryView extends ItemView {
         }
     }
 
-    // --- 极速、强力、体验拉满的待保存（Modified）文件面板 ---
+    // --- 极速待保存（Modified）文件面板 ---
     async renderModifiedFiles(container: HTMLElement) {
         container.createEl('h3', { text: '📝 已修改但未保存' });
         container.createEl('p', { text: '以下文件自上次保存版本后已有新的修改:', cls: 'vc-desc' });
@@ -2649,7 +2687,7 @@ class VersionHistoryView extends ItemView {
             return; 
         }
 
-        // 1. 绘制全新批处理多选工具栏
+        // 1. 绘制批量多选工具栏
         const batchBar = container.createEl('div', { cls: 'vc-batch-bar', attr: { style: 'display:flex; justify-content:space-between; align-items:center; padding: 6px 10px;' } });
         
         const selectionGroup = batchBar.createEl('div', { attr: { style: 'display:flex; gap: 8px; align-items:center;' } });
@@ -2672,7 +2710,7 @@ class VersionHistoryView extends ItemView {
 
         const actionsGroup = batchBar.createEl('div', { attr: { style: 'display:flex; gap: 6px;' } });
 
-        // 异步不卡死“全部/选中保存”
+        // 批量保存
         const saveBtn = actionsGroup.createEl('button', { 
             text: this.selectedModifiedFiles.size > 0 ? '保存选中' : '全部保存', 
             cls: 'mod-cta',
@@ -2699,7 +2737,7 @@ class VersionHistoryView extends ItemView {
                 }
                 progressNotice.setMessage("正在批量保存版本: " + (i + 1) + "/" + total);
                 await this.plugin.yieldToMain();
-                await new Promise(resolve => setTimeout(resolve, 50)); // 给 UI 渲染让步
+                await new Promise(resolve => setTimeout(resolve, 50)); 
             }
             progressNotice.hide();
             new Notice("✅ 批量保存完成，成功处理 " + total + " 个文件");
@@ -2707,7 +2745,7 @@ class VersionHistoryView extends ItemView {
             this.refresh();
         });
 
-        // 多选忽略机制
+        // 批量忽略
         if (this.selectedModifiedFiles.size > 0) {
             const ignoreBtn = actionsGroup.createEl('button', { 
                 text: '忽略选中', 
@@ -2745,7 +2783,7 @@ class VersionHistoryView extends ItemView {
             const link = titleRow.createEl('a', { text: file.basename, cls: 'internal-link' });
             link.addEventListener('click', () => { this.app.workspace.getLeaf(false).openFile(file); });
 
-            // 变更规模智能差值气泡展现
+            // 变更规模指示
             if (sizeDiff !== file.stat.size) {
                 const diffSymbol = sizeDiff > 0 ? '▲' : '▼';
                 const formattedDiff = this.plugin.formatFileSize(Math.abs(sizeDiff));
@@ -2789,7 +2827,7 @@ class VersionHistoryView extends ItemView {
         });
     }
 
-    // --- 重构全库历史仪表盘 (1000条池防丢深度去重、脏文件呼吸灯、极速搜索过滤) ---
+    // --- 重构全库历史仪表盘 ---
     async renderGlobalHistory(container: HTMLElement) {
         const header = container.createEl('div', { attr: { style: 'display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;' } });
         header.createEl('h3', { text: '🌍 全库历史看板', attr: { style: 'margin: 0;' } });
@@ -2845,7 +2883,6 @@ class VersionHistoryView extends ItemView {
             });
         }
 
-        // 大索引池防丢拉取：获取最高 1000 条索引数据，防止单文件最新由于高频保存被推出去
         let history = await this.plugin.getGlobalHistory(1000); 
         if (loadingEl) loadingEl.remove();
 
@@ -2854,7 +2891,7 @@ class VersionHistoryView extends ItemView {
             return; 
         }
 
-        // 先去重过滤，保证“单文件最新”的绝对正确
+        // 去重过滤
         if (this.showUniqueFilesOnly) {
             const seen = new Set<string>();
             history = history.filter(item => {
@@ -2864,7 +2901,7 @@ class VersionHistoryView extends ItemView {
             });
         }
 
-        // 再过滤全局搜索，提升索引响应
+        // 搜索过滤
         if (this.globalSearchQuery) {
             const query = this.globalSearchQuery.toLowerCase();
             history = history.filter(item => 
@@ -2884,7 +2921,6 @@ class VersionHistoryView extends ItemView {
             return timeB - timeA;
         });
 
-        // 取前 50 条渲染
         history = history.slice(0, 50);
 
         if (history.length === 0) {
@@ -2947,7 +2983,7 @@ class VersionHistoryView extends ItemView {
             });
             if (!file) headerRow.createEl('span', { text: '(已删除)', attr: { style: 'color:var(--text-error); font-size:0.8em;' } });
 
-            // 整合脏文件追踪机制（呼吸灯闪烁标签）
+            // 整合脏文件追踪（呼吸灯闪烁标签）
             const isDirty = this.plugin.dirtyFiles.has(filePath);
             if (isDirty && file) {
                 const dirtyBadge = headerRow.createEl('span', { 
@@ -2959,7 +2995,6 @@ class VersionHistoryView extends ItemView {
                     }
                 });
                 
-                // 给呼吸灯注入动画效果
                 if (!document.getElementById('vc-pulse-animation')) {
                     const styleEl = document.createElement('style');
                     styleEl.id = 'vc-pulse-animation';
@@ -3018,7 +3053,6 @@ class VersionHistoryView extends ItemView {
                 secSpan.appendText(")");
             }
 
-            // 动作栏注入：若有待保存改动，直接暴露出快速保存按钮（全流程看板化）
             const actions = item.createEl('div', { cls: 'version-actions' });
             if (file) {
                 if (isDirty) {
@@ -3136,7 +3170,7 @@ class VersionHistoryView extends ItemView {
                 const hasLocked = versionIds.some(id => dependentIds.has(id));
 
                 if (hasLocked) {
-                    new Notice('❌ 包含被依赖的基准版本，无法删除。已为您自动取消勾选这些版本。', 5000);
+                    new Notice('❌ 包含被依赖的基准版本，无法删除。已自动取消勾选这些版本。', 5000);
                     versionIds.forEach(id => { if (dependentIds.has(id)) this.selectedVersions.delete(id); });
                     this.refresh();
                     return;
@@ -3530,11 +3564,6 @@ class DiffModal extends Modal {
             menu.addSeparator();
 
             if (isLineBased) {
-                menu.addItem(item => item.setTitle('行内高亮: 按行').setIcon('rows').setChecked(this.plugin.settings.inlineDiffAlgorithm === 'line').onClick(async () => {
-                    this.plugin.settings.inlineDiffAlgorithm = 'line';
-                    await this.plugin.saveSettings();
-                    this.renderTextDiff();
-                }));
                 menu.addItem(item => item.setTitle('行内高亮: 按单词 (推荐)').setIcon('text-cursor').setChecked(this.plugin.settings.inlineDiffAlgorithm === 'word').onClick(async () => {
                     this.plugin.settings.inlineDiffAlgorithm = 'word';
                     await this.plugin.saveSettings();
@@ -3542,6 +3571,11 @@ class DiffModal extends Modal {
                 }));
                 menu.addItem(item => item.setTitle('行内高亮: 按字符').setIcon('text-select').setChecked(this.plugin.settings.inlineDiffAlgorithm === 'char').onClick(async () => {
                     this.plugin.settings.inlineDiffAlgorithm = 'char';
+                    await this.plugin.saveSettings();
+                    this.renderTextDiff();
+                }));
+                menu.addItem(item => item.setTitle('行内高亮: 按行').setIcon('rows').setChecked(this.plugin.settings.inlineDiffAlgorithm === 'line').onClick(async () => {
+                    this.plugin.settings.inlineDiffAlgorithm = 'line';
                     await this.plugin.saveSettings();
                     this.renderTextDiff();
                 }));
@@ -4243,7 +4277,7 @@ class DiffModal extends Modal {
 
             await Promise.all([
                 this.executeRenderTasks(leftPanel, renderTasksLeft),
-                this.executeRenderTasks(rightPanel, renderTasksRight)
+                this.executeRenderTasks(rightPanel, rightDiffIdx as any) // Align type signature
             ]);
             this.setupScrollSync(leftPanel, rightPanel);
             return;
@@ -4749,7 +4783,7 @@ class VersionControlSettingTab extends PluginSettingTab {
         containerEl.createEl('h3', { text: '💾 存储优化' });
         new Setting(containerEl)
             .setName('启用压缩')
-            .setDesc('使用 Web 原生 gzip 压缩版本文件, 带来完全不阻塞主线程的零卡顿体验')
+            .setDesc('使用 Web 原生 gzip 压缩版本文件, 带来完全不阻塞主线程的体验')
             .addToggle(toggle => toggle
                 .setValue(this.plugin.settings.enableCompression)
                 .onChange(async (value) => {
@@ -4944,8 +4978,8 @@ class VersionControlSettingTab extends PluginSettingTab {
 
         containerEl.createEl('h3', { text: '🛠️ 维护操作' });
         new Setting(containerEl)
-            .setName('重建全局索引与历史扫描（修复不可见问题）')
-            .setDesc('当您发现以前的历史版本在全局时间轴中无法读取或未同步时，可点击此按钮进行深度全库强力重建（不影响已有版本内容）。')
+            .setName('重建全局索引与历史扫描')
+            .setDesc('当您发现以前的历史版本在全局时间轴中无法读取或未同步时，可点击此按钮进行深度全库重建（不影响已有版本内容）。')
             .addButton(button => button
                 .setButtonText('一键重建索引与迁移')
                 .setCta()
@@ -4990,7 +5024,7 @@ class VersionControlSettingTab extends PluginSettingTab {
         const infoEl = containerEl.createEl('div', { cls: 'version-info-section' });
         
         const feature1 = infoEl.createEl('div', { cls: 'feature-item' });
-        feature1.createEl('strong', { text: '✨ 新功能:' });
+        feature1.createEl('strong', { text: '✨ 功能特性:' });
         const ul1 = feature1.createEl('ul');
         ul1.createEl('li', { text: '分级缓存 - 为大型 Vault 带来的零延迟体验' });
         ul1.createEl('li', { text: '版本标签系统 - 为重要版本添加标签进行分类' });
@@ -5007,7 +5041,7 @@ class VersionControlSettingTab extends PluginSettingTab {
         ul2.createEl('li', { text: '点击标签可快速筛选相关版本' });
         ul2.createEl('li', { text: '使用星标标记重要的里程碑版本' });
         ul2.createEl('li', { text: '定期运行"优化存储"以保持最佳性能' });
-        ul2.createEl('li', { text: '增量存储和压缩可节省90%以上的空间' });
+        ul2.createEl('li', { text: '增量存储和压缩可节省大部分空间' });
     }
 
     async clearAllVersions() {
@@ -5059,7 +5093,7 @@ class IntegrityReportModal extends Modal {
             const repairAllBtn = headerContainer.createEl('button', { text: '✨ 一键修复所有哈希', cls: 'mod-cta' });
             
             repairAllBtn.addEventListener('click', async () => {
-                repairAllBtn.setText('正在努力修复中...');
+                repairAllBtn.setText('正在修复中...');
                 repairAllBtn.disabled = true;
                 
                 let successCount = 0;
