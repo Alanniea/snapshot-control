@@ -1726,7 +1726,7 @@ export default class VersionControlPlugin extends Plugin {
         this.clearGlobalCache();
     }
 
-    // --- 自动保存脏文件引擎持久化逻辑 ---
+    // --- 离线脏文件引擎持久化逻辑 ---
     async saveDirtyFiles() {
         const adapter = this.app.vault.adapter;
         const path = normalizePath(`${this.settings.versionFolder}/dirty-files.json`);
@@ -1902,7 +1902,14 @@ export default class VersionControlPlugin extends Plugin {
         } catch (error: unknown) { progressNotice.hide(); } 
     }
 
-    async getStorageStats(): Promise<{ totalSize: number; versionCount: number; fileCount: number; compressionRatio: number; starredCount: number; taggedCount: number }> { const adapter = this.app.vault.adapter; const versionFolder = this.settings.versionFolder; try { if (!await adapter.exists(versionFolder)) { return { totalSize: 0, versionCount: 0, fileCount: 0, compressionRatio: 0, starredCount: 0, taggedCount: 0 }; } const files = await this.getJSONFilesRecursively(versionFolder); let totalSize = 0; let versionCount = 0; let fileCount = 0; let totalOriginalSize = 0; let starredCount = 0; let taggedCount = 0; for (const file of files) { try { const stat = await adapter.stat(file); const fileSize = stat?.size || 0; totalSize += fileSize; let versionFile: VersionFile; if (this.settings.enableCompression) { try { const rawData = await adapter.readBinary(file); const decompressed = await this.decompressText(rawData); versionFile = JSON.parse(decompressed) as VersionFile; } catch (e: unknown) { const content = await adapter.read(file); versionFile = JSON.parse(content) as VersionFile; } } else { const content = await adapter.read(file); versionFile = JSON.parse(content) as VersionFile; } if (versionFile.versions && Array.isArray(versionFile.versions)) { versionCount += versionFile.versions.length; versionFile.versions.forEach(v => { if (v.content) { totalOriginalSize += v.content.length; } else if (v.diff) { totalOriginalSize += v.diff.length; } if (v.starred) starredCount++; if (v.tags && v.tags.length > 0) taggedCount++; }); fileCount++; } } catch (error: unknown) {} } const compressionRatio = totalOriginalSize > 0 ? ((1 - totalSize / totalOriginalSize) * 100) : 0; return { totalSize, versionCount, fileCount, compressionRatio, starredCount, taggedCount }; } catch (error: unknown) { return { totalSize: 0, versionCount: 0, fileCount: 0, compressionRatio: 0, starredCount: 0, taggedCount: 0 }; } }
+    async getStorageStats(): Promise<{ totalSize: number; versionCount: number; fileCount: number; compressionRatio: number; starredCount: number; taggedCount: number }> { const adapter = this.app.vault.adapter; const versionFolder = this.settings.versionFolder; try { if (!await adapter.exists(versionFolder)) { return { totalSize: 0, versionCount: 0, fileCount: 0, compressionRatio: 0, starredCount: 0, taggedCount: 0 }; } const files = await this.getJSONFilesRecursively(versionFolder); let totalSize = 0; let versionCount = 0; let fileCount = 0; let totalOriginalSize = 0; let starredCount = 0; let taggedCount = 0; 
+        let fileIndex = 0;
+        for (const file of files) { 
+            fileIndex++;
+            if (fileIndex % 15 === 0) {
+                await this.yieldToMain(); // 每分析15个文件让出一次主线程，彻底解决移动端界面卡死问题
+            }
+            try { const stat = await adapter.stat(file); const fileSize = stat?.size || 0; totalSize += fileSize; let versionFile: VersionFile; if (this.settings.enableCompression) { try { const rawData = await adapter.readBinary(file); const decompressed = await this.decompressText(rawData); versionFile = JSON.parse(decompressed) as VersionFile; } catch (e: unknown) { const content = await adapter.read(file); versionFile = JSON.parse(content) as VersionFile; } } else { const content = await adapter.read(file); versionFile = JSON.parse(content) as VersionFile; } if (versionFile.versions && Array.isArray(versionFile.versions)) { versionCount += versionFile.versions.length; versionFile.versions.forEach(v => { if (v.content) { totalOriginalSize += v.content.length; } else if (v.diff) { totalOriginalSize += v.diff.length; } if (v.starred) starredCount++; if (v.tags && v.tags.length > 0) taggedCount++; }); fileCount++; } } catch (error: unknown) {} } const compressionRatio = totalOriginalSize > 0 ? ((1 - totalSize / totalOriginalSize) * 100) : 0; return { totalSize, versionCount, fileCount, compressionRatio, starredCount, taggedCount }; } catch (error: unknown) { return { totalSize: 0, versionCount: 0, fileCount: 0, compressionRatio: 0, starredCount: 0, taggedCount: 0 }; } }
     async exportVersions(filePath: string): Promise<void> { try { const versionFile = await this.loadVersionFile(filePath); const exportPath = normalizePath(`${this.settings.versionFolder}/export_${this.sanitizeFileName(filePath)}_${Date.now()}.json`); await this.app.vault.adapter.write(exportPath, JSON.stringify(versionFile, null, 2)); new Notice(`✅ 已导出到: ${exportPath}`); } catch (error: unknown) { new Notice('❌ 导出失败'); } }
     async exportVersionAsFile(filePath: string, versionId: string): Promise<void> { try { const content = await this.getVersionContent(filePath, versionId); const fileName = filePath.replace(/\.[^/.]+$/, ''); const exportPath = normalizePath(`${fileName}_v${versionId.substring(0,8)}.md`); await this.app.vault.create(exportPath, content); new Notice(`✅ 已导出为: ${exportPath}`); } catch (error: unknown) { new Notice('❌ 导出失败'); } }
     
@@ -4587,7 +4594,6 @@ class VersionControlSettingTab extends PluginSettingTab {
         containerEl.createEl('h2', { text: '版本控制设置' });
 
         if (this.plugin.settings.showVersionStats) {
-            const stats = await this.plugin.getStorageStats();
             const statsEl = containerEl.createEl('div', { cls: 'version-stats' });
             const headerEl = statsEl.createEl('div', { cls: 'stats-header' });
             headerEl.createEl('h3', { text: '📊 存储统计' });
@@ -4595,22 +4601,45 @@ class VersionControlSettingTab extends PluginSettingTab {
             refreshBtn.addEventListener('click', () => { this.display(); });
 
             const statsGrid = statsEl.createEl('div', { cls: 'stats-grid' });
-            const createStatCard = (label: string, value: string | number, highlight: boolean = false) => {
+            
+            // 1. 渲染即时骨架屏，防止 UI 开辟线程阻塞
+            const createPlaceholderCard = (label: string) => {
                 const card = statsGrid.createEl('div', { cls: 'stat-card' });
-                const valEl = card.createEl('div', { text: String(value), cls: 'stat-value' });
-                if (highlight) valEl.style.color = 'var(--text-accent)';
+                card.createEl('div', { text: '正在计算...', cls: 'stat-value', attr: { style: 'font-size: 14px; color: var(--text-muted);' } });
                 card.createEl('div', { text: label, cls: 'stat-label' });
             };
 
-            createStatCard('总占用空间', this.plugin.formatFileSize(stats.totalSize), true);
-            createStatCard('版本总数', stats.versionCount);
-            createStatCard('文件总数', stats.fileCount);
-            createStatCard('星标版本', stats.starredCount);
-            createStatCard('带有标签', stats.taggedCount);
-            
+            createPlaceholderCard('总占用空间');
+            createPlaceholderCard('版本总数');
+            createPlaceholderCard('文件总数');
+            createPlaceholderCard('星标版本');
+            createPlaceholderCard('带有标签');
             if (this.plugin.settings.enableCompression || this.plugin.settings.enableIncrementalStorage) {
-                createStatCard('存储压缩率', `${stats.compressionRatio.toFixed(1)}%`, true);
+                createPlaceholderCard('存储压缩率');
             }
+
+            // 2. 异步拉取后台数据并原地更新，实现秒开而不会卡顿
+            (async () => {
+                const stats = await this.plugin.getStorageStats();
+                statsGrid.empty();
+
+                const createStatCard = (label: string, value: string | number, highlight: boolean = false) => {
+                    const card = statsGrid.createEl('div', { cls: 'stat-card' });
+                    const valEl = card.createEl('div', { text: String(value), cls: 'stat-value' });
+                    if (highlight) valEl.style.color = 'var(--text-accent)';
+                    card.createEl('div', { text: label, cls: 'stat-label' });
+                };
+
+                createStatCard('总占用空间', this.plugin.formatFileSize(stats.totalSize), true);
+                createStatCard('版本总数', stats.versionCount);
+                createStatCard('文件总数', stats.fileCount);
+                createStatCard('星标版本', stats.starredCount);
+                createStatCard('带有标签', stats.taggedCount);
+                
+                if (this.plugin.settings.enableCompression || this.plugin.settings.enableIncrementalStorage) {
+                    createStatCard('存储压缩率', `${stats.compressionRatio.toFixed(1)}%`, true);
+                }
+            })();
         }
 
         containerEl.createEl('h3', { text: '⚙️ 基础设置' });
