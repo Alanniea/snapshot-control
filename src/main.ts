@@ -1734,7 +1734,7 @@ export default class VersionControlPlugin extends Plugin {
         this.clearGlobalCache();
     }
 
-    // --- 自动保存脏文件引擎持久化逻辑 ---
+    // --- 离线脏文件引擎持久化逻辑 ---
     async saveDirtyFiles() {
         const adapter = this.app.vault.adapter;
         const path = normalizePath(`${this.settings.versionFolder}/dirty-files.json`);
@@ -2272,10 +2272,6 @@ class VersionHistoryView extends ItemView {
         this.isRefreshing = true;
 
         const realContainer = this.contentEl;
-        const currentScrollArea = realContainer.querySelector('.vc-content-area');
-        if (currentScrollArea) {
-            this.scrollPositions.set(this.currentViewMode, currentScrollArea.scrollTop);
-        }
 
         try {
             const buffer = createDiv();
@@ -2293,15 +2289,26 @@ class VersionHistoryView extends ItemView {
             realContainer.empty();
             realContainer.appendChild(buffer);
 
-            requestAnimationFrame(() => {
-                const newScrollArea = realContainer.querySelector('.vc-content-area');
-                if (newScrollArea) {
-                    const savedScroll = this.scrollPositions.get(this.currentViewMode) || 0;
-                    if (savedScroll > 0) {
-                        newScrollArea.scrollTop = savedScroll;
-                    }
+            const newScrollArea = realContainer.querySelector('.vc-content-area') as HTMLElement;
+            if (newScrollArea) {
+                // 1. 立即还原滚动条位置（使用两级延迟还原，兼容移动端异步高度重流计算）
+                const savedScroll = this.scrollPositions.get(this.currentViewMode) || 0;
+                if (savedScroll > 0) {
+                    newScrollArea.scrollTop = savedScroll;
+                    
+                    // 移动端高度延迟布局修补
+                    setTimeout(() => {
+                        if (newScrollArea.scrollTop !== savedScroll) {
+                            newScrollArea.scrollTop = savedScroll;
+                        }
+                    }, 50);
                 }
-            });
+
+                // 2. 绑定实时滚动事件监听器，始终在内存中记录精细滚动绝对数值（不因 DOM 解构而重置 0）
+                newScrollArea.addEventListener('scroll', () => {
+                    this.scrollPositions.set(this.currentViewMode, newScrollArea.scrollTop);
+                });
+            }
 
         } catch (error: unknown) {
             console.error("Version History Refresh Error:", getErrorMessage(error), error);
@@ -4526,7 +4533,6 @@ class DiffModal extends Modal {
                             });
                             renderTasksRight.push((frag: DocumentFragment) => {
                                 const skippedRight = frag.createEl('div', { cls: 'diff-line diff-context-gap' });
-                                skippedRight.createEl('span', { cls: 'line-number-container' });
                                 skippedRight.createEl('span', { cls: 'diff-marker', text: '...' });
                             });
                         }
