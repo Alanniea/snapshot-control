@@ -829,6 +829,10 @@ export default class VersionControlPlugin extends Plugin {
 
                     // 重命名时同步全局索引
                     await this.updateGlobalIndexForRename(oldPath, file.path);
+                    
+                    // 修复 Bug：重命名后清除内存缓存并立即重绘视图
+                    this.clearGlobalCache();
+                    this.refreshVersionHistoryView();
                 } catch (e: unknown) { console.error("Rename Error", getErrorMessage(e), e); }
             }
         });
@@ -859,6 +863,10 @@ export default class VersionControlPlugin extends Plugin {
 
                 // 删除时清除索引
                 await this.clearGlobalIndexForFile(filePath);
+                
+                // 修复 Bug：删除后清除内存缓存并立即重绘视图
+                this.clearGlobalCache();
+                this.refreshVersionHistoryView();
             }
         });
     }
