@@ -1726,7 +1726,7 @@ export default class VersionControlPlugin extends Plugin {
         this.clearGlobalCache();
     }
 
-    // --- 离线脏文件引擎持久化逻辑 ---
+    // --- 自动保存脏文件引擎持久化逻辑 ---
     async saveDirtyFiles() {
         const adapter = this.app.vault.adapter;
         const path = normalizePath(`${this.settings.versionFolder}/dirty-files.json`);
@@ -4288,7 +4288,7 @@ class DiffModal extends Modal {
 
             await Promise.all([
                 this.executeRenderTasks(leftPanel, renderTasksLeft),
-                this.executeRenderTasks(rightPanel, renderTasksRight)
+                this.executeRenderTasks(rightPanel, rightDiffIdx as any) 
             ]);
             this.setupScrollSync(leftPanel, rightPanel);
             return;
@@ -4586,6 +4586,73 @@ class VersionControlSettingTab extends PluginSettingTab {
     constructor(app: App, plugin: VersionControlPlugin) {
         super(app, plugin);
         this.plugin = plugin;
+        this.injectAccordionStyles();
+    }
+
+    injectAccordionStyles() {
+        const styleId = 'vc-accordion-styles';
+        if (!document.getElementById(styleId)) {
+            const style = document.createElement('style');
+            style.id = styleId;
+            style.textContent = `
+                details.vc-setting-accordion {
+                    border: 1px solid var(--background-modifier-border);
+                    border-radius: var(--radius-m);
+                    margin-bottom: 12px;
+                    background-color: var(--background-primary-alt);
+                    overflow: hidden;
+                    transition: border-color 0.2s;
+                }
+                details.vc-setting-accordion[open] {
+                    border-color: var(--interactive-accent);
+                }
+                summary.vc-setting-summary {
+                    padding: 12px 16px;
+                    font-weight: 600;
+                    cursor: pointer;
+                    user-select: none;
+                    background-color: var(--background-secondary);
+                    display: flex;
+                    align-items: center;
+                }
+                summary.vc-setting-summary::-webkit-details-marker {
+                    display: none;
+                }
+                summary.vc-setting-summary::before {
+                    content: '▶';
+                    display: inline-block;
+                    margin-right: 10px;
+                    transition: transform 0.2s;
+                    font-size: 0.8em;
+                    color: var(--text-muted);
+                }
+                details.vc-setting-accordion[open] summary.vc-setting-summary::before {
+                    transform: rotate(90deg);
+                    color: var(--text-accent);
+                }
+                .vc-setting-accordion-content {
+                    padding: 8px 16px;
+                    background-color: var(--background-primary);
+                    border-top: 1px solid var(--background-modifier-border);
+                }
+                .vc-setting-accordion-content .setting-item {
+                    border-bottom: 1px solid var(--background-modifier-border-subtle);
+                }
+                .vc-setting-accordion-content .setting-item:last-child {
+                    border-bottom: none;
+                }
+            `;
+            document.head.appendChild(style);
+        }
+    }
+
+    createAccordionSection(containerEl: HTMLElement, title: string, icon: string, defaultOpen = false): HTMLElement {
+        const details = containerEl.createEl('details', { cls: 'vc-setting-accordion' });
+        if (defaultOpen) details.setAttribute('open', '');
+        const summary = details.createEl('summary', { cls: 'vc-setting-summary' });
+        summary.createEl('span', { text: icon + ' ' + title, cls: 'vc-setting-summary-title' });
+        const content = details.createEl('div', { cls: 'vc-setting-accordion-content' });
+        return content;
     }
 
     async display(): Promise<void> {
@@ -4642,8 +4709,11 @@ class VersionControlSettingTab extends PluginSettingTab {
             })();
         }
 
-        containerEl.createEl('h3', { text: '⚙️ 基础设置' });
-        new Setting(containerEl)
+        // --- Group 1: ⚙️ 基础与自动保存 (Basic & Auto Save) ---
+        const basicSec = this.createAccordionSection(containerEl, '基础与自动保存', '⚙️', true);
+        
+        basicSec.createEl('h3', { text: '基础设置', attr: { style: 'margin-top: 0;' } });
+        new Setting(basicSec)
             .setName('状态栏：显示时间与快速对比')
             .setDesc('在状态栏显示上次保存的相对时间，点击即可快速对比。关闭后仅显示状态图标。')
             .addToggle(toggle => toggle
@@ -4660,7 +4730,7 @@ class VersionControlSettingTab extends PluginSettingTab {
                     this.plugin.debouncedUpdateStatusBar();
                 }));
 
-        new Setting(containerEl)
+        new Setting(basicSec)
             .setName('版本存储路径')
             .setDesc('指定版本数据的存储位置(相对于库根目录)')
             .addText(text => text
@@ -4672,7 +4742,7 @@ class VersionControlSettingTab extends PluginSettingTab {
                     await this.plugin.ensureVersionFolder();
                 }));
                 
-        new Setting(containerEl)
+        new Setting(basicSec)
             .setName('删除文件时同步删除历史 (危险)')
             .setDesc('在 Obsidian 中删除 Markdown 文件时，连同它的版本历史一并永久删除。关闭此选项可在误删文件后从恢复历史中找回（推荐关闭）。')
             .addToggle(toggle => toggle
@@ -4682,7 +4752,7 @@ class VersionControlSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
-        new Setting(containerEl)
+        new Setting(basicSec)
             .setName('显示通知')
             .setDesc('在创建、恢复版本时显示提示消息')
             .addToggle(toggle => toggle
@@ -4692,7 +4762,7 @@ class VersionControlSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
-        new Setting(containerEl)
+        new Setting(basicSec)
             .setName('显示统计信息')
             .setDesc('在设置页面显示版本统计')
             .addToggle(toggle => toggle
@@ -4703,47 +4773,8 @@ class VersionControlSettingTab extends PluginSettingTab {
                     this.display();
                 }));
 
-        containerEl.createEl('h3', { text: '🏷️ 版本标签与备注' });
-        new Setting(containerEl)
-            .setName('启用版本标签')
-            .setDesc('为版本添加标签以便分类和筛选')
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.enableVersionTags)
-                .onChange(async (value) => {
-                    this.plugin.settings.enableVersionTags = value;
-                    await this.plugin.saveSettings();
-                }));
-
-        new Setting(containerEl)
-            .setName('默认标签列表')
-            .setDesc('预设的常用标签(每行一个)')
-            .addTextArea(text => {
-                text.setValue(this.plugin.settings.defaultTags.join('\n'))
-                    .setPlaceholder('重要\n里程碑\n发布\n备份\n草稿')
-                    .onChange(async (value) => {
-                        this.plugin.settings.defaultTags = value
-                            .split('\n')
-                            .map(line => line.trim())
-                            .filter(line => line.length > 0);
-                        await this.plugin.saveSettings();
-                    });
-                text.inputEl.rows = 4;
-                text.inputEl.style.width = '100%';
-            });
-
-        new Setting(containerEl)
-            .setName('启用快速预览')
-            .setDesc('在版本历史中显示快速预览按钮')
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.enableQuickPreview)
-                .onChange(async (value) => {
-                    this.plugin.settings.enableQuickPreview = value;
-                    await this.plugin.saveSettings();
-                    this.plugin.refreshVersionHistoryView();
-                }));
-
-        containerEl.createEl('h3', { text: '🤖 自动保存' });
-        new Setting(containerEl)
+        basicSec.createEl('h3', { text: '自动保存' });
+        new Setting(basicSec)
             .setName('启用自动保存')
             .setDesc('自动保存版本')
             .addToggle(toggle => toggle
@@ -4758,12 +4789,7 @@ class VersionControlSettingTab extends PluginSettingTab {
                     }
                 }));
 
-        const autoSaveDesc = containerEl.createEl('div', { cls: 'setting-item-description' });
-        autoSaveDesc.innerHTML = '选择以下一种或多种自动保存触发方式:';
-        autoSaveDesc.style.marginBottom = '10px';
-        autoSaveDesc.style.color = 'var(--text-muted)';
-
-        new Setting(containerEl)
+        new Setting(basicSec)
             .setName('✏️ 修改时自动保存')
             .setDesc('文件修改后延迟保存(推荐)')
             .addToggle(toggle => toggle
@@ -4773,7 +4799,7 @@ class VersionControlSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
-        new Setting(containerEl)
+        new Setting(basicSec)
             .setName('修改时保存延迟 (秒)')
             .setDesc('文件修改后等待多久才执行自动保存。例如 180 代表 3 分钟。')
             .addText(text => text
@@ -4786,7 +4812,7 @@ class VersionControlSettingTab extends PluginSettingTab {
                     }
                 }));
 
-        new Setting(containerEl)
+        new Setting(basicSec)
             .setName('启用去重')
             .setDesc('跳过内容相同的版本创建,节省存储空间')
             .addToggle(toggle => toggle
@@ -4796,7 +4822,7 @@ class VersionControlSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
-        new Setting(containerEl)
+        new Setting(basicSec)
             .setName('排除的文件夹')
             .setDesc('不对这些文件夹中的文件创建版本(每行一个路径)')
             .addTextArea(text => {
@@ -4813,8 +4839,11 @@ class VersionControlSettingTab extends PluginSettingTab {
                 text.inputEl.style.width = '100%';
             });
 
-        containerEl.createEl('h3', { text: '💾 存储优化' });
-        new Setting(containerEl)
+        // --- Group 2: 💾 存储与清理策略 (Storage & Cleanup) ---
+        const storageSec = this.createAccordionSection(containerEl, '存储与清理策略', '💾', false);
+
+        storageSec.createEl('h3', { text: '存储优化', attr: { style: 'margin-top: 0;' } });
+        new Setting(storageSec)
             .setName('启用压缩')
             .setDesc('使用 Web 原生 gzip 压缩版本文件, 带来完全不阻塞主线程的体验')
             .addToggle(toggle => toggle
@@ -4824,7 +4853,7 @@ class VersionControlSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
-        new Setting(containerEl)
+        new Setting(storageSec)
             .setName('启用增量存储')
             .setDesc('只保存版本间的差异,大幅降低存储空间使用')
             .addToggle(toggle => toggle
@@ -4834,7 +4863,7 @@ class VersionControlSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
-        new Setting(containerEl)
+        new Setting(storageSec)
             .setName('基准版本间隔')
             .setDesc('每N个版本创建一次完整快照(建议10-20),用于增量存储的基准')
             .addText(text => text
@@ -4848,7 +4877,7 @@ class VersionControlSettingTab extends PluginSettingTab {
                     }
                 }));
 
-        new Setting(containerEl)
+        new Setting(storageSec)
             .setName('每页显示版本数')
             .setDesc('版本历史视图中每页显示的版本数量(0=不分页)')
             .addText(text => text
@@ -4863,8 +4892,8 @@ class VersionControlSettingTab extends PluginSettingTab {
                     }
                 }));
 
-        containerEl.createEl('h3', { text: '🗑️ 自动清理' });
-        new Setting(containerEl)
+        storageSec.createEl('h3', { text: '自动清理' });
+        new Setting(storageSec)
             .setName('启用自动清理')
             .setDesc('自动删除旧版本以节省空间')
             .addToggle(toggle => toggle
@@ -4876,7 +4905,7 @@ class VersionControlSettingTab extends PluginSettingTab {
                 }));
 
         if (this.plugin.settings.autoClear) {
-            new Setting(containerEl)
+            new Setting(storageSec)
                 .setName('按数量清理')
                 .setDesc('保留指定数量的最新版本')
                 .addToggle(toggle => toggle
@@ -4888,7 +4917,7 @@ class VersionControlSettingTab extends PluginSettingTab {
                     }));
 
             if (this.plugin.settings.enableMaxVersions) {
-                new Setting(containerEl)
+                new Setting(storageSec)
                     .setName('最大版本数')
                     .setDesc('每个文件最多保留的版本数量')
                     .addText(text => text
@@ -4903,7 +4932,7 @@ class VersionControlSettingTab extends PluginSettingTab {
                         }));
             }
 
-            new Setting(containerEl)
+            new Setting(storageSec)
                 .setName('按天数清理')
                 .setDesc('自动删除超过指定天数的版本')
                 .addToggle(toggle => toggle
@@ -4915,7 +4944,7 @@ class VersionControlSettingTab extends PluginSettingTab {
                     }));
 
             if (this.plugin.settings.enableMaxDays) {
-                new Setting(containerEl)
+                new Setting(storageSec)
                     .setName('最大保留天数')
                     .setDesc('删除超过此天数的旧版本')
                     .addText(text => text
@@ -4931,8 +4960,11 @@ class VersionControlSettingTab extends PluginSettingTab {
             }
         }
 
-        containerEl.createEl('h3', { text: '🎨 显示设置' });
-        new Setting(containerEl)
+        // --- Group 3: 🎨 差异对比与显示 (Diff & Display) ---
+        const diffSec = this.createAccordionSection(containerEl, '差异对比与显示', '🎨', false);
+
+        diffSec.createEl('h3', { text: '显示设置', attr: { style: 'margin-top: 0;' } });
+        new Setting(diffSec)
             .setName('全库历史默认时间模式')
             .setDesc('在全库版本历史中，默认按“文件修改时间”还是“版本保存时间”进行排序并展示。')
             .addDropdown(dropdown => dropdown
@@ -4945,7 +4977,7 @@ class VersionControlSettingTab extends PluginSettingTab {
                     this.plugin.refreshVersionHistoryView();
                 }));
 
-        new Setting(containerEl)
+        new Setting(diffSec)
             .setName('使用相对时间')
             .setDesc('显示"3小时前"而不是具体时间')
             .addToggle(toggle => toggle
@@ -4956,8 +4988,8 @@ class VersionControlSettingTab extends PluginSettingTab {
                     this.plugin.refreshVersionHistoryView();
                 }));
 
-        containerEl.createEl('h3', { text: '🔀 差异对比设置' });
-        new Setting(containerEl)
+        diffSec.createEl('h3', { text: '差异对比设置' });
+        new Setting(diffSec)
             .setName('默认差异粒度')
             .setDesc('选择差异对比的默认精细程度')
             .addDropdown(dropdown => dropdown
@@ -4970,7 +5002,7 @@ class VersionControlSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
-        new Setting(containerEl)
+        new Setting(diffSec)
             .setName('默认视图模式')
             .setDesc('选择差异对比的默认显示方式')
             .addDropdown(dropdown => dropdown
@@ -4982,7 +5014,7 @@ class VersionControlSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
         
-        new Setting(containerEl)
+        new Setting(diffSec)
             .setName('差异上下文行数')
             .setDesc('差异对比时，在变更内容周围显示的上下文行数 (0=仅变更, 9999=显示全部)。')
             .addText(text => text
@@ -4996,7 +5028,7 @@ class VersionControlSettingTab extends PluginSettingTab {
                     }
                 }));
 
-        new Setting(containerEl)
+        new Setting(diffSec)
             .setName('行内差异算法')
             .setDesc('当使用“行级”对比时，指定行内高亮的算法。')
             .addDropdown(dropdown => dropdown
@@ -5009,8 +5041,50 @@ class VersionControlSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
-        containerEl.createEl('h3', { text: '🛠️ 维护操作' });
-        new Setting(containerEl)
+        diffSec.createEl('h3', { text: '版本标签与备注' });
+        new Setting(diffSec)
+            .setName('启用版本标签')
+            .setDesc('为版本添加标签以便分类和筛选')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.enableVersionTags)
+                .onChange(async (value) => {
+                    this.plugin.settings.enableVersionTags = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(diffSec)
+            .setName('默认标签列表')
+            .setDesc('预设的常用标签(每行一个)')
+            .addTextArea(text => {
+                text.setValue(this.plugin.settings.defaultTags.join('\n'))
+                    .setPlaceholder('重要\n里程碑\n发布\n备份\n草稿')
+                    .onChange(async (value) => {
+                        this.plugin.settings.defaultTags = value
+                            .split('\n')
+                            .map(line => line.trim())
+                            .filter(line => line.length > 0);
+                        await this.plugin.saveSettings();
+                    });
+                text.inputEl.rows = 4;
+                text.inputEl.style.width = '100%';
+            });
+
+        new Setting(diffSec)
+            .setName('启用快速预览')
+            .setDesc('在版本历史中显示快速预览按钮')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.enableQuickPreview)
+                .onChange(async (value) => {
+                    this.plugin.settings.enableQuickPreview = value;
+                    await this.plugin.saveSettings();
+                    this.plugin.refreshVersionHistoryView();
+                }));
+
+        // --- Group 4: 🛠️ 维护与说明 (Maintenance & Help) ---
+        const maintSec = this.createAccordionSection(containerEl, '维护与说明', '🛠️', false);
+
+        maintSec.createEl('h3', { text: '维护操作', attr: { style: 'margin-top: 0;' } });
+        new Setting(maintSec)
             .setName('重建全局索引与历史扫描')
             .setDesc('当您发现以前的历史版本在全局时间轴中无法读取或未同步时，可点击此按钮进行深度全库重建（不影响已有版本内容）。')
             .addButton(button => button
@@ -5031,7 +5105,7 @@ class VersionControlSettingTab extends PluginSettingTab {
                     }
                 }));
 
-        new Setting(containerEl)
+        new Setting(maintSec)
             .setName('清空所有历史版本')
             .setDesc('删除所有文件的历史版本备份。一经执行，将擦除所有本地快照。')
             .addButton(button => button
@@ -5046,15 +5120,15 @@ class VersionControlSettingTab extends PluginSettingTab {
                     ).open();
                 }));
 
-        new Setting(containerEl)
+        new Setting(maintSec)
             .setName('导出版本数据')
             .setDesc('将版本文件夹打包导出')
             .addButton(button => button
                 .setButtonText('创建备份')
                 .onClick(async () => { new Notice('请手动复制 .versions 文件夹进行备份'); }));
 
-        containerEl.createEl('h3', { text: '📖 使用说明' });
-        const infoEl = containerEl.createEl('div', { cls: 'version-info-section' });
+        maintSec.createEl('h3', { text: '📖 使用说明' });
+        const infoEl = maintSec.createEl('div', { cls: 'version-info-section' });
         
         const feature1 = infoEl.createEl('div', { cls: 'feature-item' });
         feature1.createEl('strong', { text: '✨ 功能特性:' });
