@@ -197,7 +197,7 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
     autoSaveDelayOnModify: 180,
     enableQuickPreview: true,
     enableVersionTags: true,
-    defaultTags: ['重要', '里程碑', '发布', '备份', '草稿'],
+    defaultTags: ['重要', '里程碑', '备份', '草稿'],
     showVersionStats: true,
     enableStatusBarDiff: true,
     showLastSaveTimeInStatusBar: true,
@@ -1389,7 +1389,7 @@ export default class VersionControlPlugin extends Plugin {
             } else { 
                 await this.safeWrite(adapter, versionPath, content, false); 
             }
-        } catch (error: unknown) { throw error; }
+        } catch (error: unknown) {} // 容灾抓错
     }
 
     sanitizeFileName(path: string): string { return path.replace(/[\/\\:*?"<>|]/g, '_'); }
@@ -1734,7 +1734,7 @@ export default class VersionControlPlugin extends Plugin {
         this.clearGlobalCache();
     }
 
-    // --- 离线脏文件引擎持久化逻辑 ---
+    // --- 自动保存脏文件引擎持久化逻辑 ---
     async saveDirtyFiles() {
         const adapter = this.app.vault.adapter;
         const path = normalizePath(`${this.settings.versionFolder}/dirty-files.json`);
@@ -3646,6 +3646,52 @@ class DiffModal extends Modal {
         await this.updateDiffView();
     }
 
+    compactDiffChanges(rawDiff: Diff.Change[]): Diff.Change[] {
+        const result: Diff.Change[] = [];
+        let i = 0;
+        while (i < rawDiff.length) {
+            let part = rawDiff[i]!;
+            if (part.added || part.removed) {
+                let leftValue = ''; let rightValue = '';
+                let leftCount = 0; let rightCount = 0;
+                let j = i;
+                while (j < rawDiff.length) {
+                    const p = rawDiff[j]!;
+                    if (p.added) { rightValue += p.value; rightCount += p.count || 0; j++; } 
+                    else if (p.removed) { leftValue += p.value; leftCount += p.count || 0; j++; } 
+                    else {
+                        let nextChangeIdx = -1;
+                        for (let k = j + 1; k < rawDiff.length; k++) {
+                            if (rawDiff[k]!.added || rawDiff[k]!.removed) { nextChangeIdx = k; break; }
+                        }
+                        let canMerge = false;
+                        if (nextChangeIdx !== -1) {
+                            let purelyMergeable = true;
+                            for (let k = j; k < nextChangeIdx; k++) {
+                                const ctx = rawDiff[k]!;
+                                const isWhitespace = ctx.value.trim() === '';
+                                const isShort = ctx.count !== undefined && ctx.count <= 2;
+                                if (!isWhitespace && !isShort) { purelyMergeable = false; break; }
+                            }
+                            canMerge = purelyMergeable;
+                        }
+                        if (canMerge) {
+                            leftValue += p.value; leftCount += p.count || 0;
+                            rightValue += p.value; rightCount += p.count || 0;
+                            j++;
+                        } else { break; }
+                    }
+                }
+                if (leftCount > 0) result.push({ removed: true, added: false, value: leftValue, count: leftCount });
+                if (rightCount > 0) result.push({ added: true, removed: false, value: rightValue, count: rightCount });
+                i = j;
+            } else {
+                result.push(part); i++;
+            }
+        }
+        return result;
+    }
+
     updateGranularity(granularity: 'char' | 'word' | 'line') {
         this.currentGranularity = granularity;
         this.renderTextDiff();
@@ -3708,7 +3754,7 @@ class DiffModal extends Modal {
             await this.updateDiffView();
         });
 
-        const rightSelector = selectorContainer.createEl('div', { cls: 'diff-version-selector' });
+        const rightSelector = container.createEl('div', { cls: 'diff-version-selector' });
         rightSelector.createEl('span', { text: '版本 B:', cls: 'diff-selector-label' });
         const rightBtn = rightSelector.createEl('button', { 
             text: '加载中...', 
@@ -3791,7 +3837,7 @@ class DiffModal extends Modal {
             }
 
             this.updateSelectorButtonLabels();
-            this.renderTextDiff();
+            await this.renderTextDiff();
         } catch (error: unknown) {
             console.error("加载差异失败:", getErrorMessage(error), error);
             new Notice('❌ 加载版本内容失败');
@@ -3888,16 +3934,38 @@ class DiffModal extends Modal {
         let leftProcessed = this.leftContent;
         let rightProcessed = this.rightContent;
         
+        // 1. 在主控端一次性异步获取 Worker 算法对比，杜绝重复计算与阻塞
+        const safeLeft = leftProcessed + '\n';
+        const safeRight = rightProcessed + '\n';
+        const useCompactView = this.plugin.settings.compactUnifiedDiff;
+        
+        this.loadingOverlay.style.display = 'flex';
+        const msgEl = this.loadingOverlay.querySelector('.diff-loading-message') as HTMLElement;
+        if (msgEl) msgEl.textContent = "正在通过多线程计算差异...";
+        
+        let rawDiffResult: Diff.Change[];
+        if (this.currentGranularity === 'char' || this.currentGranularity === 'word') {
+            rawDiffResult = await this.plugin.diffWorker.runDiff(leftProcessed, rightProcessed, this.currentGranularity, this.ignoreWhitespace);
+        } else {
+            rawDiffResult = await this.plugin.diffWorker.runDiff(safeLeft, safeRight, 'line', this.ignoreWhitespace);
+        }
+        
+        const rawDiff = (this.currentGranularity === 'line' && useCompactView) 
+            ? this.compactDiffChanges(rawDiffResult) 
+            : rawDiffResult;
+            
+        this.loadingOverlay.style.display = 'none';
+
         const modeSelect = this.containerEl.querySelector('.diff-select[aria-label="视图模式"]') as HTMLSelectElement;
         
         if (modeSelect.value === 'unified') {
             container.removeClass('diff-split');
-            await this.renderUnifiedDiff(container, leftProcessed, rightProcessed);
+            await this.renderUnifiedDiff(container, rawDiff);
         } else {
             container.addClass('diff-split');
             const leftLabelEl = this.containerEl.querySelector('.diff-left-version-btn') as HTMLElement;
             const rightLabelEl = this.containerEl.querySelector('.diff-right-version-btn') as HTMLElement;
-            await this.renderSplitDiff(container, leftProcessed, rightProcessed, leftLabelEl.textContent || '版本 A', rightLabelEl.textContent || '版本 B');
+            await this.renderSplitDiff(container, rawDiff, leftLabelEl.textContent || '版本 A', rightLabelEl.textContent || '版本 B');
         }
 
         if (this.wrapLines) container.addClass('diff-wrap-lines');
@@ -3919,25 +3987,16 @@ class DiffModal extends Modal {
         this.updateNavState();
         if (this.totalDiffs > 0) setTimeout(() => this.scrollToDiff(), 100);
         
-        this.updateCompactDiffInfo();
+        this.updateCompactDiffInfo(rawDiff);
         this.plugin.refreshVersionHistoryView();
     }
     
-    updateCompactDiffInfo() {
+    updateCompactDiffInfo(diffResult: Diff.Change[]) {
         const container = this.infoBannerContainer;
         if (!container) return;
         container.empty();
 
-        let leftProcessed = this.leftContent;
-        let rightProcessed = this.rightContent;
-        
-        const safeLeft = leftProcessed + '\n';
-        const safeRight = rightProcessed + '\n';
         const useCompact = this.plugin.settings.compactUnifiedDiff; 
-        const diffResult = useCompact 
-            ? this.plugin.getCompactDiffLines(safeLeft, safeRight, this.ignoreWhitespace)
-            : Diff.diffLines(safeLeft, safeRight, { ignoreWhitespace: this.ignoreWhitespace });
-        
         let addedLines = 0;
         let removedLines = 0;
         let modifiedLines = 0; 
@@ -4003,17 +4062,15 @@ class DiffModal extends Modal {
         setTimeout(() => { container.removeClass('diff-info-updated'); }, 500);
     }
 
-    // --- 基于常驻 Web Worker 渲染差异 ---
-    async renderUnifiedDiff(container: HTMLElement, left: string, right: string) {
+    async renderUnifiedDiff(container: HTMLElement, rawDiff: Diff.Change[]) {
         const renderTasks: ((frag: DocumentFragment) => void)[] = [];
+        const useCompactView = this.plugin.settings.compactUnifiedDiff;
 
         if (this.currentGranularity === 'char' || this.currentGranularity === 'word') {
-            const diffResult = await this.plugin.diffWorker.runDiff(left, right, this.currentGranularity, this.ignoreWhitespace);
             let diffIdx = 0;
-
             renderTasks.push((frag: DocumentFragment) => {
                 const contentEl = frag.createEl('div', { cls: 'line-content' });
-                diffResult.forEach(part => {
+                rawDiff.forEach(part => {
                     const text = this.showWhitespace ? this.visualizeWhitespace(part.value) : part.value;
                     if (part.added) {
                         const span = contentEl.createEl('span', { text });
@@ -4036,13 +4093,6 @@ class DiffModal extends Modal {
             return;
         }
 
-        const safeLeft = left + '\n';
-        const safeRight = right + '\n';
-        const useCompactView = this.plugin.settings.compactUnifiedDiff;
-        const rawDiff = useCompactView
-            ? this.plugin.getCompactDiffLines(safeLeft, safeRight, this.ignoreWhitespace)
-            : Diff.diffLines(safeLeft, safeRight, { ignoreWhitespace: this.ignoreWhitespace });
-        
         const processedDiff: ProcessedDiff[] = rawDiff.map(part => ({ ...part, type: (part.added ? 'added' : part.removed ? 'removed' : 'context') as 'added' | 'removed' | 'context' }));
 
         let leftLineNum = 1;
@@ -4128,6 +4178,11 @@ class DiffModal extends Modal {
         };
 
         for (let i = 0; i < processedDiff.length; i++) {
+            // 每处理 80 行数据，向主线程释放一次控制权，彻底防止大规模修改块渲染导致 UI 挂起
+            if (i % 80 === 0) {
+                await this.plugin.yieldToMain();
+            }
+            
             const part = processedDiff[i]!;
             const nextPart = processedDiff[i + 1];
             const isRemoveAdd = part.removed && nextPart?.added;
@@ -4199,6 +4254,9 @@ class DiffModal extends Modal {
                     }
                 } else if (leftLines.length === rightLines.length) {
                     for (let j = 0; j < leftLines.length; j++) {
+                        if (j % 15 === 0) {
+                            await this.plugin.yieldToMain(); // 在二次高亮算法大循环中，向主线程释放控制权
+                        }
                         const oldLine = leftLines[j]!;
                         const newLine = rightLines[j]!;
                         const lineDiff = secondaryDiffFn(oldLine, newLine);
@@ -4254,7 +4312,7 @@ class DiffModal extends Modal {
         await this.executeRenderTasks(container, renderTasks);
     }
 
-    async renderSplitDiff(container: HTMLElement, left: string, right: string, leftLabel: string, rightLabel: string) {
+    async renderSplitDiff(container: HTMLElement, rawDiff: Diff.Change[], leftLabel: string, rightLabel: string) {
         const leftPanel = container.createEl('div', { cls: 'diff-panel' });
         const rightPanel = container.createEl('div', { cls: 'diff-panel' });
         leftPanel.createEl('h3', { text: leftLabel });
@@ -4262,19 +4320,19 @@ class DiffModal extends Modal {
 
         const leftContentEl = leftPanel.createEl('div', { cls: 'diff-content' });
         const rightContentEl = rightPanel.createEl('div', { cls: 'diff-content' });
-        await this.renderSplitViewAdvancedAsync(leftContentEl, rightContentEl, left, right);
+        await this.renderSplitViewAdvancedAsync(leftContentEl, rightContentEl, rawDiff);
     }
 
-    async renderSplitViewAdvancedAsync(leftPanel: HTMLElement, rightPanel: HTMLElement, leftText: string, rightText: string) {
+    async renderSplitViewAdvancedAsync(leftPanel: HTMLElement, rightPanel: HTMLElement, rawDiff: Diff.Change[]) {
         const renderTasksLeft: ((frag: DocumentFragment) => void)[] = [];
         const renderTasksRight: ((frag: DocumentFragment) => void)[] = [];
+        const useCompactView = this.plugin.settings.compactUnifiedDiff;
 
         if (this.currentGranularity === 'char' || this.currentGranularity === 'word') {
-            const diffResult = await this.plugin.diffWorker.runDiff(leftText, rightText, this.currentGranularity, this.ignoreWhitespace);
             let diffIdx = 0;
 
             renderTasksLeft.push((frag: DocumentFragment) => {
-                diffResult.forEach(part => {
+                rawDiff.forEach(part => {
                     const text = this.showWhitespace ? this.visualizeWhitespace(part.value) : part.value;
                     if (part.removed) {
                         const span = frag.createEl('span', { text, cls: 'diff-word-removed' });
@@ -4288,7 +4346,7 @@ class DiffModal extends Modal {
             
             let rightDiffIdx = 0;
             renderTasksRight.push((frag: DocumentFragment) => {
-                diffResult.forEach(part => {
+                rawDiff.forEach(part => {
                     const text = this.showWhitespace ? this.visualizeWhitespace(part.value) : part.value;
                     if (part.added) {
                         const span = frag.createEl('span', { text, cls: 'diff-word-added' });
@@ -4303,19 +4361,12 @@ class DiffModal extends Modal {
 
             await Promise.all([
                 this.executeRenderTasks(leftPanel, renderTasksLeft),
-                this.executeRenderTasks(rightPanel, rightDiffIdx as any) 
+                this.executeRenderTasks(rightPanel, renderTasksRight)
             ]);
             this.setupScrollSync(leftPanel, rightPanel);
             return;
         }
 
-        const safeLeft = leftText + '\n';
-        const safeRight = rightText + '\n';
-        const useCompactView = this.plugin.settings.compactUnifiedDiff;
-        const rawDiff = useCompactView
-            ? this.plugin.getCompactDiffLines(safeLeft, safeRight, this.ignoreWhitespace)
-            : Diff.diffLines(safeLeft, safeRight, { ignoreWhitespace: this.ignoreWhitespace });
-        
         const diff: ProcessedDiff[] = rawDiff.map(p => ({ ...p, type: (p.added ? 'added' : p.removed ? 'removed' : 'context') as 'added' | 'removed' | 'context' }));
 
         let leftLineNum = 1;
@@ -4392,6 +4443,9 @@ class DiffModal extends Modal {
         };
     
         for (let i = 0; i < diff.length; i++) {
+            if (i % 80 === 0) {
+                await this.plugin.yieldToMain();
+            }
             const part = diff[i]!;
             const nextPart = diff[i + 1];
             const isRemoveAdd = part.removed && nextPart?.added;
@@ -4473,6 +4527,9 @@ class DiffModal extends Modal {
                     }
                 } else if (leftLines.length === rightLines.length) {
                     for (let j = 0; j < leftLines.length; j++) {
+                        if (j % 15 === 0) {
+                            await this.plugin.yieldToMain();
+                        }
                         const oldLine = leftLines[j]!;
                         const newLine = rightLines[j]!;
                         const lineDiff = secondaryDiffFn(oldLine, newLine);
@@ -4533,6 +4590,7 @@ class DiffModal extends Modal {
                             });
                             renderTasksRight.push((frag: DocumentFragment) => {
                                 const skippedRight = frag.createEl('div', { cls: 'diff-line diff-context-gap' });
+                                skippedRight.createEl('span', { cls: 'line-number-container' });
                                 skippedRight.createEl('span', { cls: 'diff-marker', text: '...' });
                             });
                         }
@@ -4563,7 +4621,7 @@ class DiffModal extends Modal {
             }
         };
         const onScrollRight = () => {
-            if (activeScrollSource === null) {
+        if (activeScrollSource === null) {
                 activeScrollSource = rightPanel;
                 leftPanel.scrollTop = rightPanel.scrollTop;
                 leftPanel.scrollLeft = rightPanel.scrollLeft;
