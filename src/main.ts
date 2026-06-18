@@ -249,43 +249,132 @@ class PersistentDiffWorker {
 
                     const tokens1 = tokenize(left);
                     const tokens2 = tokenize(right);
-                    const n = tokens1.length;
-                    const m = tokens2.length;
 
-                    const dp = Array.from({ length: n + 1 }, () => new Int32Array(m + 1));
-                    for (let i = 1; i <= n; i++) {
-                        for (let j = 1; j <= m; j++) {
-                            const t1 = tokens1[i-1];
-                            const t2 = tokens2[j-1];
-                            const match = ignoreWhitespace 
-                                ? t1.trim() === t2.trim() 
-                                : t1 === t2;
-                            if (match) {
-                                dp[i][j] = dp[i-1][j-1] + 1;
+                    // 1. 首尾部无差异文本快速裁剪 (Prefix/Suffix Stripping)
+                    let prefixCount = 0;
+                    const maxPrefix = Math.min(tokens1.length, tokens2.length);
+                    while (prefixCount < maxPrefix) {
+                        const t1 = tokens1[prefixCount];
+                        const t2 = tokens2[prefixCount];
+                        const match = ignoreWhitespace ? t1.trim() === t2.trim() : t1 === t2;
+                        if (match) {
+                            prefixCount++;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    let suffixCount = 0;
+                    const maxSuffix = Math.min(tokens1.length - prefixCount, tokens2.length - prefixCount);
+                    while (suffixCount < maxSuffix) {
+                        const t1 = tokens1[tokens1.length - 1 - suffixCount];
+                        const t2 = tokens2[tokens2.length - 1 - suffixCount];
+                        const match = ignoreWhitespace ? t1.trim() === t2.trim() : t1 === t2;
+                        if (match) {
+                            suffixCount++;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    const mid1 = tokens1.slice(prefixCount, tokens1.length - suffixCount);
+                    const mid2 = tokens2.slice(prefixCount, tokens2.length - suffixCount);
+
+                    let midResult = [];
+
+                    // 2. 仅对发生变化的中段部分采用 Myers 差分算法计算
+                    if (mid1.length > 0 || mid2.length > 0) {
+                        const N = mid1.length;
+                        const M = mid2.length;
+                        
+                        if (N === 0) {
+                            midResult = mid2.map(val => ({ value: val, added: true, removed: false }));
+                        } else if (M === 0) {
+                            midResult = mid1.map(val => ({ value: val, added: false, removed: true }));
+                        } else {
+                            const MAX = N + M;
+                            if (MAX > 15000) {
+                                midResult = [
+                                    ...mid1.map(val => ({ value: val, added: false, removed: true })),
+                                    ...mid2.map(val => ({ value: val, added: true, removed: false }))
+                                ];
                             } else {
-                                dp[i][j] = Math.max(dp[i-1][j], dp[i][j-1]);
+                                const V = new Int32Array(2 * MAX + 1);
+                                const V_offset = MAX;
+                                const trace = [];
+                                V[V_offset + 1] = 0;
+
+                                let found = false;
+                                for (let d = 0; d <= MAX; d++) {
+                                    trace.push(new Int32Array(V));
+                                    for (let k = -d; k <= d; k += 2) {
+                                        const idx = V_offset + k;
+                                        let down = (k === -d || (k !== d && V[idx - 1] < V[idx + 1]));
+                                        let prev_x = down ? V[idx + 1] : V[idx - 1];
+                                        let x = down ? prev_x : prev_x + 1;
+                                        let y = x - k;
+
+                                        while (x < N && y < M) {
+                                            const match = ignoreWhitespace 
+                                                ? mid1[x].trim() === mid2[y].trim() 
+                                                : mid1[x] === mid2[y];
+                                            if (match) {
+                                                x++; y++;
+                                            } else {
+                                                break;
+                                            }
+                                        }
+                                        V[idx] = x;
+                                        if (x >= N && y >= M) {
+                                            found = true;
+                                            break;
+                                        }
+                                    }
+                                    if (found) break;
+                                }
+
+                                let curr_x = N;
+                                let curr_y = M;
+                                for (let d = trace.length - 1; d >= 0; d--) {
+                                    const V_d = trace[d];
+                                    const k = curr_x - curr_y;
+                                    const idx = V_offset + k;
+                                    
+                                    let down = (k === -d || (k !== d && V_d[idx - 1] < V_d[idx + 1]));
+                                    const prev_k = down ? k + 1 : k - 1;
+                                    
+                                    const prev_x = V_d[V_offset + prev_k];
+                                    const prev_y = prev_x - prev_k;
+
+                                    while (curr_x > prev_x && curr_y > prev_y) {
+                                        midResult.unshift({ value: mid2[curr_y - 1], added: false, removed: false });
+                                        curr_x--;
+                                        curr_y--;
+                                    }
+
+                                    if (d > 0) {
+                                        if (down) {
+                                            midResult.unshift({ value: mid2[curr_y - 1], added: true, removed: false });
+                                            curr_y--;
+                                        } else {
+                                            midResult.unshift({ value: mid1[curr_x - 1], added: false, removed: true });
+                                            curr_x--;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
 
                     const result = [];
-                    let i = n, j = m;
-                    while (i > 0 || j > 0) {
-                        const isMatch = i > 0 && j > 0 && (
-                            ignoreWhitespace 
-                                ? tokens1[i-1].trim() === tokens2[j-1].trim() 
-                                : tokens1[i-1] === tokens2[j-1]
-                        );
-                        if (isMatch) {
-                            result.unshift({ value: tokens2[j-1], added: false, removed: false });
-                            i--; j--;
-                        } else if (j > 0 && (i === 0 || dp[i][j-1] >= dp[i-1][j])) {
-                            result.unshift({ value: tokens2[j-1], added: true, removed: false });
-                            j--;
-                        } else {
-                            result.unshift({ value: tokens1[i-1], added: false, removed: true });
-                            i--;
-                        }
+                    for (let i = 0; i < prefixCount; i++) {
+                        result.push({ value: tokens1[i], added: false, removed: false });
+                    }
+                    for (let i = 0; i < midResult.length; i++) {
+                        result.push(midResult[i]);
+                    }
+                    for (let i = 0; i < suffixCount; i++) {
+                        result.push({ value: tokens1[tokens1.length - suffixCount + i], added: false, removed: false });
                     }
 
                     const merged = [];
@@ -403,7 +492,6 @@ export default class VersionControlPlugin extends Plugin {
             this.app.vault.on('modify', async (file) => {
                 if (this.isRestoring) return;
 
-                // 检查外部冲突感知
                 if (file.path.startsWith(this.settings.versionFolder + '/') && file.path.endsWith('.json')) {
                     await this.handleExternalVersionFileChange(file.path);
                     return;
@@ -457,7 +545,6 @@ export default class VersionControlPlugin extends Plugin {
             }, 1000) as unknown as number
         );
 
-        // 启动时在后台静默运行一次索引检查和旧版本库迁移
         setTimeout(() => {
             this.getGlobalHistory(1).catch(() => {});
         }, 2000);
@@ -541,7 +628,6 @@ export default class VersionControlPlugin extends Plugin {
         }
     }
 
-    // --- 多设备外部修改感知并使高速缓存失效 ---
     async handleExternalVersionFileChange(versionFilePath: string) {
         try {
             const contentStr = await this.readCompressedOrRaw(versionFilePath);
@@ -742,7 +828,6 @@ export default class VersionControlPlugin extends Plugin {
         }
     }
 
-    // --- 分级子目录路径计算 ---
     getVersionFilePath(filePath: string): string {
         const hash = this.stringHash(filePath);
         const subFolder = hash.substring(0, 2); 
@@ -820,17 +905,14 @@ export default class VersionControlPlugin extends Plugin {
                     this.lastModifiedTime.delete(oldPath);
                     this.lastModifiedTime.set(file.path, versionFile.lastModified);
                     
-                    // 同步更新脏文件路径
                     if (this.dirtyFiles.has(oldPath)) {
                         this.dirtyFiles.delete(oldPath);
                         this.dirtyFiles.add(file.path);
                         await this.saveDirtyFiles();
                     }
 
-                    // 重命名时同步全局索引
                     await this.updateGlobalIndexForRename(oldPath, file.path);
                     
-                    // 修复 Bug：重命名后清除内存缓存并立即重绘视图
                     this.clearGlobalCache();
                     this.refreshVersionHistoryView();
                 } catch (e: unknown) { console.error("Rename Error", getErrorMessage(e), e); }
@@ -855,16 +937,13 @@ export default class VersionControlPlugin extends Plugin {
                 this.lastModifiedTime.delete(filePath);
                 this.debouncedSaves.delete(filePath);
                 
-                // 从内存与离线脏列表中移除
                 if (this.dirtyFiles.has(filePath)) {
                     this.dirtyFiles.delete(filePath);
                     await this.saveDirtyFiles();
                 }
 
-                // 删除时清除索引
                 await this.clearGlobalIndexForFile(filePath);
                 
-                // 修复 Bug：删除后清除内存缓存并立即重绘视图
                 this.clearGlobalCache();
                 this.refreshVersionHistoryView();
             }
@@ -1069,7 +1148,6 @@ export default class VersionControlPlugin extends Plugin {
                             await this.saveVersionFile(file.path, versionFile);
                             this.versionCache.set(file.path, versionFile);
                             
-                            // 更新索引
                             await this.updateGlobalIndex({
                                 filePath: file.path, versionId: latestVersion.id, timestamp,
                                 message, size: latestVersion.size, tags: latestVersion.tags, starred: latestVersion.starred, note: latestVersion.note
@@ -1145,11 +1223,9 @@ export default class VersionControlPlugin extends Plugin {
             this.versionCache.set(file.path, versionFile);
             this.contentCache.set(`${file.path}::${newVersion.id}`, content);
 
-            // 从待保存列表中移除已成功备份的文件
             this.dirtyFiles.delete(file.path);
             await this.saveDirtyFiles();
 
-            // 更新全局增量索引
             await this.updateGlobalIndex({
                 filePath: file.path,
                 versionId: id,
@@ -1243,7 +1319,6 @@ export default class VersionControlPlugin extends Plugin {
             }
         }
 
-        // 被清理出的项同步从索引中移出
         const removedIds = versionFile.versions.filter(v => !proposedKeepSet.has(v.id)).map(v => v.id);
         for (const id of removedIds) {
             await this.updateGlobalIndex({ filePath: versionFile.filePath, versionId: id, timestamp: 0, message: '', size: 0 }, true);
@@ -1254,7 +1329,6 @@ export default class VersionControlPlugin extends Plugin {
         return originalCount - versionFile.versions.length;
     }
 
-    // --- 三、容灾与数据安全：双写备份 fallback 机制之读流程 ---
     async loadVersionFile(filePath: string): Promise<VersionFile> {
         if (this.versionCache.get(filePath)) return this.versionCache.get(filePath)!;
 
@@ -1275,10 +1349,8 @@ export default class VersionControlPlugin extends Plugin {
             return null;
         };
 
-        // 优先读取新格式主历史记录文件
         finalVersionFile = await tryLoad(versionPath);
 
-        // 如果新路径损坏，自动回退读取备份文件
         if (!finalVersionFile && await adapter.exists(bakPath)) {
             finalVersionFile = await tryLoad(bakPath);
             if (finalVersionFile) {
@@ -1291,7 +1363,6 @@ export default class VersionControlPlugin extends Plugin {
             finalVersionFile = { filePath, versions: [], lastModified: Date.now() };
         }
 
-        // 兼容性扫描旧路径下的扁平历史，并直接向新格式进行迁移合并
         const legacyPaths = [this.getLegacyHashVersionFilePath(filePath), this.getLegacyStrictAsciiVersionFilePath(filePath), this.getLegacyVersionFilePath(filePath)];
         for (const lp of legacyPaths) {
             if (lp !== versionPath && await adapter.exists(lp)) {
@@ -1345,19 +1416,16 @@ export default class VersionControlPlugin extends Plugin {
         } catch (error: unknown) { throw new Error("无法读取或解压: " + path); }
     }
 
-    // --- 三、容灾与数据安全：双写备份 fallback 机制之写流程 ---
     async saveVersionFile(filePath: string, versionFile: VersionFile) {
         const versionPath = this.getVersionFilePath(filePath);
         const bakPath = versionPath + '.bak';
         const adapter = this.app.vault.adapter;
         try {
-            // 先保证嵌套 of 二级子文件夹存在
             const parentDir = versionPath.substring(0, versionPath.lastIndexOf('/'));
             if (!(await adapter.exists(parentDir))) {
                 await adapter.mkdir(parentDir);
             }
 
-            // 写入前，先备份当前完好的主历史记录文件到 .bak 文件
             if (await adapter.exists(versionPath)) {
                 try {
                     const existingRawData = await adapter.readBinary(versionPath);
@@ -1389,13 +1457,12 @@ export default class VersionControlPlugin extends Plugin {
             } else { 
                 await this.safeWrite(adapter, versionPath, content, false); 
             }
-        } catch (error: unknown) {} // 容灾抓错
+        } catch (error: unknown) {} 
     }
 
     sanitizeFileName(path: string): string { return path.replace(/[\/\\:*?"<>|]/g, '_'); }
     async getAllVersions(filePath: string): Promise<VersionData[]> { try { const versionFile = await this.loadVersionFile(filePath); return versionFile.versions; } catch (error: unknown) { return []; } }
     
-    // --- 增量还原链 of 循环依赖防御机制 ---
     async getVersionContent(filePath: string, versionId: string, suppressNotice: boolean = false, strictMode: boolean = false): Promise<string> { 
         const cacheKey = filePath + "::" + versionId;
         const cached = this.contentCache.get(cacheKey);
@@ -1534,7 +1601,10 @@ export default class VersionControlPlugin extends Plugin {
             if (i % 5 === 0) { notice.setMessage("检查完整性... " + (i + 1) + "/" + total); await this.yieldToMain(); } 
         } 
         notice.hide(); 
-        new IntegrityReportModal(this.app, this, report).open(); 
+        new Notice('✅ 完整性检查完成');
+        if (report.length > 0) {
+            new IntegrityReportModal(this.app, this, report).open(); 
+        }
     }
 
     async repairVersionFile(filePath: string): Promise<boolean> {
@@ -1558,7 +1628,6 @@ export default class VersionControlPlugin extends Plugin {
         });
     }
 
-    // --- 全局元数据索引机制（增删改同步）---
     async updateGlobalIndex(entry: GlobalIndexEntry, isDeletion = false) {
         const adapter = this.app.vault.adapter;
         const indexPath = normalizePath(`${this.settings.versionFolder}/global-index.json`);
@@ -1640,13 +1709,11 @@ export default class VersionControlPlugin extends Plugin {
         } catch {}
     }
 
-    // --- 旧扁平结构自动全自动迁移与索引重建核心函数（完美收纳归档旧 .bak 备份文件）---
     async rebuildGlobalIndex(): Promise<void> {
         const adapter = this.app.vault.adapter;
         const versionFolder = this.settings.versionFolder;
         if (!(await adapter.exists(versionFolder))) return;
 
-        // 1. 递归扫描所有的历史记录 .json 并迁移
         const files = await this.getJSONFilesRecursively(versionFolder);
         const index: GlobalIndex = { entries: [] };
 
@@ -1697,13 +1764,12 @@ export default class VersionControlPlugin extends Plugin {
             await this.yieldToMain();
         }
 
-        // 2. 深度清理扫描根目录下那些“孤立无援”的旧 .bak 备份文件（完美清除根目录残留）
         try {
             const rootList = await adapter.list(versionFolder);
             for (const file of rootList.files) {
                 if (file.endsWith('.json.bak')) {
                     const baseName = file.split('/').pop() || '';
-                    const sansSuffix = baseName.substring(0, baseName.length - 9); // 去掉 '.json.bak'
+                    const sansSuffix = baseName.substring(0, baseName.length - 9); 
                     const lastUnderscore = sansSuffix.lastIndexOf('_');
                     if (lastUnderscore !== -1) {
                         const hash = sansSuffix.substring(lastUnderscore + 1);
@@ -1716,7 +1782,6 @@ export default class VersionControlPlugin extends Plugin {
                                 await adapter.mkdir(parentDir);
                             }
                             
-                            // 优雅地移动并归并到对应二级子目录下
                             const bakData = await adapter.readBinary(file);
                             await adapter.writeBinary(destPath, bakData);
                             await adapter.remove(file);
@@ -1734,7 +1799,6 @@ export default class VersionControlPlugin extends Plugin {
         this.clearGlobalCache();
     }
 
-    // --- 自动保存脏文件引擎持久化逻辑 ---
     async saveDirtyFiles() {
         const adapter = this.app.vault.adapter;
         const path = normalizePath(`${this.settings.versionFolder}/dirty-files.json`);
@@ -1827,7 +1891,6 @@ export default class VersionControlPlugin extends Plugin {
                 await this.saveVersionFile(filePath, versionFile);
                 this.versionCache.set(filePath, versionFile);
 
-                // 移除全局索引中的对应条目
                 await this.updateGlobalIndex({ filePath, versionId, timestamp: 0, message: '', size: 0 }, true);
 
                 this.clearGlobalCache(); 
@@ -1851,7 +1914,6 @@ export default class VersionControlPlugin extends Plugin {
                 await this.saveVersionFile(filePath, versionFile);
                 this.versionCache.set(filePath, versionFile);
 
-                // 同步更新全局索引
                 for (const id of versionIds) {
                     await this.updateGlobalIndex({ filePath, versionId: id, timestamp: 0, message: '', size: 0 }, true);
                 }
@@ -1915,13 +1977,12 @@ export default class VersionControlPlugin extends Plugin {
         for (const file of files) { 
             fileIndex++;
             if (fileIndex % 15 === 0) {
-                await this.yieldToMain(); // 每分析15个文件让出一次主线程，彻底解决移动端界面卡死问题
+                await this.yieldToMain(); 
             }
             try { const stat = await adapter.stat(file); const fileSize = stat?.size || 0; totalSize += fileSize; let versionFile: VersionFile; if (this.settings.enableCompression) { try { const rawData = await adapter.readBinary(file); const decompressed = await this.decompressText(rawData); versionFile = JSON.parse(decompressed) as VersionFile; } catch (e: unknown) { const content = await adapter.read(file); versionFile = JSON.parse(content) as VersionFile; } } else { const content = await adapter.read(file); versionFile = JSON.parse(content) as VersionFile; } if (versionFile.versions && Array.isArray(versionFile.versions)) { versionCount += versionFile.versions.length; versionFile.versions.forEach(v => { if (v.content) { totalOriginalSize += v.content.length; } else if (v.diff) { totalOriginalSize += v.diff.length; } if (v.starred) starredCount++; if (v.tags && v.tags.length > 0) taggedCount++; }); fileCount++; } } catch (error: unknown) {} } const compressionRatio = totalOriginalSize > 0 ? ((1 - totalSize / totalOriginalSize) * 100) : 0; return { totalSize, versionCount, fileCount, compressionRatio, starredCount, taggedCount }; } catch (error: unknown) { return { totalSize: 0, versionCount: 0, fileCount: 0, compressionRatio: 0, starredCount: 0, taggedCount: 0 }; } }
     async exportVersions(filePath: string): Promise<void> { try { const versionFile = await this.loadVersionFile(filePath); const exportPath = normalizePath(`${this.settings.versionFolder}/export_${this.sanitizeFileName(filePath)}_${Date.now()}.json`); await this.app.vault.adapter.write(exportPath, JSON.stringify(versionFile, null, 2)); new Notice(`✅ 已导出到: ${exportPath}`); } catch (error: unknown) { new Notice('❌ 导出失败'); } }
     async exportVersionAsFile(filePath: string, versionId: string): Promise<void> { try { const content = await this.getVersionContent(filePath, versionId); const fileName = filePath.replace(/\.[^/.]+$/, ''); const exportPath = normalizePath(`${fileName}_v${versionId.substring(0,8)}.md`); await this.app.vault.create(exportPath, content); new Notice(`✅ 已导出为: ${exportPath}`); } catch (error: unknown) { new Notice('❌ 导出失败'); } }
     
-    // --- 极速脏文件获取引擎 (不读取整库，0ms I/O) ---
     async getModifiedFiles(): Promise<{ file: TFile, lastVersionTime: number, sizeDiff: number }[]> {
         const modifiedFiles: { file: TFile, lastVersionTime: number, sizeDiff: number }[] = [];
         for (const path of this.dirtyFiles) {
@@ -1962,7 +2023,6 @@ export default class VersionControlPlugin extends Plugin {
         return moment(timestamp).fromNow(); 
     }
 
-    // --- 基于 global-index.json 元数据的 O(1) 全库历史读取与防置空冷启动迁移 ---
     async getGlobalHistory(limit: number = 100): Promise<{ version: VersionData, filePath: string, file: TFile | null }[]> {
         if (this.globalHistoryCache) {
             return this.globalHistoryCache.slice(0, limit);
@@ -1971,7 +2031,6 @@ export default class VersionControlPlugin extends Plugin {
         const adapter = this.app.vault.adapter;
         const indexPath = normalizePath(`${this.settings.versionFolder}/global-index.json`);
         
-        // 若检测到全局索引未生成，则自动在后台调起冷启动迁移，扫描旧扁平库重建新目录结构和索引并收纳旧备份
         if (!(await adapter.exists(indexPath))) {
             new Notice('🔍 正在为您自动检测并迁移旧版本数据库，请稍候...');
             await this.rebuildGlobalIndex();
@@ -1982,7 +2041,6 @@ export default class VersionControlPlugin extends Plugin {
             const raw = await adapter.read(indexPath);
             const indexData = JSON.parse(raw) as GlobalIndex;
             
-            // 修复冷启动限制 Bug：映射整库索引条目存入 Cache，而非提前被 limit 参数裁剪
             const results = indexData.entries.map(entry => {
                 const tFile = this.app.vault.getAbstractFileByPath(entry.filePath);
                 return {
@@ -2123,10 +2181,10 @@ class QuickPreviewModal extends Modal {
 class VersionHistoryView extends ItemView {
     plugin: VersionControlPlugin;
     selectedVersions: Set<string> = new Set();
-    selectedModifiedFiles: Set<string> = new Set(); // 存放待保存面板中的选中文件路径
+    selectedModifiedFiles: Set<string> = new Set(); 
     currentFile: TFile | null = null;
     searchQuery: string = '';
-    globalSearchQuery: string = ''; // 全局历史搜索关键字
+    globalSearchQuery: string = ''; 
     currentPage: number = 0;
     totalVersions: number = 0;
     filterTag: string | null = null;
@@ -2137,7 +2195,6 @@ class VersionHistoryView extends ItemView {
     collapsedGroups: Set<string> = new Set(); 
     scrollPositions: Map<ViewMode, number> = new Map(); 
 
-    // 新增防抖刷新函数声明，防止频繁触发刷新导致性能损耗
     private debouncedRefresh: () => void;
 
     constructor(leaf: WorkspaceLeaf, plugin: VersionControlPlugin) {
@@ -2176,7 +2233,6 @@ class VersionHistoryView extends ItemView {
             })
         );
 
-        // 监听文件修改，动态刷新“待保存”和“全库历史”的修改状态及指示灯
         this.registerEvent(
             this.app.vault.on('modify', (file) => {
                 if (file instanceof TFile) {
@@ -2187,7 +2243,6 @@ class VersionHistoryView extends ItemView {
             })
         );
 
-        // 监听文件删除，及时更新历史树
         this.registerEvent(
             this.app.vault.on('delete', (file) => {
                 if (this.currentViewMode === 'current' && this.currentFile && file.path === this.currentFile.path) {
@@ -2199,7 +2254,6 @@ class VersionHistoryView extends ItemView {
             })
         );
 
-        // 监听文件创建，及时更新历史树
         this.registerEvent(
             this.app.vault.on('create', (file) => {
                 this.debouncedRefresh();
@@ -2291,12 +2345,10 @@ class VersionHistoryView extends ItemView {
 
             const newScrollArea = realContainer.querySelector('.vc-content-area') as HTMLElement;
             if (newScrollArea) {
-                // 1. 立即还原滚动条位置（使用两级延迟还原，兼容移动端异步高度重流计算）
                 const savedScroll = this.scrollPositions.get(this.currentViewMode) || 0;
                 if (savedScroll > 0) {
                     newScrollArea.scrollTop = savedScroll;
                     
-                    // 移动端高度延迟布局修补
                     setTimeout(() => {
                         if (newScrollArea.scrollTop !== savedScroll) {
                             newScrollArea.scrollTop = savedScroll;
@@ -2304,7 +2356,6 @@ class VersionHistoryView extends ItemView {
                     }, 50);
                 }
 
-                // 2. 绑定实时滚动事件监听器，始终在内存中记录精细滚动绝对数值（不因 DOM 解构而重置 0）
                 newScrollArea.addEventListener('scroll', () => {
                     this.scrollPositions.set(this.currentViewMode, newScrollArea.scrollTop);
                 });
@@ -2698,7 +2749,6 @@ class VersionHistoryView extends ItemView {
         }
     }
 
-    // --- 极速待保存（Modified）文件面板 ---
     async renderModifiedFiles(container: HTMLElement) {
         container.createEl('h3', { text: '📝 已修改但未保存' });
         container.createEl('p', { text: '以下文件自上次保存版本后已有新的修改:', cls: 'vc-desc' });
@@ -2710,7 +2760,6 @@ class VersionHistoryView extends ItemView {
             return; 
         }
 
-        // 1. 绘制批量多选工具栏
         const batchBar = container.createEl('div', { cls: 'vc-batch-bar', attr: { style: 'display:flex; justify-content:space-between; align-items:center; padding: 6px 10px;' } });
         
         const selectionGroup = batchBar.createEl('div', { attr: { style: 'display:flex; gap: 8px; align-items:center;' } });
@@ -2733,7 +2782,6 @@ class VersionHistoryView extends ItemView {
 
         const actionsGroup = batchBar.createEl('div', { attr: { style: 'display:flex; gap: 6px;' } });
 
-        // 批量保存
         const saveBtn = actionsGroup.createEl('button', { 
             text: this.selectedModifiedFiles.size > 0 ? '保存选中' : '全部保存', 
             cls: 'mod-cta',
@@ -2768,7 +2816,6 @@ class VersionHistoryView extends ItemView {
             this.refresh();
         });
 
-        // 批量忽略
         if (this.selectedModifiedFiles.size > 0) {
             const ignoreBtn = actionsGroup.createEl('button', { 
                 text: '忽略选中', 
@@ -2783,7 +2830,6 @@ class VersionHistoryView extends ItemView {
             });
         }
 
-        // 2. 渲染待保存文件列表
         const list = container.createEl('div', { cls: 'vc-modified-list' });
         modifiedFiles.forEach(({ file, lastVersionTime, sizeDiff }) => {
             const item = list.createEl('div', { cls: 'version-item' });
@@ -2806,7 +2852,6 @@ class VersionHistoryView extends ItemView {
             const link = titleRow.createEl('a', { text: file.basename, cls: 'internal-link' });
             link.addEventListener('click', () => { this.app.workspace.getLeaf(false).openFile(file); });
 
-            // 变更规模指示
             if (sizeDiff !== file.stat.size) {
                 const diffSymbol = sizeDiff > 0 ? '▲' : '▼';
                 const formattedDiff = this.plugin.formatFileSize(Math.abs(sizeDiff));
@@ -2850,7 +2895,6 @@ class VersionHistoryView extends ItemView {
         });
     }
 
-    // --- 重构全库历史仪表盘 ---
     async renderGlobalHistory(container: HTMLElement) {
         const header = container.createEl('div', { attr: { style: 'display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;' } });
         header.createEl('h3', { text: '🌍 全库历史看板', attr: { style: 'margin: 0;' } });
@@ -2882,7 +2926,6 @@ class VersionHistoryView extends ItemView {
 
         const listWrapper = container.createEl('div', { cls: 'version-list-wrapper' });
 
-        // 全局时间轴搜索栏
         const searchContainer = listWrapper.createEl('div', { attr: { style: 'margin-bottom: 12px; display: flex; gap: 8px;' } });
         const searchInput = searchContainer.createEl('input', { 
             type: 'text', 
@@ -2914,7 +2957,6 @@ class VersionHistoryView extends ItemView {
             return; 
         }
 
-        // 去重过滤
         if (this.showUniqueFilesOnly) {
             const seen = new Set<string>();
             history = history.filter(item => {
@@ -2924,7 +2966,6 @@ class VersionHistoryView extends ItemView {
             });
         }
 
-        // 搜索过滤
         if (this.globalSearchQuery) {
             const query = this.globalSearchQuery.toLowerCase();
             history = history.filter(item => 
@@ -2937,7 +2978,6 @@ class VersionHistoryView extends ItemView {
 
         const isModifiedMode = this.plugin.settings.globalHistoryTimeMode === 'modified';
 
-        // 重新排序并裁剪展现
         history.sort((a, b) => {
             const timeA = isModifiedMode ? (a.file ? a.file.stat.mtime : a.version.timestamp) : a.version.timestamp;
             const timeB = isModifiedMode ? (b.file ? b.file.stat.mtime : b.version.timestamp) : b.version.timestamp;
@@ -3006,10 +3046,9 @@ class VersionHistoryView extends ItemView {
             });
             if (!file) headerRow.createEl('span', { text: '(已删除)', attr: { style: 'color:var(--text-error); font-size:0.8em;' } });
 
-            // 整合脏文件追踪机制（呼吸灯闪烁标签）
             const isDirty = this.plugin.dirtyFiles.has(filePath);
             if (isDirty && file) {
-                const dirtyBadge = headerRow.createEl('span', { 
+                headerRow.createEl('span', { 
                     text: '● 有改动', 
                     cls: 'version-tag diff-info-removed',
                     attr: { 
@@ -3017,20 +3056,6 @@ class VersionHistoryView extends ItemView {
                         title: '该文件目前在磁盘中有修改，尚未保存新版本快照'
                     }
                 });
-                
-                // 给呼吸灯注入动画效果
-                if (!document.getElementById('vc-pulse-animation')) {
-                    const styleEl = document.createElement('style');
-                    styleEl.id = 'vc-pulse-animation';
-                    styleEl.textContent = `
-                        @keyframes vc-pulse {
-                            0% { opacity: 0.6; }
-                            50% { opacity: 1; box-shadow: 0 0 4px var(--text-danger); }
-                            100% { opacity: 0.6; }
-                        }
-                    `;
-                    document.head.appendChild(styleEl);
-                }
             }
 
             const msgRow = info.createEl('div', { cls: 'version-message-row' });
@@ -3077,7 +3102,6 @@ class VersionHistoryView extends ItemView {
                 secSpan.appendText(")");
             }
 
-            // 动作栏注入：采用兼容高对比配色的快速保存按钮
             const actions = item.createEl('div', { cls: 'version-actions' });
             if (file) {
                 if (isDirty) {
@@ -3190,7 +3214,6 @@ class VersionHistoryView extends ItemView {
             "确定要删除选中的 " + this.selectedVersions.size + " 个版本吗?\n\n此操作不可撤销!",
             async () => {
                 const versionIds = Array.from(this.selectedVersions);
-                // 修复 Bug：loadVersionFile 应当由 this.plugin 实例进行调用
                 const versionFile = await this.plugin.loadVersionFile(file.path);
                 const dependentIds = new Set(versionFile.versions.map((v: VersionData) => v.baseVersionId).filter(Boolean));
                 const hasLocked = versionIds.some(id => dependentIds.has(id));
@@ -3900,24 +3923,31 @@ class DiffModal extends Modal {
     }
 
     async executeRenderTasks(container: HTMLElement, tasks: ((frag: DocumentFragment) => void)[]) {
-        const CHUNK_SIZE = 100; 
         this.loadingOverlay.style.display = 'flex';
         const msgEl = this.loadingOverlay.querySelector('.diff-loading-message') as HTMLElement;
         
-        for (let i = 0; i < tasks.length; i += CHUNK_SIZE) {
-            await new Promise<void>(resolve => {
-                requestAnimationFrame(() => {
-                    const frag = document.createDocumentFragment();
-                    const chunk = tasks.slice(i, i + CHUNK_SIZE);
-                    chunk.forEach(task => task(frag));
-                    container.appendChild(frag);
-                    resolve();
-                });
-            });
-            if (i % 300 === 0 && msgEl) {
-                 msgEl.textContent = "正在渲染视图... " + Math.round((i / tasks.length) * 100) + "%";
+        let index = 0;
+        const total = tasks.length;
+
+        while (index < total) {
+            const startFrame = performance.now();
+            const frag = document.createDocumentFragment();
+            
+            while (index < total && (performance.now() - startFrame < 12)) {
+                tasks[index]!(frag);
+                index++;
+            }
+            
+            container.appendChild(frag);
+            
+            if (index < total) {
+                if (msgEl) {
+                    msgEl.textContent = `正在渲染视图... ${Math.round((index / total) * 100)}%`;
+                }
+                await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
             }
         }
+        
         this.loadingOverlay.style.display = 'none';
         if (this.textDiffContainer.hasClass('diff-split')) {
             this.alignSplitViewLines();
@@ -3934,14 +3964,13 @@ class DiffModal extends Modal {
         let leftProcessed = this.leftContent;
         let rightProcessed = this.rightContent;
         
-        // 1. 在主控端一次性异步获取 Worker 算法对比，杜绝重复计算与阻塞
         const safeLeft = leftProcessed + '\n';
         const safeRight = rightProcessed + '\n';
         const useCompactView = this.plugin.settings.compactUnifiedDiff;
         
         this.loadingOverlay.style.display = 'flex';
         const msgEl = this.loadingOverlay.querySelector('.diff-loading-message') as HTMLElement;
-        if (msgEl) msgEl.textContent = "正在通过多线程计算差异...";
+        if (msgEl) msgEl.textContent = "正在计算差异中...";
         
         let rawDiffResult: Diff.Change[];
         if (this.currentGranularity === 'char' || this.currentGranularity === 'word') {
@@ -4178,7 +4207,6 @@ class DiffModal extends Modal {
         };
 
         for (let i = 0; i < processedDiff.length; i++) {
-            // 每处理 80 行数据，向主线程释放一次控制权，彻底防止大规模修改块渲染导致 UI 挂起
             if (i % 80 === 0) {
                 await this.plugin.yieldToMain();
             }
@@ -4255,7 +4283,7 @@ class DiffModal extends Modal {
                 } else if (leftLines.length === rightLines.length) {
                     for (let j = 0; j < leftLines.length; j++) {
                         if (j % 15 === 0) {
-                            await this.plugin.yieldToMain(); // 在二次高亮算法大循环中，向主线程释放控制权
+                            await this.plugin.yieldToMain(); 
                         }
                         const oldLine = leftLines[j]!;
                         const newLine = rightLines[j]!;
@@ -4433,7 +4461,7 @@ class DiffModal extends Modal {
                         e.stopPropagation();
                         const wasVisible = lineEl.hasClass('actions-visible');
                         const allLines = lineEl.parentElement?.parentElement?.querySelectorAll('.diff-line');
-                        allLines?.forEach((el:Element) => el.removeClass('actions-visible'));
+                        allLines?.forEach((el: Element) => el.removeClass('actions-visible'));
                         if (!wasVisible) lineEl.addClass('actions-visible');
                     });
                 }
@@ -4510,16 +4538,11 @@ class DiffModal extends Modal {
                                 renderLine(false, '', 'placeholder', null);
                                 lIndex++;
                             } else {
-                                if (lLine === rLine) {
-                                    renderLine(true, lLine, 'context', leftLineNum++);
-                                    renderLine(false, rLine, 'context', rightLineNum++);
-                                } else {
-                                    const lineDiff = secondaryDiffFn(lLine!, rLine!);
-                                    const leftFrag = createHighlightedFragment((lineDiff || []).filter((p: Diff.Change) => !p.added));
-                                    const rightFrag = createHighlightedFragment((lineDiff || []).filter((p: Diff.Change) => !p.removed));
-                                    renderLine(true, leftFrag, 'modified', leftLineNum++);
-                                    renderLine(false, rightFrag, 'modified', rightLineNum++);
-                                }
+                                const lineDiff = secondaryDiffFn(lLine, rLine);
+                                const leftFrag = createHighlightedFragment((lineDiff || []).filter((p: Diff.Change) => !p.added));
+                                const rightFrag = createHighlightedFragment((lineDiff || []).filter((p: Diff.Change) => !p.removed));
+                                renderLine(true, leftFrag, 'modified', leftLineNum++);
+                                renderLine(false, rightFrag, 'modified', rightLineNum++);
                                 lIndex++;
                                 rIndex++;
                             }
@@ -4621,7 +4644,7 @@ class DiffModal extends Modal {
             }
         };
         const onScrollRight = () => {
-        if (activeScrollSource === null) {
+            if (activeScrollSource === null) {
                 activeScrollSource = rightPanel;
                 leftPanel.scrollTop = rightPanel.scrollTop;
                 leftPanel.scrollLeft = rightPanel.scrollLeft;
@@ -4741,7 +4764,6 @@ class VersionControlSettingTab extends PluginSettingTab {
 
             const statsGrid = statsEl.createEl('div', { cls: 'stats-grid' });
             
-            // 1. 渲染即时骨架屏，防止 UI 开辟线程阻塞
             const createPlaceholderCard = (label: string) => {
                 const card = statsGrid.createEl('div', { cls: 'stat-card' });
                 card.createEl('div', { text: '正在计算...', cls: 'stat-value', attr: { style: 'font-size: 14px; color: var(--text-muted);' } });
@@ -4757,7 +4779,6 @@ class VersionControlSettingTab extends PluginSettingTab {
                 createPlaceholderCard('存储压缩率');
             }
 
-            // 2. 异步拉取后台数据并原地更新，实现秒开而不会卡顿
             (async () => {
                 const stats = await this.plugin.getStorageStats();
                 statsGrid.empty();
@@ -4781,7 +4802,7 @@ class VersionControlSettingTab extends PluginSettingTab {
             })();
         }
 
-        // --- Group 1: ⚙️ 基础与自动保存 (Basic & Auto Save) ---
+        // --- Group 1: 基础与自动保存 ---
         const basicSec = this.createAccordionSection(containerEl, '基础与自动保存', '⚙️', true);
         
         basicSec.createEl('h3', { text: '基础设置', attr: { style: 'margin-top: 0;' } });
@@ -4911,7 +4932,7 @@ class VersionControlSettingTab extends PluginSettingTab {
                 text.inputEl.style.width = '100%';
             });
 
-        // --- Group 2: 💾 存储与清理策略 (Storage & Cleanup) ---
+        // --- Group 2: 存储与清理策略 ---
         const storageSec = this.createAccordionSection(containerEl, '存储与清理策略', '💾', false);
 
         storageSec.createEl('h3', { text: '存储优化', attr: { style: 'margin-top: 0;' } });
@@ -5032,7 +5053,7 @@ class VersionControlSettingTab extends PluginSettingTab {
             }
         }
 
-        // --- Group 3: 🎨 差异对比与显示 (Diff & Display) ---
+        // --- Group 3: 差异对比与显示 ---
         const diffSec = this.createAccordionSection(containerEl, '差异对比与显示', '🎨', false);
 
         diffSec.createEl('h3', { text: '显示设置', attr: { style: 'margin-top: 0;' } });
@@ -5152,7 +5173,7 @@ class VersionControlSettingTab extends PluginSettingTab {
                     this.plugin.refreshVersionHistoryView();
                 }));
 
-        // --- Group 4: 🛠️ 维护与说明 (Maintenance & Help) ---
+        // --- Group 4: 维护与说明 ---
         const maintSec = this.createAccordionSection(containerEl, '维护与说明', '🛠️', false);
 
         maintSec.createEl('h3', { text: '维护操作', attr: { style: 'margin-top: 0;' } });
