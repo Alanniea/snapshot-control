@@ -3517,6 +3517,206 @@ class DiffModal extends Modal {
         }) as Diff.Change[];
     }
 
+    buildInteractiveContextGap(
+        hiddenLines: string[], 
+        leftStart: number, 
+        rightStart: number, 
+        isSplit: boolean,
+        linkedGapElPair?: { left?: HTMLElement, right?: HTMLElement }
+    ): HTMLElement {
+        const gapEl = document.createElement('div');
+        gapEl.className = 'diff-line diff-context-gap-interactive';
+        
+        if (this.showLineNumbers) {
+            if (isSplit) {
+                const gutter = gapEl.createEl('div', { cls: 'diff-gutter-column' });
+                gutter.createEl('span', { text: '...' });
+            } else {
+                const gutterLeft = gapEl.createEl('div', { cls: 'diff-gutter-column diff-gutter-left' });
+                gutterLeft.createEl('span', { text: '...' });
+                const gutterRight = gapEl.createEl('div', { cls: 'diff-gutter-column diff-gutter-right' });
+                gutterRight.createEl('span', { text: '...' });
+            }
+        }
+        
+        if (!isSplit) {
+            gapEl.createEl('span', { cls: 'diff-marker', text: ' ' });
+        }
+        
+        const contentEl = gapEl.createEl('div', { cls: 'gap-interactive-content' });
+        const count = hiddenLines.length;
+        
+        const renderControls = () => {
+            contentEl.empty();
+            if (count < 50) {
+                const btn = contentEl.createEl('button', { 
+                    cls: 'gap-expand-btn gap-expand-all', 
+                    text: `↕ 展开全部 ${count} 行` 
+                });
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this.expandGapRange(gapEl, hiddenLines, leftStart, rightStart, isSplit, 'all', linkedGapElPair);
+                });
+            } else {
+                contentEl.createEl('span', { 
+                    cls: 'gap-expand-label', 
+                    text: `折叠了 ${count} 行` 
+                });
+                
+                const btnUp = contentEl.createEl('button', { 
+                    cls: 'gap-expand-btn gap-expand-up', 
+                    text: `⬇ 展开上方 20 行` 
+                });
+                btnUp.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this.expandGapRange(gapEl, hiddenLines, leftStart, rightStart, isSplit, 'up', linkedGapElPair);
+                });
+
+                const btnDown = contentEl.createEl('button', { 
+                    cls: 'gap-expand-btn gap-expand-down', 
+                    text: `⬆ 展开下方 20 行` 
+                });
+                btnDown.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this.expandGapRange(gapEl, hiddenLines, leftStart, rightStart, isSplit, 'down', linkedGapElPair);
+                });
+
+                const btnAll = contentEl.createEl('button', { 
+                    cls: 'gap-expand-btn gap-expand-all-pill', 
+                    text: `↕ 全部展开` 
+                });
+                btnAll.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this.expandGapRange(gapEl, hiddenLines, leftStart, rightStart, isSplit, 'all', linkedGapElPair);
+                });
+            }
+        };
+        
+        renderControls();
+        return gapEl;
+    }
+
+    expandGapRange(
+        gapEl: HTMLElement, 
+        hiddenLines: string[], 
+        leftStart: number, 
+        rightStart: number, 
+        isSplit: boolean, 
+        direction: 'up' | 'down' | 'all',
+        linkedGapElPair?: { left?: HTMLElement, right?: HTMLElement }
+    ) {
+        let linesToRender: string[] = [];
+        let renderStartIdx = 0;
+        let renderLeftStart = leftStart;
+        let renderRightStart = rightStart;
+        
+        if (direction === 'all') {
+            linesToRender = hiddenLines;
+        } else if (direction === 'up') {
+            linesToRender = hiddenLines.slice(0, 20);
+        } else if (direction === 'down') {
+            linesToRender = hiddenLines.slice(hiddenLines.length - 20);
+            renderStartIdx = hiddenLines.length - 20;
+            renderLeftStart = leftStart + renderStartIdx;
+            renderRightStart = rightStart + renderStartIdx;
+        }
+        
+        const parent = gapEl.parentElement;
+        if (!parent) return;
+        
+        if (isSplit) {
+            const leftGap = linkedGapElPair?.left;
+            const rightGap = linkedGapElPair?.right;
+            if (!leftGap || !rightGap) return;
+            
+            const leftParent = leftGap.parentElement;
+            const rightParent = rightGap.parentElement;
+            if (!leftParent || !rightParent) return;
+            
+            const leftFrags = document.createDocumentFragment();
+            linesToRender.forEach((line, i) => {
+                const leftLineEl = this.buildLineDOM('context', line, renderLeftStart + i, null, true);
+                if (leftLineEl) leftFrags.appendChild(leftLineEl);
+            });
+            
+            const rightFrags = document.createDocumentFragment();
+            linesToRender.forEach((line, i) => {
+                const rightLineEl = this.buildLineDOM('context', line, null, renderRightStart + i, true);
+                if (rightLineEl) rightFrags.appendChild(rightLineEl);
+            });
+            
+            if (direction === 'all') {
+                leftParent.insertBefore(leftFrags, leftGap);
+                rightParent.insertBefore(rightFrags, rightGap);
+                leftGap.remove();
+                rightGap.remove();
+            } else if (direction === 'up') {
+                leftParent.insertBefore(leftFrags, leftGap);
+                rightParent.insertBefore(rightFrags, rightGap);
+                
+                const remainingLines = hiddenLines.slice(20);
+                const nextLeftStart = leftStart + 20;
+                const nextRightStart = rightStart + 20;
+                
+                const newLeftGap = this.buildInteractiveContextGap(remainingLines, nextLeftStart, nextRightStart, true, linkedGapElPair);
+                const newRightGap = this.buildInteractiveContextGap(remainingLines, nextLeftStart, nextRightStart, true, linkedGapElPair);
+                
+                if (linkedGapElPair) {
+                    linkedGapElPair.left = newLeftGap;
+                    linkedGapElPair.right = newRightGap;
+                }
+                
+                leftParent.replaceChild(newLeftGap, leftGap);
+                rightParent.replaceChild(newRightGap, rightGap);
+            } else if (direction === 'down') {
+                leftParent.insertBefore(leftFrags, leftGap.nextSibling);
+                rightParent.insertBefore(rightFrags, rightGap.nextSibling);
+                
+                const remainingLines = hiddenLines.slice(0, hiddenLines.length - 20);
+                
+                const newLeftGap = this.buildInteractiveContextGap(remainingLines, leftStart, rightStart, true, linkedGapElPair);
+                const newRightGap = this.buildInteractiveContextGap(remainingLines, leftStart, rightStart, true, linkedGapElPair);
+                
+                if (linkedGapElPair) {
+                    linkedGapElPair.left = newLeftGap;
+                    linkedGapElPair.right = newRightGap;
+                }
+                
+                leftParent.replaceChild(newLeftGap, leftGap);
+                rightParent.replaceChild(newRightGap, rightGap);
+            }
+            
+            this.alignSplitViewLines();
+        } else {
+            const frags = document.createDocumentFragment();
+            linesToRender.forEach((line, i) => {
+                const lineEl = this.buildLineDOM('context', line, renderLeftStart + i, renderRightStart + i, false);
+                if (lineEl) frags.appendChild(lineEl);
+            });
+            
+            if (direction === 'all') {
+                parent.insertBefore(frags, gapEl);
+                gapEl.remove();
+            } else if (direction === 'up') {
+                parent.insertBefore(frags, gapEl);
+                
+                const remainingLines = hiddenLines.slice(20);
+                const nextLeftStart = leftStart + 20;
+                const nextRightStart = rightStart + 20;
+                
+                const newGap = this.buildInteractiveContextGap(remainingLines, nextLeftStart, nextRightStart, false);
+                parent.replaceChild(newGap, gapEl);
+            } else if (direction === 'down') {
+                parent.insertBefore(frags, gapEl.nextSibling);
+                
+                const remainingLines = hiddenLines.slice(0, hiddenLines.length - 20);
+                
+                const newGap = this.buildInteractiveContextGap(remainingLines, leftStart, rightStart, false);
+                parent.replaceChild(newGap, gapEl);
+            }
+        }
+    }
+
     private buildLineDOM(type: string, content: string | DocumentFragment, leftNum: number | null, rightNum: number | null, isSplit: boolean): HTMLElement {
         const lineEl = document.createElement('div');
         lineEl.className = `diff-line diff-${type}`;
@@ -3524,17 +3724,18 @@ class DiffModal extends Modal {
         else if (type === 'removed') lineEl.addClass('diff-line-bg-removed');
         else if (type === 'modified') lineEl.addClass('diff-line-bg-modified');
 
-        const gutterCol = lineEl.createEl('div', { cls: 'diff-gutter-column' });
-        const numsRow = gutterCol.createEl('div', { cls: 'diff-gutter-nums' });
-        
         if (this.showLineNumbers) {
             if (isSplit) {
+                const gutterCol = lineEl.createEl('div', { cls: 'diff-gutter-column' });
+                const numsRow = gutterCol.createEl('div', { cls: 'diff-gutter-nums' });
                 const num = leftNum || rightNum;
                 numsRow.createEl('span', { text: num ? String(num) : '' });
             } else {
-                if (leftNum) numsRow.createEl('span', { text: String(leftNum) });
-                if (leftNum && rightNum) numsRow.createEl('span', { text: '|', attr: {style: 'opacity:0.3'} });
-                if (rightNum) numsRow.createEl('span', { text: String(rightNum) });
+                const gutterLeft = lineEl.createEl('div', { cls: 'diff-gutter-column diff-gutter-left' });
+                gutterLeft.createEl('span', { text: leftNum ? String(leftNum) : '' });
+
+                const gutterRight = lineEl.createEl('div', { cls: 'diff-gutter-column diff-gutter-right' });
+                gutterRight.createEl('span', { text: rightNum ? String(rightNum) : '' });
             }
         }
 
@@ -4400,19 +4601,49 @@ class DiffModal extends Modal {
 
                         if (showLine) {
                              if (lineIdx > lastLineShown + 1 && this.contextLines < 9999) {
+
+                                 const startHidden = lastLineShown + 1;
+
+                                 const endHidden = lineIdx - 1;
+
+                                 const hiddenLines = lines.slice(startHidden, endHidden + 1);
+
+                                 const leftStart = leftLineNum - (lineIdx - startHidden);
+
+                                 const rightStart = rightLineNum - (lineIdx - startHidden);
+
+                                 
+
                                  renderTasks.push((frag: DocumentFragment) => {
-                                     const skippedEl = frag.createEl('div', { cls: 'diff-line diff-context-gap' });
-                                     skippedEl.createEl('span', { cls: 'line-number-container' });
-                                     skippedEl.createEl('span', { cls: 'diff-marker', text: '...' });
+
+                                     const skippedEl = this.buildInteractiveContextGap(hiddenLines, leftStart, rightStart, false);
+
+                                     frag.appendChild(skippedEl);
+
                                  });
+
                              }
                              renderLine(line, 'context', leftLineNum, rightLineNum);
                              lastLineShown = lineIdx;
                         }
                         leftLineNum++;
+
                         rightLineNum++;
                    }
-                } else {
+                   if (lastLineShown < lines.length - 1 && this.contextLines < 9999) {
+                       const startHidden = lastLineShown + 1;
+                       const endHidden = lines.length - 1;
+                       const hiddenLines = lines.slice(startHidden, endHidden + 1);
+                       const leftStart = leftLineNum - (lines.length - startHidden);
+                       const rightStart = rightLineNum - (lines.length - startHidden);
+                       
+                       renderTasks.push((frag: DocumentFragment) => {
+                           const skippedEl = this.buildInteractiveContextGap(hiddenLines, leftStart, rightStart, false);
+                           frag.appendChild(skippedEl);
+                       });
+                   }
+                   }
+                   else {
                     for (const line of lines) {
                         if (part.added) renderLine(line, 'added', null, rightLineNum++);
                         else if (part.removed) renderLine(line, 'removed', leftLineNum++, null);
@@ -4662,27 +4893,71 @@ class DiffModal extends Modal {
 
                     if (showLine) {
                         if (lineIdx > lastLineShown + 1 && this.contextLines < 9999) {
+
+                            const startHidden = lastLineShown + 1;
+
+                            const endHidden = lineIdx - 1;
+
+                            const hiddenLines = lines.slice(startHidden, endHidden + 1);
+
+                            const leftStart = leftLineNum - (lineIdx - startHidden);
+
+                            const rightStart = rightLineNum - (lineIdx - startHidden);
+
+                            
+
+                            const linkedPair: { left?: HTMLElement, right?: HTMLElement } = {};
+
                             renderTasksLeft.push((frag: DocumentFragment) => {
-                                const skippedLeft = frag.createEl('div', { cls: 'diff-line diff-context-gap' });
-                                skippedLeft.createEl('span', { cls: 'line-number-container' });
-                                skippedLeft.createEl('span', { cls: 'diff-marker', text: '...' });
+
+                                const skippedLeft = this.buildInteractiveContextGap(hiddenLines, leftStart, rightStart, true, linkedPair);
+
+                                linkedPair.left = skippedLeft;
+
+                                frag.appendChild(skippedLeft);
+
                             });
+
                             renderTasksRight.push((frag: DocumentFragment) => {
-                                const skippedRight = frag.createEl('div', { cls: 'diff-line diff-context-gap' });
-                                skippedRight.createEl('span', { cls: 'line-number-container' });
-                                skippedRight.createEl('span', { cls: 'diff-marker', text: '...' });
+
+                                const skippedRight = this.buildInteractiveContextGap(hiddenLines, leftStart, rightStart, true, linkedPair);
+
+                                linkedPair.right = skippedRight;
+
+                                frag.appendChild(skippedRight);
+
                             });
+
                         }
                         renderLine(true, line, 'context', leftLineNum);
                         renderLine(false, line, 'context', rightLineNum);
                         lastLineShown = lineIdx;
                     }
                     leftLineNum++;
+
                     rightLineNum++;
+                }
+                if (lastLineShown < lines.length - 1 && this.contextLines < 9999) {
+                    const startHidden = lastLineShown + 1;
+                    const endHidden = lines.length - 1;
+                    const hiddenLines = lines.slice(startHidden, endHidden + 1);
+                    const leftStart = leftLineNum - (lines.length - startHidden);
+                    const rightStart = rightLineNum - (lines.length - startHidden);
+                    
+                    const linkedPair: { left?: HTMLElement, right?: HTMLElement } = {};
+                    renderTasksLeft.push((frag: DocumentFragment) => {
+                        const skippedLeft = this.buildInteractiveContextGap(hiddenLines, leftStart, rightStart, true, linkedPair);
+                        linkedPair.left = skippedLeft;
+                        frag.appendChild(skippedLeft);
+                    });
+                    renderTasksRight.push((frag: DocumentFragment) => {
+                        const skippedRight = this.buildInteractiveContextGap(hiddenLines, leftStart, rightStart, true, linkedPair);
+                        linkedPair.right = skippedRight;
+                        frag.appendChild(skippedRight);
+                    });
                 }
             }
         }
-
         await Promise.all([
             this.executeRenderTasks(leftPanel, renderTasksLeft),
             this.executeRenderTasks(rightPanel, renderTasksRight)
