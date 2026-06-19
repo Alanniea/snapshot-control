@@ -418,7 +418,28 @@ class PersistentDiffWorker {
     runDiff(left: string, right: string, granularity: 'char' | 'word' | 'line', ignoreWhitespace: boolean): Promise<Diff.Change[]> {
         return new Promise((resolve, reject) => {
             const id = this.messageId++;
-            this.activeRequests.set(id, { resolve, reject });
+            
+            const timeoutId = window.setTimeout(() => {
+                this.activeRequests.delete(id);
+                console.warn('[VersionControl] Web Worker diff timed out. Falling back to main thread calculation.');
+                try {
+                    const fallbackResult = Diff.diffLines(left, right, { ignoreWhitespace });
+                    resolve(fallbackResult);
+                } catch (err) {
+                    reject(new Error('Diff calculation failed both in worker and main thread.'));
+                }
+            }, 4000);
+
+            this.activeRequests.set(id, { 
+                resolve: (res) => {
+                    clearTimeout(timeoutId);
+                    resolve(res);
+                }, 
+                reject: (err) => {
+                    clearTimeout(timeoutId);
+                    reject(err);
+                } 
+            });
             this.worker?.postMessage({ id, left, right, granularity, ignoreWhitespace });
         });
     }
@@ -446,7 +467,7 @@ export default class VersionControlPlugin extends Plugin {
     contentCache: LRUCache<string, string> = new LRUCache(50); 
     globalHistoryCache: { version: VersionData, filePath: string, file: TFile | null }[] | null = null;
     diffWorker: PersistentDiffWorker;
-    dirtyFiles: Set<string> = new Set(); // 存放待保存版本的活跃文件路径
+    dirtyFiles: Set<string> = new Set(); 
     
     activeFileLastSaveTime: number | null = null;
     activeFileSaveLabel: string = '';
@@ -459,7 +480,7 @@ export default class VersionControlPlugin extends Plugin {
     async onload() {
         this.isUnloaded = false;
         await this.loadSettings();
-        await this.loadDirtyFiles(); // 加载离线缓存的待保存列表
+        await this.loadDirtyFiles(); 
 
         this.diffWorker = new PersistentDiffWorker();
 
@@ -487,7 +508,6 @@ export default class VersionControlPlugin extends Plugin {
 
         this.addSettingTab(new VersionControlSettingTab(this.app, this));
 
-        // --- 监听事件 ---
         this.registerEvent(
             this.app.vault.on('modify', async (file) => {
                 if (this.isRestoring) return;
@@ -646,14 +666,15 @@ export default class VersionControlPlugin extends Plugin {
 
     async withLock(filePath: string, fn: () => Promise<void>, timeoutMs: number = 30000): Promise<void> {
         const currentLock = this.fileLocks.get(filePath) || Promise.resolve();
-        const releasePrevious = currentLock.catch(() => {});
-
+        
         const runTask = async () => {
-            await releasePrevious;
+            await currentLock.catch(() => {});
+            
             let timeoutId: any;
             const timeoutPromise = new Promise<void>((_, reject) => {
-                timeoutId = setTimeout(() => reject(new Error(`Lock operation timed out after ${timeoutMs}ms`)), timeoutMs);
+                timeoutId = setTimeout(() => reject(new Error(`Operation on ${filePath} timed out after ${timeoutMs}ms`)), timeoutMs);
             });
+            
             try {
                 await Promise.race([fn(), timeoutPromise]);
             } finally {
@@ -662,7 +683,9 @@ export default class VersionControlPlugin extends Plugin {
         };
 
         const nextLock = runTask().finally(() => {
-            if (this.fileLocks.get(filePath) === nextLock) this.fileLocks.delete(filePath);
+            if (this.fileLocks.get(filePath) === nextLock) {
+                this.fileLocks.delete(filePath);
+            }
         });
 
         this.fileLocks.set(filePath, nextLock);
@@ -3963,6 +3986,21 @@ class DiffModal extends Modal {
         
         let leftProcessed = this.leftContent;
         let rightProcessed = this.rightContent;
+
+        if (leftProcessed === rightProcessed) {
+            container.empty();
+            container.removeClass('diff-split');
+            const emptyState = container.createEl('div', { 
+                attr: { style: 'display: flex; flex-direction: column; align-items: center; justify-content: center; width: 100%; height: 100%; min-height: 250px; color: var(--text-muted); text-align: center;' } 
+            });
+            emptyState.createEl('div', { text: '✨', attr: { style: 'font-size: 48px; margin-bottom: 16px; opacity: 0.9;' } });
+            emptyState.createEl('h3', { text: '这两个版本完全一致', attr: { style: 'color: var(--text-normal); margin: 0 0 8px 0; font-size: 16px;' } });
+            emptyState.createEl('p', { text: '没有检测到任何修改内容' + (this.ignoreWhitespace ? ' (已忽略空白字符)' : ''), attr: { style: 'margin: 0; font-size: 13px;' } });
+            
+            this.updateNavState();
+            this.updateCompactDiffInfo([]);
+            return;
+        }
         
         const safeLeft = leftProcessed + '\n';
         const safeRight = rightProcessed + '\n';
@@ -4197,7 +4235,7 @@ class DiffModal extends Modal {
                 if (Platform.isMobile) {
                     lineEl.addEventListener('dblclick', (e) => {
                         e.stopPropagation();
-                        const wasVisible = lineEl.hasClass('actions-visible');
+                        const wasVisible = lineEl.classList.contains('actions-visible');
                         const allLines = lineEl.parentElement?.querySelectorAll('.diff-line');
                         allLines?.forEach((el:Element) => el.removeClass('actions-visible'));
                         if (!wasVisible) lineEl.addClass('actions-visible');
@@ -4459,9 +4497,9 @@ class DiffModal extends Modal {
                 if (Platform.isMobile) {
                     lineEl.addEventListener('dblclick', (e) => {
                         e.stopPropagation();
-                        const wasVisible = lineEl.hasClass('actions-visible');
+                        const wasVisible = lineEl.classList.contains('actions-visible');
                         const allLines = lineEl.parentElement?.parentElement?.querySelectorAll('.diff-line');
-                        allLines?.forEach((el: Element) => el.removeClass('actions-visible'));
+                        allLines?.forEach((el: Element) => el.classList.remove('actions-visible'));
                         if (!wasVisible) lineEl.addClass('actions-visible');
                     });
                 }
@@ -4626,6 +4664,7 @@ class DiffModal extends Modal {
                 }
             }
         }
+
         await Promise.all([
             this.executeRenderTasks(leftPanel, renderTasksLeft),
             this.executeRenderTasks(rightPanel, renderTasksRight)
@@ -4932,7 +4971,7 @@ class VersionControlSettingTab extends PluginSettingTab {
                 text.inputEl.style.width = '100%';
             });
 
-        // --- Group 2: 存储与清理策略 ---
+        // --- Group 2: 💾 存储与清理策略 ---
         const storageSec = this.createAccordionSection(containerEl, '存储与清理策略', '💾', false);
 
         storageSec.createEl('h3', { text: '存储优化', attr: { style: 'margin-top: 0;' } });
@@ -5173,7 +5212,7 @@ class VersionControlSettingTab extends PluginSettingTab {
                     this.plugin.refreshVersionHistoryView();
                 }));
 
-        // --- Group 4: 维护与说明 ---
+        // --- Group 4: 🛠️ 维护与说明 ---
         const maintSec = this.createAccordionSection(containerEl, '维护与说明', '🛠️', false);
 
         maintSec.createEl('h3', { text: '维护操作', attr: { style: 'margin-top: 0;' } });
@@ -5339,67 +5378,67 @@ class IntegrityReportModal extends Modal {
                     if (repaired) {
                         repairBtn.setText('✅ 修复成功');
                         repairBtn.addClass('mod-cta'); 
-                    } else {
-                        repairBtn.setText('修复失败');
-                        new Notice('无法自动修复，可能是依赖链断裂或内容已损坏。');
-                    }
-                });
-            });
+                            } else {
+                                repairBtn.setText('修复失败');
+                                new Notice('无法自动修复，可能是依赖链断裂或内容已损坏。');
+                            }
+                        });
+                    });
+                }
+
+                const btnContainer = contentEl.createEl('div', { cls: 'modal-button-container', attr: { style: 'margin-top: 20px;' } });
+                btnContainer.createEl('button', { text: '关闭' }).addEventListener('click', () => this.close());
+            }
+
+            onClose() {
+                this.contentEl.empty();
+            }
         }
 
-        const btnContainer = contentEl.createEl('div', { cls: 'modal-button-container', attr: { style: 'margin-top: 20px;' } });
-        btnContainer.createEl('button', { text: '关闭' }).addEventListener('click', () => this.close());
-    }
+        // =======================================================================
+        // ======================= 上下文行数输入模态框 ==========================
+        // =======================================================================
+        class ContextLineInputModal extends Modal {
+            currentValue: number;
+            onSubmit: (lines: number) => void;
 
-    onClose() {
-        this.contentEl.empty();
-    }
-}
-
-// =======================================================================
-// ======================= 上下文行数输入模态框 ==========================
-// =======================================================================
-class ContextLineInputModal extends Modal {
-    currentValue: number;
-    onSubmit: (lines: number) => void;
-
-    constructor(app: App, currentValue: number, onSubmit: (lines: number) => void) {
-        super(app);
-        this.currentValue = currentValue;
-        this.onSubmit = onSubmit;
-    }
-
-    onOpen() {
-        const { contentEl } = this;
-        contentEl.createEl('h2', { text: '设置上下文行数' });
-        contentEl.createEl('p', { text: '输入在差异行周围显示的未修改行数 (0 表示只显示修改行, 9999 表示显示全部)。' });
-
-        const inputContainer = contentEl.createEl('div', { attr: { style: 'margin: 20px 0;' } });
-        const input = inputContainer.createEl('input', { type: 'number' }) as HTMLInputElement;
-        input.value = String(this.currentValue);
-        input.focus();
-
-        const btnContainer = contentEl.createEl('div', { cls: 'modal-button-container' });
-        const cancelBtn = btnContainer.createEl('button', { text: '取消' }) as HTMLButtonElement;
-        cancelBtn.addEventListener('click', () => this.close());
-        
-        const saveBtn = btnContainer.createEl('button', { text: '保存', cls: 'mod-cta' }) as HTMLButtonElement;
-        saveBtn.addEventListener('click', () => {
-            const val = parseInt(input.value, 10);
-            if (!isNaN(val) && val >= 0) {
-                this.onSubmit(val);
-                this.close();
-            } else {
-                new Notice('请输入有效的正整数');
+            constructor(app: App, currentValue: number, onSubmit: (lines: number) => void) {
+                super(app);
+                this.currentValue = currentValue;
+                this.onSubmit = onSubmit;
             }
-        });
 
-        input.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') saveBtn.click();
-        });
-    }
+            onOpen() {
+                const { contentEl } = this;
+                contentEl.createEl('h2', { text: '设置上下文行数' });
+                contentEl.createEl('p', { text: '输入在差异行周围显示的未修改行数 (0 表示只显示修改行, 9999 表示显示全部)。' });
 
-    onClose() {
-        this.contentEl.empty();
-    }
-}
+                const inputContainer = contentEl.createEl('div', { attr: { style: 'margin: 20px 0;' } });
+                const input = inputContainer.createEl('input', { type: 'number' }) as HTMLInputElement;
+                input.value = String(this.currentValue);
+                input.focus();
+
+                const btnContainer = contentEl.createEl('div', { cls: 'modal-button-container' });
+                const cancelBtn = btnContainer.createEl('button', { text: '取消' }) as HTMLButtonElement;
+                cancelBtn.addEventListener('click', () => this.close());
+                
+                const saveBtn = btnContainer.createEl('button', { text: '保存', cls: 'mod-cta' }) as HTMLButtonElement;
+                saveBtn.addEventListener('click', () => {
+                    const val = parseInt(input.value, 10);
+                    if (!isNaN(val) && val >= 0) {
+                        this.onSubmit(val);
+                        this.close();
+                    } else {
+                        new Notice('请输入有效的正整数');
+                    }
+                });
+
+                input.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') saveBtn.click();
+                });
+            }
+
+            onClose() {
+                this.contentEl.empty();
+            }
+        }
