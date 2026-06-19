@@ -476,6 +476,7 @@ export default class VersionControlPlugin extends Plugin {
     isUnloaded: boolean = false;
 
     debouncedUpdateStatusBar: () => void;
+    private lastRenderedStatusText = '';
 
     async onload() {
         this.isUnloaded = false;
@@ -667,29 +668,27 @@ export default class VersionControlPlugin extends Plugin {
     async withLock(filePath: string, fn: () => Promise<void>, timeoutMs: number = 30000): Promise<void> {
         const currentLock = this.fileLocks.get(filePath) || Promise.resolve();
         
-        const runTask = async () => {
-            await currentLock.catch(() => {});
-            
+        let resolveLock: () => void;
+        const nextLock = new Promise<void>((resolve) => {
+            resolveLock = resolve;
+        });
+
+        this.fileLocks.set(filePath, nextLock);
+
+        try {
+            await currentLock;
             let timeoutId: any;
             const timeoutPromise = new Promise<void>((_, reject) => {
                 timeoutId = setTimeout(() => reject(new Error(`Operation on ${filePath} timed out after ${timeoutMs}ms`)), timeoutMs);
             });
-            
-            try {
-                await Promise.race([fn(), timeoutPromise]);
-            } finally {
-                clearTimeout(timeoutId);
-            }
-        };
-
-        const nextLock = runTask().finally(() => {
+            await Promise.race([fn(), timeoutPromise]);
+            clearTimeout(timeoutId);
+        } finally {
+            resolveLock!();
             if (this.fileLocks.get(filePath) === nextLock) {
                 this.fileLocks.delete(filePath);
             }
-        });
-
-        this.fileLocks.set(filePath, nextLock);
-        await nextLock;
+        }
     }
 
     cyrb53(str: string, seed = 0): number {
@@ -1017,7 +1016,11 @@ export default class VersionControlPlugin extends Plugin {
     renderStatusBarTime() {
         if (this.activeFileLastSaveTime === null) return;
         const relativeTime = this.getRelativeTime(this.activeFileLastSaveTime);
-        this.statusBarItem.setText(`${this.activeFileSaveLabel}: ${relativeTime}`);
+        const newText = `${this.activeFileSaveLabel}: ${relativeTime}`;
+        if (this.lastRenderedStatusText !== newText) {
+            this.statusBarItem.setText(newText);
+            this.lastRenderedStatusText = newText;
+        }
         this.statusBarItem.title = `${this.activeFileSaveLabel}于 ${new Date(this.activeFileLastSaveTime).toLocaleString('zh-CN')}. 点击可快速对比。`;
     }
 
@@ -2181,7 +2184,11 @@ class QuickPreviewModal extends Modal {
         if (this.isRenderedView) {
             this.toggleButton.setText('👓 切换原始文本');
             const renderDiv = this.contentContainer.createEl('div', { cls: 'preview-rendered-content' });
-            await MarkdownRenderer.renderMarkdown(this.versionContent, renderDiv, this.file.path, this.plugin);
+            try {
+                await MarkdownRenderer.renderMarkdown(this.versionContent, renderDiv, this.file.path, this.plugin);
+            } catch (err) {
+                renderDiv.setText(this.versionContent);
+            }
         } else {
             this.toggleButton.setText('📖 切换渲染视图');
             const rawContainer = this.contentContainer.createEl('div', { cls: 'preview-raw-container' });
@@ -3473,6 +3480,7 @@ class DiffModal extends Modal {
     private infoBannerContainer: HTMLElement;
     private loadingOverlay: HTMLElement;
     private resizeHandler: () => void;
+    private currentDiffRequestId = 0;
 
     constructor(app: App, plugin: VersionControlPlugin, file: TFile, versionId: string, secondVersionId?: string) {
         super(app);
@@ -3869,18 +3877,27 @@ class DiffModal extends Modal {
 
     async updateDiffView() {
         this.loadingOverlay.style.display = 'flex';
+        const requestId = ++this.currentDiffRequestId;
         try {
+            let fetchedProcessedLeft = '';
+            let fetchedProcessedRight = '';
+
             if (this.versionId === 'current') {
-                this.leftContent = await this.app.vault.read(this.file);
+                fetchedProcessedLeft = await this.app.vault.read(this.file);
             } else {
-                this.leftContent = await this.plugin.getVersionContent(this.file.path, this.versionId);
+                fetchedProcessedLeft = await this.plugin.getVersionContent(this.file.path, this.versionId);
             }
 
             if (this.secondVersionId === 'current') {
-                this.rightContent = await this.app.vault.read(this.file);
+                fetchedProcessedRight = await this.app.vault.read(this.file);
             } else {
-                this.rightContent = await this.plugin.getVersionContent(this.file.path, this.secondVersionId);
+                fetchedProcessedRight = await this.plugin.getVersionContent(this.file.path, this.secondVersionId);
             }
+
+            if (requestId !== this.currentDiffRequestId) return;
+
+            this.leftContent = fetchedProcessedLeft;
+            this.rightContent = fetchedProcessedRight;
 
             this.updateSelectorButtonLabels();
             await this.renderTextDiff();
@@ -3888,7 +3905,9 @@ class DiffModal extends Modal {
             console.error("加载差异失败:", getErrorMessage(error), error);
             new Notice('❌ 加载版本内容失败');
         } finally {
-            this.loadingOverlay.style.display = 'none';
+            if (requestId === this.currentDiffRequestId) {
+                this.loadingOverlay.style.display = 'none';
+            }
         }
     }
 
@@ -3951,8 +3970,11 @@ class DiffModal extends Modal {
         
         let index = 0;
         const total = tasks.length;
+        const requestId = this.currentDiffRequestId;
 
         while (index < total) {
+            if (requestId !== this.currentDiffRequestId) return;
+
             const startFrame = performance.now();
             const frag = document.createDocumentFragment();
             
@@ -4010,6 +4032,7 @@ class DiffModal extends Modal {
         const msgEl = this.loadingOverlay.querySelector('.diff-loading-message') as HTMLElement;
         if (msgEl) msgEl.textContent = "正在计算差异中...";
         
+        const requestId = this.currentDiffRequestId;
         let rawDiffResult: Diff.Change[];
         if (this.currentGranularity === 'char' || this.currentGranularity === 'word') {
             rawDiffResult = await this.plugin.diffWorker.runDiff(leftProcessed, rightProcessed, this.currentGranularity, this.ignoreWhitespace);
@@ -4017,6 +4040,8 @@ class DiffModal extends Modal {
             rawDiffResult = await this.plugin.diffWorker.runDiff(safeLeft, safeRight, 'line', this.ignoreWhitespace);
         }
         
+        if (requestId !== this.currentDiffRequestId) return;
+
         const rawDiff = (this.currentGranularity === 'line' && useCompactView) 
             ? this.compactDiffChanges(rawDiffResult) 
             : rawDiffResult;
@@ -4235,7 +4260,7 @@ class DiffModal extends Modal {
                 if (Platform.isMobile) {
                     lineEl.addEventListener('dblclick', (e) => {
                         e.stopPropagation();
-                        const wasVisible = lineEl.classList.contains('actions-visible');
+                        const wasVisible = lineEl.hasClass('actions-visible');
                         const allLines = lineEl.parentElement?.querySelectorAll('.diff-line');
                         allLines?.forEach((el:Element) => el.removeClass('actions-visible'));
                         if (!wasVisible) lineEl.addClass('actions-visible');
@@ -4497,9 +4522,9 @@ class DiffModal extends Modal {
                 if (Platform.isMobile) {
                     lineEl.addEventListener('dblclick', (e) => {
                         e.stopPropagation();
-                        const wasVisible = lineEl.classList.contains('actions-visible');
+                        const wasVisible = lineEl.hasClass('actions-visible');
                         const allLines = lineEl.parentElement?.parentElement?.querySelectorAll('.diff-line');
-                        allLines?.forEach((el: Element) => el.classList.remove('actions-visible'));
+                        allLines?.forEach((el: Element) => el.removeClass('actions-visible'));
                         if (!wasVisible) lineEl.addClass('actions-visible');
                     });
                 }
@@ -5092,7 +5117,7 @@ class VersionControlSettingTab extends PluginSettingTab {
             }
         }
 
-        // --- Group 3: 差异对比与显示 ---
+        // --- Group 3: 🎨 差异对比与显示 ---
         const diffSec = this.createAccordionSection(containerEl, '差异对比与显示', '🎨', false);
 
         diffSec.createEl('h3', { text: '显示设置', attr: { style: 'margin-top: 0;' } });
@@ -5377,7 +5402,7 @@ class IntegrityReportModal extends Modal {
                     const repaired = await this.plugin.repairVersionFile(item.filePath);
                     if (repaired) {
                         repairBtn.setText('✅ 修复成功');
-                        repairBtn.addClass('mod-cta'); 
+                                repairBtn.addClass('mod-cta'); 
                             } else {
                                 repairBtn.setText('修复失败');
                                 new Notice('无法自动修复，可能是依赖链断裂或内容已损坏。');
