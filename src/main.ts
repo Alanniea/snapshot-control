@@ -3517,6 +3517,61 @@ class DiffModal extends Modal {
         }) as Diff.Change[];
     }
 
+    private buildLineDOM(type: string, content: string | DocumentFragment, leftNum: number | null, rightNum: number | null, isSplit: boolean): HTMLElement {
+        const lineEl = document.createElement('div');
+        lineEl.className = `diff-line diff-${type}`;
+        if (type === 'added') lineEl.addClass('diff-line-bg-added');
+        else if (type === 'removed') lineEl.addClass('diff-line-bg-removed');
+        else if (type === 'modified') lineEl.addClass('diff-line-bg-modified');
+
+        const gutterCol = lineEl.createEl('div', { cls: 'diff-gutter-column' });
+        const numsRow = gutterCol.createEl('div', { cls: 'diff-gutter-nums' });
+        
+        if (this.showLineNumbers) {
+            if (isSplit) {
+                const num = leftNum || rightNum;
+                numsRow.createEl('span', { text: num ? String(num) : '' });
+            } else {
+                if (leftNum) numsRow.createEl('span', { text: String(leftNum) });
+                if (leftNum && rightNum) numsRow.createEl('span', { text: '|', attr: {style: 'opacity:0.3'} });
+                if (rightNum) numsRow.createEl('span', { text: String(rightNum) });
+            }
+        }
+
+        let marker = ' ';
+        if (type === 'added') marker = '+';
+        else if (type === 'removed') marker = '-';
+        else if (type === 'modified') marker = '~';
+
+        if (type === 'context-gap') {
+            lineEl.addClass('diff-context-gap');
+            lineEl.createEl('span', { cls: 'diff-marker', text: '...' });
+            return lineEl;
+        }
+
+        if (!isSplit) {
+            lineEl.createEl('span', { cls: 'diff-marker', text: marker });
+        }
+
+        const contentEl = lineEl.createEl('span', { cls: 'line-content' });
+        if (typeof content === 'string') {
+            contentEl.setText(this.showWhitespace ? this.visualizeWhitespace(content) : content);
+        } else {
+            contentEl.appendChild(content);
+        }
+
+        if (Platform.isMobile) {
+            lineEl.addEventListener('dblclick', (e) => {
+                e.stopPropagation();
+                const wasVisible = lineEl.hasClass('actions-visible');
+                const allLines = lineEl.parentElement?.querySelectorAll('.diff-line');
+                allLines?.forEach((el: Element) => el.removeClass('actions-visible'));
+                if (!wasVisible) lineEl.addClass('actions-visible');
+            });
+        }
+        return lineEl;
+    }
+
     async onOpen() {
         const { contentEl } = this; 
         contentEl.addClass('diff-modal');
@@ -4223,49 +4278,14 @@ class DiffModal extends Modal {
 
         const renderLine = (content: string | DocumentFragment, type: ProcessedDiff['type'], lineNumLeft: number | null, lineNumRight: number | null) => {
             renderTasks.push((frag: DocumentFragment) => {
-                const lineEl = frag.createEl('div', { cls: "diff-line diff-" + type });
-                
-                if (type === 'added') lineEl.addClass('diff-line-bg-added');
-                else if (type === 'removed') lineEl.addClass('diff-line-bg-removed');
-                else if (type === 'modified') lineEl.addClass('diff-line-bg-modified');
-
+                const lineEl = this.buildLineDOM(type, content, lineNumLeft, lineNumRight, false);
                 if (type !== 'context') {
                     lineEl.dataset.diffIndex = String(diffIdx++);
                     this.diffElements.push(lineEl);
                 }
                 if (lineNumLeft) lineEl.dataset.lineNumLeft = String(lineNumLeft);
                 if (lineNumRight) lineEl.dataset.lineNumRight = String(lineNumRight);
-                
-                const gutterCol = lineEl.createEl('div', { cls: 'diff-gutter-column' });
-                const numsRow = gutterCol.createEl('div', { cls: 'diff-gutter-nums' });
-                if (this.showLineNumbers) {
-                    if (lineNumLeft) numsRow.createEl('span', { text: String(lineNumLeft) });
-                    if (lineNumLeft && lineNumRight) numsRow.createEl('span', { text: '|', attr: {style: 'opacity:0.3'} });
-                    if (lineNumRight) numsRow.createEl('span', { text: String(lineNumRight) });
-                }
-        
-                let marker = ' ';
-                if (type === 'added') marker = '+';
-                else if (type === 'removed') marker = '-';
-                else if (type === 'modified') marker = '~';
-
-                lineEl.createEl('span', { cls: 'diff-marker', text: marker });
-                const contentEl = lineEl.createEl('span', { cls: 'line-content' });
-                if (typeof content === 'string') {
-                    contentEl.setText(this.showWhitespace ? this.visualizeWhitespace(content) : content);
-                } else {
-                    contentEl.appendChild(content);
-                }
-                
-                if (Platform.isMobile) {
-                    lineEl.addEventListener('dblclick', (e) => {
-                        e.stopPropagation();
-                        const wasVisible = lineEl.hasClass('actions-visible');
-                        const allLines = lineEl.parentElement?.querySelectorAll('.diff-line');
-                        allLines?.forEach((el:Element) => el.removeClass('actions-visible'));
-                        if (!wasVisible) lineEl.addClass('actions-visible');
-                    });
-                }
+                frag.appendChild(lineEl);
             });
         };
 
@@ -4494,40 +4514,13 @@ class DiffModal extends Modal {
     
         const renderLine = (isLeft: boolean, content: string | DocumentFragment, type: string, lineNum: number | null) => {
             const task = (frag: DocumentFragment) => {
-                const lineEl = frag.createEl('div', { cls: `diff-line diff-${type}` });
-
-                if (type === 'added') lineEl.addClass('diff-line-bg-added');
-                else if (type === 'removed') lineEl.addClass('diff-line-bg-removed');
-                else if (type === 'modified') lineEl.addClass('diff-line-bg-modified');
-
+                const lineEl = this.buildLineDOM(type, content, isLeft ? lineNum : null, isLeft ? null : lineNum, true);
                 if (type !== 'context' && type !== 'placeholder') {
                     lineEl.dataset.diffIndex = String(diffIdx++);
                     this.diffElements.push(lineEl);
                 }
                 if (lineNum) lineEl.dataset.lineNumber = String(lineNum);
-
-                const gutterCol = lineEl.createEl('div', { cls: 'diff-gutter-column' });
-                const numsRow = gutterCol.createEl('div', { cls: 'diff-gutter-nums' });
-                if (this.showLineNumbers) {
-                    numsRow.createEl('span', { text: lineNum ? String(lineNum) : '' });
-                }
-
-                const contentEl = lineEl.createEl('span', { cls: 'line-content' });
-                if (typeof content === 'string') {
-                    contentEl.setText(this.showWhitespace ? this.visualizeWhitespace(content) : content);
-                } else {
-                    contentEl.appendChild(content);
-                }
-
-                if (Platform.isMobile) {
-                    lineEl.addEventListener('dblclick', (e) => {
-                        e.stopPropagation();
-                        const wasVisible = lineEl.hasClass('actions-visible');
-                        const allLines = lineEl.parentElement?.parentElement?.querySelectorAll('.diff-line');
-                        allLines?.forEach((el: Element) => el.removeClass('actions-visible'));
-                        if (!wasVisible) lineEl.addClass('actions-visible');
-                    });
-                }
+                frag.appendChild(lineEl);
             };
             if (isLeft) renderTasksLeft.push(task);
             else renderTasksRight.push(task);
@@ -5402,68 +5395,68 @@ class IntegrityReportModal extends Modal {
                     const repaired = await this.plugin.repairVersionFile(item.filePath);
                     if (repaired) {
                         repairBtn.setText('✅ 修复成功');
-                                repairBtn.addClass('mod-cta'); 
-                            } else {
-                                repairBtn.setText('修复失败');
-                                new Notice('无法自动修复，可能是依赖链断裂或内容已损坏。');
-                            }
-                        });
-                    });
-                }
-
-                const btnContainer = contentEl.createEl('div', { cls: 'modal-button-container', attr: { style: 'margin-top: 20px;' } });
-                btnContainer.createEl('button', { text: '关闭' }).addEventListener('click', () => this.close());
-            }
-
-            onClose() {
-                this.contentEl.empty();
-            }
-        }
-
-        // =======================================================================
-        // ======================= 上下文行数输入模态框 ==========================
-        // =======================================================================
-        class ContextLineInputModal extends Modal {
-            currentValue: number;
-            onSubmit: (lines: number) => void;
-
-            constructor(app: App, currentValue: number, onSubmit: (lines: number) => void) {
-                super(app);
-                this.currentValue = currentValue;
-                this.onSubmit = onSubmit;
-            }
-
-            onOpen() {
-                const { contentEl } = this;
-                contentEl.createEl('h2', { text: '设置上下文行数' });
-                contentEl.createEl('p', { text: '输入在差异行周围显示的未修改行数 (0 表示只显示修改行, 9999 表示显示全部)。' });
-
-                const inputContainer = contentEl.createEl('div', { attr: { style: 'margin: 20px 0;' } });
-                const input = inputContainer.createEl('input', { type: 'number' }) as HTMLInputElement;
-                input.value = String(this.currentValue);
-                input.focus();
-
-                const btnContainer = contentEl.createEl('div', { cls: 'modal-button-container' });
-                const cancelBtn = btnContainer.createEl('button', { text: '取消' }) as HTMLButtonElement;
-                cancelBtn.addEventListener('click', () => this.close());
-                
-                const saveBtn = btnContainer.createEl('button', { text: '保存', cls: 'mod-cta' }) as HTMLButtonElement;
-                saveBtn.addEventListener('click', () => {
-                    const val = parseInt(input.value, 10);
-                    if (!isNaN(val) && val >= 0) {
-                        this.onSubmit(val);
-                        this.close();
+                        repairBtn.addClass('mod-cta'); 
                     } else {
-                        new Notice('请输入有效的正整数');
+                        repairBtn.setText('修复失败');
+                        new Notice('无法自动修复，可能是依赖链断裂或内容已损坏。');
                     }
                 });
-
-                input.addEventListener('keydown', (e) => {
-                    if (e.key === 'Enter') saveBtn.click();
-                });
-            }
-
-            onClose() {
-                this.contentEl.empty();
-            }
+            });
         }
+
+        const btnContainer = contentEl.createEl('div', { cls: 'modal-button-container', attr: { style: 'margin-top: 20px;' } });
+        btnContainer.createEl('button', { text: '关闭' }).addEventListener('click', () => this.close());
+    }
+
+    onClose() {
+        this.contentEl.empty();
+    }
+}
+
+// =======================================================================
+// ======================= 上下文行数输入模态框 ==========================
+// =======================================================================
+class ContextLineInputModal extends Modal {
+    currentValue: number;
+    onSubmit: (lines: number) => void;
+
+    constructor(app: App, currentValue: number, onSubmit: (lines: number) => void) {
+        super(app);
+        this.currentValue = currentValue;
+        this.onSubmit = onSubmit;
+    }
+
+    onOpen() {
+        const { contentEl } = this;
+        contentEl.createEl('h2', { text: '设置上下文行数' });
+        contentEl.createEl('p', { text: '输入在差异行周围显示的未修改行数 (0 表示只显示修改行, 9999 表示显示全部)。' });
+
+        const inputContainer = contentEl.createEl('div', { attr: { style: 'margin: 20px 0;' } });
+        const input = inputContainer.createEl('input', { type: 'number' }) as HTMLInputElement;
+        input.value = String(this.currentValue);
+        input.focus();
+
+        const btnContainer = contentEl.createEl('div', { cls: 'modal-button-container' });
+        const cancelBtn = btnContainer.createEl('button', { text: '取消' }) as HTMLButtonElement;
+        cancelBtn.addEventListener('click', () => this.close());
+        
+        const saveBtn = btnContainer.createEl('button', { text: '保存', cls: 'mod-cta' }) as HTMLButtonElement;
+        saveBtn.addEventListener('click', () => {
+            const val = parseInt(input.value, 10);
+            if (!isNaN(val) && val >= 0) {
+                this.onSubmit(val);
+                this.close();
+            } else {
+                new Notice('请输入有效的正整数');
+            }
+        });
+
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') saveBtn.click();
+        });
+    }
+
+    onClose() {
+        this.contentEl.empty();
+    }
+}
