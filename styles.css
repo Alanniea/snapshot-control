@@ -179,7 +179,6 @@
 .version-history-view.is-compact .version-note { display: none; }
 .version-history-view.is-compact .version-actions button { padding: 3px 6px; font-size: 11px; }
 
-/* 优化版本标签（设计令牌适配，保证极致对比度） */
 .version-tag { display: inline-block; padding: 2px 8px; font-size: 11px; border-radius: var(--radius-s); font-weight: 500; }
 .version-tag-auto { background: rgba(0, 122, 255, 0.12); color: var(--text-accent); }
 .version-tag-manual { background: var(--background-modifier-hover); color: var(--text-normal); }
@@ -245,7 +244,6 @@
     -webkit-user-select: none; 
 }
 
-/* 双列行号样式 */
 .diff-modal .diff-container .diff-gutter-column.diff-gutter-left {
     border-right: none !important;
     margin-right: 0 !important;
@@ -266,7 +264,6 @@
     border-right: 1px solid var(--background-modifier-border);
 }
 
-/* 差异行与其对应行号背景融合 */
 .diff-line-bg-added .diff-gutter-column {
     background-color: rgba(46, 160, 67, 0.15) !important;
     color: var(--text-success) !important;
@@ -280,7 +277,6 @@
     color: var(--text-accent) !important;
 }
 
-/* 交互式上下文折叠栏 */
 .diff-line.diff-context-gap-interactive {
     display: flex;
     align-items: center;
@@ -295,7 +291,7 @@
 
 .diff-line.diff-context-gap-interactive:hover {
     background-color: var(--background-modifier-hover);
-    transform: none; /* 覆盖默认 hover 时的平移动画 */
+    transform: none; 
 }
 
 .diff-line.diff-context-gap-interactive .diff-gutter-column {
@@ -388,7 +384,6 @@
 
 .diff-empty-notice { display: flex; align-items: center; justify-content: center; height: 100%; min-height: 150px; color: var(--text-muted); font-size: 1.1em; font-style: italic; background: var(--background-secondary); border-radius: var(--radius-m); }
 
-/* 移动端 Diff 适配 */
 .is-mobile .diff-line.actions-visible .line-number-container { 
     width: auto; 
     min-width: 45px; 
@@ -416,7 +411,6 @@
 .diff-swap-btn { background: none; border: none; cursor: pointer; font-size: 1.2em; padding: 0 10px; opacity: 0.7; }
 .diff-swap-btn:hover { opacity: 1; color: var(--interactive-accent); }
 
-/* 对称高清晰度对比度差异栏 (完美修复 +0、-0 隐形与排版缺陷) */
 .diff-info-banner-compact { display: flex; align-items: center; gap: 10px; padding: 6px 12px; margin-bottom: 10px; background: var(--background-secondary); border-radius: var(--radius-s); font-size: 11px; flex-wrap: wrap; }
 @keyframes diff-info-flash { 0% { background-color: var(--background-secondary); } 50% { background-color: var(--background-modifier-hover); } 100% { background-color: var(--background-secondary); } }
 .diff-info-banner-compact.diff-info-updated { animation: diff-info-flash 0.5s ease-in-out; }
@@ -467,7 +461,6 @@
 .diff-line .diff-marker { display: inline-block; width: 20px; text-align: center; margin-right: 10px; font-weight: bold; flex-shrink: 0; }
 .diff-line .line-content { flex: 1; white-space: pre; overflow-x: auto; }
 
-/* 差异行背景（设计令牌安全色） */
 .diff-line-bg-added, .diff-added { background: rgba(46, 160, 67, 0.1); color: var(--text-normal); border-left: 3px solid var(--text-success); }
 .diff-line-bg-removed, .diff-removed { background: rgba(248, 81, 73, 0.1); color: var(--text-muted); border-left: 3px solid var(--text-danger); }
 .diff-line-bg-modified, .diff-modified { background: rgba(0, 122, 255, 0.08); color: var(--text-normal); border-left: 3px solid var(--text-accent); }
@@ -680,6 +673,54 @@ button.mod-warning {
 }
 button.mod-warning:hover {
     background-color: var(--text-danger-hover); 
+}
+
+/* 手风琴组件统一样式 */
+details.vc-setting-accordion {
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-m);
+    margin-bottom: 12px;
+    background-color: var(--background-primary-alt);
+    overflow: hidden;
+    transition: border-color 0.2s;
+}
+details.vc-setting-accordion[open] {
+    border-color: var(--interactive-accent);
+}
+summary.vc-setting-summary {
+    padding: 12px 16px;
+    font-weight: 600;
+    cursor: pointer;
+    user-select: none;
+    background-color: var(--background-secondary);
+    display: flex;
+    align-items: center;
+}
+summary.vc-setting-summary::-webkit-details-marker {
+    display: none;
+}
+summary.vc-setting-summary::before {
+    content: '▶';
+    display: inline-block;
+    margin-right: 10px;
+    transition: transform 0.2s;
+    font-size: 0.8em;
+    color: var(--text-muted);
+}
+details.vc-setting-accordion[open] summary.vc-setting-summary::before {
+    transform: rotate(90deg);
+    color: var(--text-accent);
+}
+.vc-setting-accordion-content {
+    padding: 8px 16px;
+    background-color: var(--background-primary);
+    border-top: 1px solid var(--background-modifier-border);
+}
+.vc-setting-accordion-content .setting-item {
+    border-bottom: 1px solid var(--background-modifier-border-subtle);
+}
+.vc-setting-accordion-content .setting-item:last-child {
+    border-bottom: none;
 }
 
 /* ======================================================================= */

@@ -1,5 +1,25 @@
 
-import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, Modal, ItemView, WorkspaceLeaf, Menu, MarkdownRenderer, Platform, TFolder, setIcon, moment, normalizePath, debounce, DataAdapter, TAbstractFile } from 'obsidian';
+import { 
+    App, 
+    Plugin, 
+    PluginSettingTab, 
+    Setting, 
+    TFile, 
+    Notice, 
+    Modal, 
+    ItemView, 
+    WorkspaceLeaf, 
+    Menu, 
+    MarkdownRenderer, 
+    Platform, 
+    TFolder, 
+    setIcon, 
+    moment, 
+    normalizePath, 
+    debounce, 
+    DataAdapter, 
+    TAbstractFile 
+} from 'obsidian';
 import * as Diff from 'diff';
 
 // --- 工具函数：安全地提取错误信息 ---
@@ -11,9 +31,15 @@ export function getErrorMessage(error: unknown): string {
 }
 
 // --- 差异渲染的类型定义 ---
+interface InlineChange {
+    value: string;
+    added?: boolean;
+    removed?: boolean;
+}
+
 type ProcessedDiff = {
     type: 'context' | 'added' | 'removed' | 'modified';
-    inlineDuffs?: any[][];
+    inlineDuffs?: InlineChange[][];
 } & Diff.Change;
 
 // --- LRU 缓存：元数据高速缓存器 (O(k) 前缀清除优化版) ---
@@ -36,7 +62,7 @@ class LRUCache<K, V> {
         return val;
     }
 
-    set(key: K, val: V) {
+    set(key: K, val: V): void {
         if (this.cache.has(key)) {
             this.cache.delete(key);
         } else if (this.cache.size >= this.max) {
@@ -55,12 +81,12 @@ class LRUCache<K, V> {
         return this.cache.delete(key);
     }
 
-    clear() {
+    clear(): void {
         this.cache.clear();
         this.prefixGroups.clear();
     }
 
-    private addToTracking(key: K) {
+    private addToTracking(key: K): void {
         if (typeof key === 'string' && key.includes('::')) {
             const prefix = key.split('::')[0]!;
             if (!this.prefixGroups.has(prefix)) {
@@ -70,7 +96,7 @@ class LRUCache<K, V> {
         }
     }
 
-    private deleteFromTracking(key: K) {
+    private deleteFromTracking(key: K): void {
         if (typeof key === 'string' && key.includes('::')) {
             const prefix = key.split('::')[0]!;
             const group = this.prefixGroups.get(prefix);
@@ -83,7 +109,7 @@ class LRUCache<K, V> {
         }
     }
 
-    deletePrefix(prefix: string) {
+    deletePrefix(prefix: string): void {
         const cleanPrefix = prefix.endsWith('::') ? prefix.slice(0, -2) : prefix;
         const group = this.prefixGroups.get(cleanPrefix);
         if (group) {
@@ -224,7 +250,6 @@ class PersistentDiffWorker {
 
     private initWorker() {
         const workerCode = `
-            // 字符串整型化工具，将所有 token 转化为整数以极大地加速比对
             class StringInterner {
                 constructor() {
                     this.map = new Map();
@@ -240,17 +265,14 @@ class PersistentDiffWorker {
                 }
             }
 
-            // 词级分词器
             function tokenizeWords(str) {
                 return str.split(/([ \\t\\n\\r]+|[，。！？；：、()（）""'']+)/).filter(Boolean);
             }
 
-            // 字符级分词器
             function tokenizeChars(str) {
                 return Array.from(str);
             }
 
-            // 基础 Myers 差分算法 (使用整型数组加速)
             function myersDiffInt(aIds, bIds, aTokens, bTokens) {
                 const N = aIds.length;
                 const M = bIds.length;
@@ -318,7 +340,6 @@ class PersistentDiffWorker {
                 return result;
             }
 
-            // 轻量级“耐心差分预对齐”：找出两边独一无二(Unique)的行进行锚定，避免结构错位
             function patienceAlign(aLines, bLines) {
                 const countUnique = (lines) => {
                     const counts = new Map();
@@ -342,10 +363,8 @@ class PersistentDiffWorker {
                     }
                 });
 
-                // 按 A 的索引升序排序，然后寻找 LIS (最长递增子序列) 保证相对顺序一致
                 matchingLines.sort((x, y) => x.aIdx - y.aIdx);
                 
-                // 简单的 LIS 求解
                 const lis = [];
                 const parent = [];
                 for (let i = 0; i < matchingLines.length; i++) {
@@ -374,7 +393,6 @@ class PersistentDiffWorker {
                 return aligned;
             }
 
-            // 子 gap 的递归/分治 Myers 求解
             function solveGaps(aLines, bLines, aIds, bIds) {
                 const aligned = patienceAlign(aLines, bLines);
                 if (aligned.length === 0) {
@@ -409,7 +427,6 @@ class PersistentDiffWorker {
                 return result;
             }
 
-            // 二次微观词级对齐 (在 Worker 中完成)
             function runInlineWordDiff(leftLine, rightLine, algorithm) {
                 const interner = new StringInterner();
                 const tokenize = algorithm === 'char' ? tokenizeChars : tokenizeWords;
@@ -425,11 +442,9 @@ class PersistentDiffWorker {
                 try {
                     const interner = new StringInterner();
                     
-                    // 1. 分词与整型化映射
                     const tokenize = (str) => {
                         if (granularity === 'char') return tokenizeChars(str);
                         if (granularity === 'word') return tokenizeWords(str);
-                        // 行级分词
                         const lines = [];
                         let last = 0;
                         for (let i = 0; i < str.length; i++) {
@@ -445,7 +460,6 @@ class PersistentDiffWorker {
                     const tokens1 = tokenize(left);
                     const tokens2 = tokenize(right);
 
-                    // 首尾部无差异文本快速裁剪 (Prefix/Suffix Stripping)
                     let prefixCount = 0;
                     const maxPrefix = Math.min(tokens1.length, tokens2.length);
                     while (prefixCount < maxPrefix) {
@@ -470,7 +484,6 @@ class PersistentDiffWorker {
                     let midResult = [];
                     if (mid1.length > 0 || mid2.length > 0) {
                         if (mid1.length + mid2.length > 20000) {
-                            // 兜底降级处理超大差异
                             midResult = [
                                 ...mid1.map(val => ({ value: val, added: false, removed: true })),
                                 ...mid2.map(val => ({ value: val, added: true, removed: false }))
@@ -480,7 +493,6 @@ class PersistentDiffWorker {
                             const mid2Ids = mid2.map(t => interner.intern(ignoreWhitespace ? t.trim() : t));
                             
                             if (granularity === 'line') {
-                                // 行级对比时启用耐心差分对齐
                                 midResult = solveGaps(mid1, mid2, mid1Ids, mid2Ids);
                             } else {
                                 midResult = myersDiffInt(mid1Ids, mid2Ids, mid1, mid2);
@@ -488,7 +500,6 @@ class PersistentDiffWorker {
                         }
                     }
 
-                    // 重新组合结果
                     const result = [];
                     for (let i = 0; i < prefixCount; i++) {
                         result.push({ value: tokens1[i], added: false, removed: false });
@@ -500,7 +511,6 @@ class PersistentDiffWorker {
                         result.push({ value: tokens1[tokens1.length - suffixCount + i], added: false, removed: false });
                     }
 
-                    // 合并相邻的同类节点
                     const merged = [];
                     for (const part of result) {
                         const lastPart = merged[merged.length - 1];
@@ -511,12 +521,10 @@ class PersistentDiffWorker {
                         }
                     }
 
-                    // 2. 如果是行级差分，在 Worker 中直接预先算好行内对齐
                     if (granularity === 'line' && inlineAlgorithm && inlineAlgorithm !== 'line') {
                         for (let i = 0; i < merged.length; i++) {
                             const current = merged[i];
                             const next = merged[i + 1];
-                            // 寻找到匹配的“先删后增”行块进行行内对齐
                             if (current && current.removed && next && next.added) {
                                 const leftLines = current.value.replace(/\\n$/, '').split('\\n');
                                 const rightLines = next.value.replace(/\\n$/, '').split('\\n');
@@ -648,7 +656,7 @@ export default class VersionControlPlugin extends Plugin {
 
         if (this.settings.enableStatusBarDiff) {
             this.statusBarItem.addClass('version-control-statusbar-clickable');
-            this.statusBarItem.addEventListener('click', () => {
+            this.registerDomEvent(this.statusBarItem, 'click', () => {
                 this.quickDiffFromStatusBar();
             });
         }
@@ -716,7 +724,7 @@ export default class VersionControlPlugin extends Plugin {
                 leaves.forEach(leaf => { 
                     if (leaf.view instanceof VersionHistoryView) leaf.view.updateRelativeTimes(); 
                 });
-            }, 1000) as unknown as number
+            }, 1000)
         );
 
         setTimeout(() => {
@@ -747,7 +755,7 @@ export default class VersionControlPlugin extends Plugin {
         this.globalHistoryCache = null;
     }
 
-    async yieldToMain() { 
+    async yieldToMain(): Promise<void> { 
         return new Promise(resolve => setTimeout(resolve, 0)); 
     }
 
@@ -1197,7 +1205,15 @@ export default class VersionControlPlugin extends Plugin {
     async activateVersionHistoryView() { 
         const { workspace } = this.app;
         let leaf = workspace.getLeavesOfType('version-history')[0];
-        if (!leaf) { const rightLeaf = workspace.getRightLeaf(false); if (!rightLeaf) { new Notice('无法打开版本历史视图'); return; } leaf = rightLeaf; await leaf.setViewState({ type: 'version-history', active: true, }); }
+        if (!leaf) { 
+            const rightLeaf = workspace.getRightLeaf(false); 
+            if (!rightLeaf) { 
+                new Notice('无法打开版本历史视图'); 
+                return; 
+            } 
+            leaf = rightLeaf; 
+            await leaf.setViewState({ type: 'version-history', active: true, }); 
+        }
         workspace.revealLeaf(leaf);
     }
 
@@ -2271,8 +2287,8 @@ class QuickPreviewModal extends Modal {
     private versionContent: string;
     private toggleButton: HTMLButtonElement;
 
-    constructor(App: App, plugin: VersionControlPlugin, file: TFile, versionId: string) {
-        super(App);
+    constructor(app: App, plugin: VersionControlPlugin, file: TFile, versionId: string) {
+        super(app);
         this.plugin = plugin;
         this.file = file;
         this.versionId = versionId;
@@ -2338,6 +2354,7 @@ class QuickPreviewModal extends Modal {
             this.toggleButton.setText('👓 切换原始文本');
             const renderDiv = this.contentContainer.createEl('div', { cls: 'preview-rendered-content' });
             try {
+                // 修复 TS2345 编译错误：由于 Modal 并非 Component 的直接子类，因此传入 Component 实例 this.plugin
                 await MarkdownRenderer.renderMarkdown(this.versionContent, renderDiv, this.file.path, this.plugin);
             } catch (err) {
                 renderDiv.setText(this.versionContent);
@@ -2438,7 +2455,7 @@ class VersionHistoryView extends ItemView {
         );
 
         this.registerEvent(
-            this.app.vault.on('create', (file) => {
+            this.app.vault.on('create', () => {
                 this.debouncedRefresh();
             })
         );
@@ -2610,7 +2627,7 @@ class VersionHistoryView extends ItemView {
                 } else {
                     container.prepend(toolbar);
                 }
-                const label = toolbar.createEl('span', { cls: 'batch-count-label' });
+                toolbar.createEl('span', { cls: 'batch-count-label' });
                 const clearBtn = toolbar.createEl('button', { text: '清空选择' });
                 clearBtn.addEventListener('click', () => {
                     this.selectedVersions.clear();
@@ -2723,7 +2740,7 @@ class VersionHistoryView extends ItemView {
                 const itemEl = actionEl.closest('.version-item');
                 if (itemEl) {
                     if (isStarred) itemEl.classList.remove('version-starred');
-                    else itemEl.classList.add('version-starred');
+                    else itemEl.addClass('version-starred');
                 }
                 await this.plugin.toggleVersionStar(file.path, versionId);
             } else if (action === 'restore') {
@@ -4954,8 +4971,9 @@ class DiffModal extends Modal {
                 requestAnimationFrame(() => { activeScrollSource = null; });
             }
         };
-        leftPanel.addEventListener('scroll', onScrollLeft);
-        rightPanel.addEventListener('scroll', onScrollRight);
+        // 使用 registerDomEvent 接管生命周期绑定
+        this.plugin.registerDomEvent(leftPanel, 'scroll', onScrollLeft);
+        this.plugin.registerDomEvent(rightPanel, 'scroll', onScrollRight);
     }
 
     scrollToDiff() {
@@ -4984,64 +5002,6 @@ class VersionControlSettingTab extends PluginSettingTab {
     constructor(app: App, plugin: VersionControlPlugin) {
         super(app, plugin);
         this.plugin = plugin;
-        this.injectAccordionStyles();
-    }
-
-    injectAccordionStyles() {
-        const styleId = 'vc-accordion-styles';
-        if (!document.getElementById(styleId)) {
-            const style = document.createElement('style');
-            style.id = styleId;
-            style.textContent = `
-                details.vc-setting-accordion {
-                    border: 1px solid var(--background-modifier-border);
-                    border-radius: var(--radius-m);
-                    margin-bottom: 12px;
-                    background-color: var(--background-primary-alt);
-                    overflow: hidden;
-                    transition: border-color 0.2s;
-                }
-                details.vc-setting-accordion[open] {
-                    border-color: var(--interactive-accent);
-                }
-                summary.vc-setting-summary {
-                    padding: 12px 16px;
-                    font-weight: 600;
-                    cursor: pointer;
-                    user-select: none;
-                    background-color: var(--background-secondary);
-                    display: flex;
-                    align-items: center;
-                }
-                summary.vc-setting-summary::-webkit-details-marker {
-                    display: none;
-                }
-                summary.vc-setting-summary::before {
-                    content: '▶';
-                    display: inline-block;
-                    margin-right: 10px;
-                    transition: transform 0.2s;
-                    font-size: 0.8em;
-                    color: var(--text-muted);
-                }
-                details.vc-setting-accordion[open] summary.vc-setting-summary::before {
-                    transform: rotate(90deg);
-                    color: var(--text-accent);
-                }
-                .vc-setting-accordion-content {
-                    padding: 8px 16px;
-                    background-color: var(--background-primary);
-                    border-top: 1px solid var(--background-modifier-border);
-                }
-                .vc-setting-accordion-content .setting-item {
-                    border-bottom: 1px solid var(--background-modifier-border-subtle);
-                }
-                .vc-setting-accordion-content .setting-item:last-child {
-                    border-bottom: none;
-                }
-            `;
-            document.head.appendChild(style);
-        }
     }
 
     createAccordionSection(containerEl: HTMLElement, title: string, icon: string, defaultOpen = false): HTMLElement {
@@ -5063,7 +5023,10 @@ class VersionControlSettingTab extends PluginSettingTab {
             const headerEl = statsEl.createEl('div', { cls: 'stats-header' });
             headerEl.createEl('h3', { text: '📊 存储统计' });
             const refreshBtn = headerEl.createEl('button', { text: '🔄 刷新', cls: 'stats-refresh-btn' });
-            refreshBtn.addEventListener('click', () => { this.display(); });
+            
+            this.plugin.registerDomEvent(refreshBtn, 'click', () => { 
+                this.display(); 
+            });
 
             const statsGrid = statsEl.createEl('div', { cls: 'stats-grid' });
             
@@ -5333,11 +5296,11 @@ class VersionControlSettingTab extends PluginSettingTab {
                 .setDesc('自动删除超过指定天数的版本')
                 .addToggle(toggle => toggle
                     .setValue(this.plugin.settings.enableMaxDays)
-                        .onChange(async (value) => {
-                            this.plugin.settings.enableMaxDays = value;
-                            await this.plugin.saveSettings();
-                            this.display(); 
-                        }));
+                    .onChange(async (value) => {
+                        this.plugin.settings.enableMaxDays = value;
+                        await this.plugin.saveSettings();
+                        this.display(); 
+                    }));
 
             if (this.plugin.settings.enableMaxDays) {
                 new Setting(storageSec)
@@ -5615,7 +5578,9 @@ class IntegrityReportModal extends Modal {
         });
 
         const btnContainer = contentEl.createEl('div', { cls: 'modal-button-container' });
-        btnContainer.createEl('button', { text: '关闭' }).addEventListener('click', () => this.close());
+        const closeBtn = btnContainer.createEl('button', { text: '关闭' });
+        closeBtn.addEventListener('click', () => this.close());
+        btnContainer.appendChild(closeBtn);
     }
 
     onClose() {
@@ -5648,9 +5613,12 @@ class ContextLineInputModal extends Modal {
 
         const btnContainer = contentEl.createEl('div', { cls: 'modal-button-container' });
         const cancelBtn = btnContainer.createEl('button', { text: '取消' }) as HTMLButtonElement;
-        cancelBtn.addEventListener('click', () => this.close());
-        
         const saveBtn = btnContainer.createEl('button', { text: '保存', cls: 'mod-cta' }) as HTMLButtonElement;
+        
+        btnContainer.appendChild(cancelBtn);
+        btnContainer.appendChild(saveBtn);
+
+        cancelBtn.addEventListener('click', () => this.close());
         saveBtn.addEventListener('click', async () => {
             const val = parseInt(input.value, 10);
             if (!isNaN(val) && val >= 0) {
