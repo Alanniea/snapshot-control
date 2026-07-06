@@ -639,6 +639,15 @@ export default class VersionControlPlugin extends Plugin {
     debouncedUpdateStatusBar: () => void;
     private lastRenderedStatusText = '';
 
+    // 防抖写入待保存文件列表，避免高频击键时的磁盘 I/O 冲突
+    debouncedSaveDirtyFiles = debounce(async () => {
+        const adapter = this.app.vault.adapter;
+        const path = normalizePath(`${this.settings.versionFolder}/dirty-files.json`);
+        try {
+            await adapter.write(path, JSON.stringify(Array.from(this.dirtyFiles)));
+        } catch {}
+    }, 2000, true);
+
     async onload() {
         this.isUnloaded = false;
         await this.loadSettings();
@@ -681,8 +690,12 @@ export default class VersionControlPlugin extends Plugin {
 
                 if (file instanceof TFile) {
                     if (!this.isExcluded(file.path)) {
+                        const previousSize = this.dirtyFiles.size;
                         this.dirtyFiles.add(file.path);
-                        await this.saveDirtyFiles();
+                        // 仅当列表长度真正发生变化时（首次标记），才安排异步写盘，减少高频重复写盘
+                        if (this.dirtyFiles.size !== previousSize) {
+                            this.saveDirtyFiles();
+                        }
                     }
                     if (this.settings.autoSave && this.settings.autoSaveOnModify) {
                         this.handleFileModify(file);
@@ -1091,7 +1104,7 @@ export default class VersionControlPlugin extends Plugin {
                     if (this.dirtyFiles.has(oldPath)) {
                         this.dirtyFiles.delete(oldPath);
                         this.dirtyFiles.add(file.path);
-                        await this.saveDirtyFiles();
+                        this.saveDirtyFiles();
                     }
 
                     await this.updateGlobalIndexForRename(oldPath, file.path);
@@ -1122,7 +1135,7 @@ export default class VersionControlPlugin extends Plugin {
                 
                 if (this.dirtyFiles.has(filePath)) {
                     this.dirtyFiles.delete(filePath);
-                    await this.saveDirtyFiles();
+                    this.saveDirtyFiles();
                 }
 
                 await this.clearGlobalIndexForFile(filePath);
@@ -1276,6 +1289,13 @@ export default class VersionControlPlugin extends Plugin {
         const lengthDiff = Math.abs(oldText.length - newText.length);
         if (lengthDiff >= this.settings.autoSaveMinChanges) return lengthDiff;
 
+        if (oldText === newText) return 0;
+
+        // 性能安全阀：大文件不作复杂的Myers同步计算，直接回退为长度估算
+        if (oldText.length > 200000 || newText.length > 200000) {
+            return lengthDiff || 1; 
+        }
+
         const changes = Diff.diffLines(oldText, newText); 
         let changeCount = 0;
         for (const part of changes) { 
@@ -1384,7 +1404,9 @@ export default class VersionControlPlugin extends Plugin {
                     try {
                         await this.yieldToMain(); 
                         const reversePatch = this.createDiff(content, prevContent);
+                        await this.yieldToMain(); // 让渡主线程，防止阻塞当前帧
                         const testApply = Diff.applyPatch(content, reversePatch);
+                        await this.yieldToMain(); // 再次让渡主线程
                         if (testApply !== false && this.normalizeText(testApply) === prevContent) {
                             prevVersion.diff = reversePatch;
                             prevVersion.baseVersionId = id; 
@@ -1419,7 +1441,7 @@ export default class VersionControlPlugin extends Plugin {
             this.contentCache.set(`${file.path}::${newVersion.id}`, content);
 
             this.dirtyFiles.delete(file.path);
-            await this.saveDirtyFiles();
+            this.saveDirtyFiles();
 
             await this.updateGlobalIndex({
                 filePath: file.path,
@@ -1994,12 +2016,8 @@ export default class VersionControlPlugin extends Plugin {
         this.clearGlobalCache();
     }
 
-    async saveDirtyFiles() {
-        const adapter = this.app.vault.adapter;
-        const path = normalizePath(`${this.settings.versionFolder}/dirty-files.json`);
-        try {
-            await adapter.write(path, JSON.stringify(Array.from(this.dirtyFiles)));
-        } catch {}
+    saveDirtyFiles(): void {
+        this.debouncedSaveDirtyFiles();
     }
 
     async loadDirtyFiles() {
@@ -2354,7 +2372,6 @@ class QuickPreviewModal extends Modal {
             this.toggleButton.setText('👓 切换原始文本');
             const renderDiv = this.contentContainer.createEl('div', { cls: 'preview-rendered-content' });
             try {
-                // 修复 TS2345 编译错误：由于 Modal 并非 Component 的直接子类，因此传入 Component 实例 this.plugin
                 await MarkdownRenderer.renderMarkdown(this.versionContent, renderDiv, this.file.path, this.plugin);
             } catch (err) {
                 renderDiv.setText(this.versionContent);
@@ -2424,11 +2441,14 @@ class VersionHistoryView extends ItemView {
         );
         
         this.registerEvent(
-            this.app.vault.on('rename', (file: TAbstractFile, oldPath: string) => {
-                if (this.currentViewMode === 'current' && this.currentFile && oldPath === this.currentFile.path) {
-                    if (file instanceof TFile) { this.currentFile = file; this.refresh(); }
-                } else {
-                    this.debouncedRefresh();
+            this.app.workspace.on('active-leaf-change', () => {
+                if (this.currentViewMode === 'current') {
+                    const activeFile = this.app.workspace.getActiveFile();
+                    if (activeFile && (!this.currentFile || this.currentFile.path !== activeFile.path)) {
+                        this.currentPage = 0; this.selectedVersions.clear(); this.refresh();
+                    } else if (!activeFile && this.currentFile) {
+                        this.currentFile = null; this.refresh();
+                    }
                 }
             })
         );
@@ -4914,8 +4934,8 @@ class DiffModal extends Modal {
 
                             renderTasksRight.push((frag: DocumentFragment) => {
                                 const skippedRight = this.buildInteractiveContextGap(hiddenLines, leftStart, rightStart, true, linkedPair);
-                                linkedPair.right = skippedRight;
-                                frag.appendChild(skippedRight);
+                                    linkedPair.right = skippedRight;
+                                    frag.appendChild(skippedRight);
                             });
                         }
                         renderLine(true, line, 'context', leftLineNum);
@@ -4971,7 +4991,6 @@ class DiffModal extends Modal {
                 requestAnimationFrame(() => { activeScrollSource = null; });
             }
         };
-        // 使用 registerDomEvent 接管生命周期绑定
         this.plugin.registerDomEvent(leftPanel, 'scroll', onScrollLeft);
         this.plugin.registerDomEvent(rightPanel, 'scroll', onScrollRight);
     }
@@ -5493,7 +5512,7 @@ class VersionControlSettingTab extends PluginSettingTab {
         feature1.createEl('strong', { text: '✨ 功能特性:' });
         const ul1 = feature1.createEl('ul');
         ul1.createEl('li', { text: '分级缓存 - 为大型 Vault 带来的零延迟体验' });
-        ul1.createEl('li', { text: '版本标签系统 - 为重要版本添加标签进行分类' });
+        ul1.createEl('li', { text: '版本标签 system - 为重要版本添加标签进行分类' });
         ul1.createEl('li', { text: '快速预览 - 无需完整对比即可查看版本内容' });
         ul1.createEl('li', { text: '版本备注 - 为版本添加详细说明' });
         ul1.createEl('li', { text: '星标标记 - 标记重要版本便于查找' });
@@ -5592,12 +5611,12 @@ class IntegrityReportModal extends Modal {
 // ======================= 上下文行数输入模态框 ==========================
 // =======================================================================
 class ContextLineInputModal extends Modal {
-    currentValue: number;
+    currentLines: number;
     onSubmit: (lines: number) => void;
 
-    constructor(app: App, currentValue: number, onSubmit: (lines: number) => void) {
+    constructor(app: App, currentLines: number, onSubmit: (lines: number) => void) {
         super(app);
-        this.currentValue = currentValue;
+        this.currentLines = currentLines;
         this.onSubmit = onSubmit;
     }
 
@@ -5608,7 +5627,7 @@ class ContextLineInputModal extends Modal {
 
         const inputContainer = contentEl.createEl('div', { attr: { style: 'margin: 20px 0;' } });
         const input = inputContainer.createEl('input', { type: 'number' }) as HTMLInputElement;
-        input.value = String(this.currentValue);
+        input.value = String(this.currentLines);
         input.focus();
 
         const btnContainer = contentEl.createEl('div', { cls: 'modal-button-container' });
