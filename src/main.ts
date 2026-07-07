@@ -17,8 +17,7 @@ import {
     moment, 
     normalizePath, 
     debounce, 
-    DataAdapter, 
-    TAbstractFile 
+    DataAdapter 
 } from 'obsidian';
 import * as Diff from 'diff';
 
@@ -1620,7 +1619,8 @@ export default class VersionControlPlugin extends Plugin {
                         const content = await adapter.read(path); 
                         JSON.parse(content); 
                         return content; 
-                    } catch { throw e; }
+                    } 
+                    catch { throw e; }
                 }
             } else {
                 try {
@@ -2439,19 +2439,6 @@ class VersionHistoryView extends ItemView {
                 }
             })
         );
-        
-        this.registerEvent(
-            this.app.workspace.on('active-leaf-change', () => {
-                if (this.currentViewMode === 'current') {
-                    const activeFile = this.app.workspace.getActiveFile();
-                    if (activeFile && (!this.currentFile || this.currentFile.path !== activeFile.path)) {
-                        this.currentPage = 0; this.selectedVersions.clear(); this.refresh();
-                    } else if (!activeFile && this.currentFile) {
-                        this.currentFile = null; this.refresh();
-                    }
-                }
-            })
-        );
 
         this.registerEvent(
             this.app.vault.on('modify', (file) => {
@@ -3224,7 +3211,6 @@ class VersionHistoryView extends ItemView {
             const primaryTime = isModifiedMode ? (file ? file.stat.mtime : version.timestamp) : version.timestamp;
             const secondaryTime = isModifiedMode ? version.timestamp : (file ? file.stat.mtime : null);
             
-            // 提取保存动作对应的标签文本，在按修改时间排序时，直接作为底部的二级标签
             const saveTypeLabel = this.plugin.getSaveTypeLabel(version.message);
             const secondaryLabel = isModifiedMode ? saveTypeLabel : '修改时间';
 
@@ -3287,7 +3273,6 @@ class VersionHistoryView extends ItemView {
             else if (saveTypeLabel === '全库版本') tagClass = 'version-tag-snapshot';
             else if (saveTypeLabel === '恢复前备份') tagClass = 'version-tag-backup';
             
-            // 仅在按保存时间排序时，在卡片头部显示保存类型的独立标签。避免修改时间模式下的标签重复。
             if (!isModifiedMode) {
                 msgRow.createEl('span', { text: saveTypeLabel, cls: "version-tag " + tagClass });
             }
@@ -3695,22 +3680,6 @@ class DiffModal extends Modal {
 
     visualizeWhitespace(text: string): string {
         return text.replace(/\t/g, '→   ').replace(/ /g, '·');
-    }
-
-    diffWordsCJK(text1: string, text2: string): Diff.Change[] {
-        const tokenize = (str: string) => str.split(/([ \t\n\r]+|[，。！？；：、()（）""'']+)/).filter(Boolean);
-        const tokens1 = tokenize(text1);
-        const tokens2 = tokenize(text2);
-        const result = Diff.diffArrays(tokens1, tokens2);
-        return result.map(part => {
-            const textValue = part.value ? part.value.join('') : '';
-            return {
-                count: textValue.length,
-                added: part.added || false,
-                removed: part.removed || false,
-                value: textValue
-            };
-        }) as Diff.Change[];
     }
 
     buildInteractiveContextGap(
@@ -4847,7 +4816,7 @@ class DiffModal extends Modal {
         const renderLine = (isLeft: boolean, content: string | DocumentFragment, type: string, lineNum: number | null) => {
             const task = (frag: DocumentFragment) => {
                 const lineEl = this.buildLineDOM(type, content, isLeft ? lineNum : null, isLeft ? null : lineNum, true);
-                if (type !== 'context' && type !== 'placeholder') {
+                if ((type as string) !== 'context' && (type as string) !== 'placeholder') {
                     lineEl.dataset.diffIndex = String(diffIdx++);
                     this.diffElements.push(lineEl);
                 }
@@ -5367,75 +5336,10 @@ class VersionControlSettingTab extends PluginSettingTab {
             .addToggle(toggle => toggle
                 .setValue(this.plugin.settings.useRelativeTime)
                 .onChange(async (value) => {
-                        this.plugin.settings.useRelativeTime = value;
-                        await this.plugin.saveSettings();
-                        this.plugin.refreshVersionHistoryView();
-                    }));
-
-        diffSec.createEl('h3', { text: '差异对比设置' });
-        new Setting(diffSec)
-            .setName('默认差异粒度')
-            .setDesc('选择差异对比的默认精细程度')
-            .addDropdown(dropdown => dropdown
-                .addOption('char', '字符级')
-                .addOption('word', '单词级')
-                .addOption('line', '行级')
-                .setValue(this.plugin.settings.diffGranularity)
-                .onChange(async (value: 'char' | 'word' | 'line') => {
-                    this.plugin.settings.diffGranularity = value;
+                    this.plugin.settings.useRelativeTime = value;
                     await this.plugin.saveSettings();
+                    this.plugin.refreshVersionHistoryView();
                 }));
-
-        new Setting(diffSec)
-            .setName('默认视图模式')
-            .setDesc('选择差异对比的默认显示方式')
-            .addDropdown(dropdown => dropdown
-                .addOption('unified', '统一视图')
-                .addOption('split', '左右分栏')
-                .setValue(this.plugin.settings.diffViewMode)
-                .onChange(async (value: 'unified' | 'split') => {
-                    this.plugin.settings.diffViewMode = value;
-                    await this.plugin.saveSettings();
-                }));
-        
-        new Setting(diffSec)
-            .setName('差异上下文行数')
-            .setDesc('差异对比时，在变更内容周围显示的上下文行数 (0=仅变更, 9999=显示全部)。')
-            .addText(text => text
-                .setPlaceholder('3')
-                .setValue(String(this.plugin.settings.diffContextLines))
-                .onChange(async (value) => {
-                    const num = parseInt(value);
-                    if (!isNaN(num) && num >= 0) {
-                        this.plugin.settings.diffContextLines = num;
-                        await this.plugin.saveSettings();
-                    }
-                }));
-
-        new Setting(diffSec)
-            .setName('行内差异算法')
-            .setDesc('当使用“行级”对比时，指定行内高亮的算法。')
-            .addDropdown(dropdown => dropdown
-                .addOption('word', '按单词（推荐）')
-                .addOption('char', '按字符（更精确）')
-                .addOption('line', '按行')
-                .setValue(this.plugin.settings.inlineDiffAlgorithm)
-                .onChange(async (value: 'word' | 'char' | 'line') => {
-                    this.plugin.settings.inlineDiffAlgorithm = value;
-                    await this.plugin.saveSettings();
-                }));
-
-        diffSec.createEl('h3', { text: '版本标签与备注' });
-        new Setting(diffSec)
-            .setName('启用版本标签')
-            .setDesc('为版本添加标签以便分类和筛选')
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.enableVersionTags)
-                .onChange(async (value) => {
-                        this.plugin.settings.useRelativeTime = value;
-                        await this.plugin.saveSettings();
-                        this.plugin.refreshVersionHistoryView();
-                    }));
 
         diffSec.createEl('h3', { text: '差异对比设置' });
         new Setting(diffSec)
