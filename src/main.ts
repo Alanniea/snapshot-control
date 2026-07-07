@@ -192,7 +192,6 @@ interface VersionControlSettings {
     showLastSaveTimeInStatusBar: boolean;
     inlineDiffAlgorithm: 'word' | 'char' | 'line';
     diffContextLines: number;
-    compactUnifiedDiff: boolean; 
     deleteHistoryOnDelete: boolean; 
     compactHistoryView: boolean; 
     globalHistoryTimeMode: 'modified' | 'saved'; 
@@ -229,7 +228,6 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
     showLastSaveTimeInStatusBar: true,
     inlineDiffAlgorithm: 'word',
     diffContextLines: 3,
-    compactUnifiedDiff: false, 
     deleteHistoryOnDelete: false, 
     compactHistoryView: false, 
     globalHistoryTimeMode: 'modified', 
@@ -272,6 +270,7 @@ class PersistentDiffWorker {
                 return Array.from(str);
             }
 
+            // ...（保留原Worker核心算法以维持对比功能稳定，移除在主线程没用到的 compact 标志依赖）...
             function myersDiffInt(aIds, bIds, aTokens, bTokens) {
                 const N = aIds.length;
                 const M = bIds.length;
@@ -638,7 +637,6 @@ export default class VersionControlPlugin extends Plugin {
     debouncedUpdateStatusBar: () => void;
     private lastRenderedStatusText = '';
 
-    // 防抖写入待保存文件列表，避免高频击键时的磁盘 I/O 冲突
     debouncedSaveDirtyFiles = debounce(async () => {
         const adapter = this.app.vault.adapter;
         const path = normalizePath(`${this.settings.versionFolder}/dirty-files.json`);
@@ -691,7 +689,6 @@ export default class VersionControlPlugin extends Plugin {
                     if (!this.isExcluded(file.path)) {
                         const previousSize = this.dirtyFiles.size;
                         this.dirtyFiles.add(file.path);
-                        // 仅当列表长度真正发生变化时（首次标记），才安排异步写盘，减少高频重复写盘
                         if (this.dirtyFiles.size !== previousSize) {
                             this.saveDirtyFiles();
                         }
@@ -1290,7 +1287,6 @@ export default class VersionControlPlugin extends Plugin {
 
         if (oldText === newText) return 0;
 
-        // 性能安全阀：大文件不作复杂的Myers同步计算，直接回退为长度估算
         if (oldText.length > 200000 || newText.length > 200000) {
             return lengthDiff || 1; 
         }
@@ -1403,9 +1399,9 @@ export default class VersionControlPlugin extends Plugin {
                     try {
                         await this.yieldToMain(); 
                         const reversePatch = this.createDiff(content, prevContent);
-                        await this.yieldToMain(); // 让渡主线程，防止阻塞当前帧
+                        await this.yieldToMain(); 
                         const testApply = Diff.applyPatch(content, reversePatch);
-                        await this.yieldToMain(); // 再次让渡主线程
+                        await this.yieldToMain(); 
                         if (testApply !== false && this.normalizeText(testApply) === prevContent) {
                             prevVersion.diff = reversePatch;
                             prevVersion.baseVersionId = id; 
@@ -4054,14 +4050,6 @@ class DiffModal extends Modal {
             menu.addItem(item => item.setTitle('统一视图').setIcon('align-justify').setChecked(isUnified).onClick(() => { modeSelect.value = 'unified'; modeSelect.dispatchEvent(new Event('change')); }));
             menu.addItem(item => item.setTitle('左右分栏').setIcon('columns').setChecked(!isUnified).onClick(() => { modeSelect.value = 'split'; modeSelect.dispatchEvent(new Event('change')); }));
             
-            if (isUnified) {
-                menu.addItem(item => item.setTitle('紧凑型统一视图').setIcon('shrink').setChecked(this.plugin.settings.compactUnifiedDiff).onClick(async () => {
-                    this.plugin.settings.compactUnifiedDiff = !this.plugin.settings.compactUnifiedDiff;
-                    await this.plugin.saveSettings();
-                    this.renderTextDiff();
-                }));
-            }
-
             menu.addSeparator();
 
             if (isLineBased) {
@@ -4119,52 +4107,6 @@ class DiffModal extends Modal {
         this.scope.register([], 'ArrowDown', () => { if (!nextBtn.disabled) nextBtn.click(); return false; });
 
         await this.updateDiffView();
-    }
-
-    compactDiffChanges(rawDiff: Diff.Change[]): Diff.Change[] {
-        const result: Diff.Change[] = [];
-        let i = 0;
-        while (i < rawDiff.length) {
-            let part = rawDiff[i]!;
-            if (part.added || part.removed) {
-                let leftValue = ''; let rightValue = '';
-                let leftCount = 0; let rightCount = 0;
-                let j = i;
-                while (j < rawDiff.length) {
-                    const p = rawDiff[j]!;
-                    if (p.added) { rightValue += p.value; rightCount += p.count || 0; j++; } 
-                    else if (p.removed) { leftValue += p.value; leftCount += p.count || 0; j++; } 
-                    else {
-                        let nextChangeIdx = -1;
-                        for (let k = j + 1; k < rawDiff.length; k++) {
-                            if (rawDiff[k]!.added || rawDiff[k]!.removed) { nextChangeIdx = k; break; }
-                        }
-                        let canMerge = false;
-                        if (nextChangeIdx !== -1) {
-                            let purelyMergeable = true;
-                            for (let k = j; k < nextChangeIdx; k++) {
-                                const ctx = rawDiff[k]!;
-                                const isWhitespace = ctx.value.trim() === '';
-                                const isShort = ctx.count !== undefined && ctx.count <= 2;
-                                if (!isWhitespace && !isShort) { purelyMergeable = false; break; }
-                            }
-                            canMerge = purelyMergeable;
-                        }
-                        if (canMerge) {
-                            leftValue += p.value; leftCount += p.count || 0;
-                            rightValue += p.value; rightCount += p.count || 0;
-                            j++;
-                        } else { break; }
-                    }
-                }
-                if (leftCount > 0) result.push({ removed: true, added: false, value: leftValue, count: leftCount });
-                if (rightCount > 0) result.push({ added: true, removed: false, value: rightValue, count: rightCount });
-                i = j;
-            } else {
-                result.push(part); i++;
-            }
-        }
-        return result;
     }
 
     updateGranularity(granularity: 'char' | 'word' | 'line') {
@@ -4359,7 +4301,6 @@ class DiffModal extends Modal {
         
         const safeLeft = leftProcessed + '\n';
         const safeRight = rightProcessed + '\n';
-        const useCompactView = this.plugin.settings.compactUnifiedDiff;
         
         this.loadingOverlay.style.display = 'flex';
         const msgEl = this.loadingOverlay.querySelector('.diff-loading-message') as HTMLElement;
@@ -4381,9 +4322,7 @@ class DiffModal extends Modal {
         
         if (requestId !== this.currentDiffRequestId) return;
 
-        const rawDiff = (this.currentGranularity === 'line' && useCompactView) 
-            ? this.compactDiffChanges(rawDiffResult) 
-            : rawDiffResult;
+        const rawDiff = rawDiffResult;
             
         this.loadingOverlay.style.display = 'none';
 
@@ -4515,32 +4454,13 @@ class DiffModal extends Modal {
         if (!container) return;
         container.empty();
 
-        const useCompact = this.plugin.settings.compactUnifiedDiff; 
         let addedLines = 0;
         let removedLines = 0;
-        let modifiedLines = 0; 
 
         for (let i = 0; i < diffResult.length; i++) {
             const part = diffResult[i]!;
-            const nextPart = diffResult[i + 1];
-            const isRemoveAdd = part.removed && nextPart?.added;
-            const isAddRemove = part.added && nextPart?.removed;
-
-            if (useCompact && (isRemoveAdd || isAddRemove)) {
-                 const removedPart = isRemoveAdd ? part : nextPart!;
-                 const addedPart = isRemoveAdd ? nextPart! : part;
-                 const leftLines = removedPart.value.replace(/\n$/, '').split('\n');
-                 const rightLines = addedPart.value.replace(/\n$/, '').split('\n');
-                 const stats = this.plugin.calculateCompactBlockStats(leftLines, rightLines);
-                 
-                 modifiedLines += stats.mods;
-                 removedLines += stats.rems; 
-                 addedLines += stats.adds;   
-                 i++; 
-            } else {
-                if (part.added) addedLines += part.count || 0;
-                else if (part.removed) removedLines += part.count || 0;
-            }
+            if (part.added) addedLines += part.count || 0;
+            else if (part.removed) removedLines += part.count || 0;
         }
         
         const leftLinesCount = this.leftContent.split('\n').length;
@@ -4570,10 +4490,6 @@ class DiffModal extends Modal {
             attr: { style: 'margin-left: 8px;', title: "版本 A: " + leftCharCountNum.toLocaleString() + " 字符\n版本 B: " + rightCharCountNum.toLocaleString() + " 字符" }
         });
         
-        if (modifiedLines > 0) {
-            const modSpan = container.createEl('span', { text: "~" + modifiedLines + " (修)", cls: 'diff-info-changed' });
-            modSpan.style.color = 'var(--text-accent)'; 
-        }
         container.createEl('span', { text: "+" + addedLines, cls: 'diff-info-added' });
         container.createEl('span', { text: "-" + removedLines, cls: 'diff-info-removed' });
 
@@ -4583,7 +4499,6 @@ class DiffModal extends Modal {
 
     async renderUnifiedDiff(container: HTMLElement, rawDiff: any[]) {
         const renderTasks: ((frag: DocumentFragment) => void)[] = [];
-        const useCompactView = this.plugin.settings.compactUnifiedDiff;
 
         if (this.currentGranularity === 'char' || this.currentGranularity === 'word') {
             let diffIdx = 0;
@@ -4748,7 +4663,6 @@ class DiffModal extends Modal {
     async renderSplitViewAdvancedAsync(leftPanel: HTMLElement, rightPanel: HTMLElement, rawDiff: any[]) {
         const renderTasksLeft: ((frag: DocumentFragment) => void)[] = [];
         const renderTasksRight: ((frag: DocumentFragment) => void)[] = [];
-        const useCompactView = this.plugin.settings.compactUnifiedDiff;
 
         if (this.currentGranularity === 'char' || this.currentGranularity === 'word') {
             let diffIdx = 0;
@@ -4949,7 +4863,7 @@ class DiffModal extends Modal {
     }
 
     private setupScrollSync(leftPanel: HTMLElement, rightPanel: HTMLElement) {
-        let activeScrollSource: HTMLElement | null = null;
+let activeScrollSource: HTMLElement | null = null;
         const onScrollLeft = () => {
             if (activeScrollSource === null) {
                 activeScrollSource = leftPanel;
@@ -5084,8 +4998,8 @@ class VersionControlSettingTab extends PluginSettingTab {
                 }));
 
         new Setting(basicSec)
-            .setName('版本存储路径')
-            .setDesc('指定版本数据的存储位置(相对于库根目录)')
+            .setName('版本文件夹路径')
+            .setDesc('所有版本的存储文件夹路径，需要以英文句号或者名称直接开始（默认为 .versions）')
             .addText(text => text
                 .setPlaceholder('.versions')
                 .setValue(this.plugin.settings.versionFolder)

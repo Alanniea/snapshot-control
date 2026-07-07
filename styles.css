@@ -92,7 +92,6 @@
     padding: 12px;
 }
 
-/* 胶囊式原生导航栏 */
 .vc-tab-bar { 
     flex-shrink: 0; 
     display: flex; 
@@ -187,7 +186,6 @@
 .vc-global-refresh.is-spinning svg { animation: vc-spin 1s linear infinite; color: var(--text-accent); }
 @keyframes vc-spin { 100% { transform: rotate(360deg); } }
 
-/* 头部搜索和工具区 */
 .version-header { 
     position: sticky; 
     top: 0; 
@@ -234,7 +232,6 @@
 .version-header-actions button.mod-cta { background: var(--interactive-accent); color: var(--text-on-accent); border-color: var(--interactive-accent); }
 .version-header-actions button.mod-cta:hover { background: var(--interactive-accent-hover); }
 
-/* 折叠日期分组 */
 .version-group-header { 
     font-size: 12px; 
     font-weight: 600; 
@@ -265,7 +262,6 @@
 .version-toolbar button.mod-warning { background: rgba(248, 81, 73, 0.12); color: var(--text-danger); border-color: var(--background-modifier-border); }
 .version-list { display: flex; flex-direction: column; gap: 8px; }
 
-/* 雅致化卡片设计 */
 .version-item { 
     display: flex; 
     flex-direction: column; 
@@ -299,7 +295,6 @@
 .version-history-view.is-compact .version-note { display: none; }
 .version-history-view.is-compact .version-actions button { padding: 3px 6px; font-size: 11px; }
 
-/* 低饱和度标签色调 */
 .version-tag { display: inline-block; padding: 1px 6px; font-size: 10px; border-radius: var(--radius-s); font-weight: 500; }
 .version-tag-auto { background: rgba(0, 122, 255, 0.08); color: var(--text-accent); }
 .version-tag-manual { background: var(--background-modifier-hover); color: var(--text-muted); }
@@ -323,7 +318,6 @@
 .diff-stats-text-added { color: var(--text-success); font-weight: 500; }
 .diff-stats-text-removed { color: var(--text-danger); font-weight: 500; }
 
-/* 窄栏友好的动作区 */
 .version-actions { 
     display: flex; 
     gap: 4px; 
@@ -823,7 +817,6 @@ button.mod-warning:hover {
     background-color: var(--text-danger-hover); 
 }
 
-/* 手风琴组件统一样式 */
 details.vc-setting-accordion {
     border: 1px solid var(--background-modifier-border);
     border-radius: var(--radius-m);
