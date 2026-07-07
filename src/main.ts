@@ -3223,7 +3223,10 @@ class VersionHistoryView extends ItemView {
         history.forEach(({ version, filePath, file }) => {
             const primaryTime = isModifiedMode ? (file ? file.stat.mtime : version.timestamp) : version.timestamp;
             const secondaryTime = isModifiedMode ? version.timestamp : (file ? file.stat.mtime : null);
-            const secondaryLabel = isModifiedMode ? '保存时间' : '修改时间';
+            
+            // 提取保存动作对应的标签文本，在按修改时间排序时，直接作为底部的二级标签
+            const saveTypeLabel = this.plugin.getSaveTypeLabel(version.message);
+            const secondaryLabel = isModifiedMode ? saveTypeLabel : '修改时间';
 
             const dateObj = new Date(primaryTime);
             const dateStr = dateObj.toLocaleDateString();
@@ -3279,12 +3282,15 @@ class VersionHistoryView extends ItemView {
             }
 
             const msgRow = info.createEl('div', { cls: 'version-message-row' });
-            const saveTypeLabel = this.plugin.getSaveTypeLabel(version.message);
             let tagClass = 'version-tag-auto';
             if (saveTypeLabel === '手动保存') tagClass = 'version-tag-manual';
             else if (saveTypeLabel === '全库版本') tagClass = 'version-tag-snapshot';
             else if (saveTypeLabel === '恢复前备份') tagClass = 'version-tag-backup';
-            msgRow.createEl('span', { text: saveTypeLabel, cls: "version-tag " + tagClass });
+            
+            // 仅在按保存时间排序时，在卡片头部显示保存类型的独立标签。避免修改时间模式下的标签重复。
+            if (!isModifiedMode) {
+                msgRow.createEl('span', { text: saveTypeLabel, cls: "version-tag " + tagClass });
+            }
 
             if (version.diff) msgRow.createEl('span', { text: '增量', cls: 'version-tag version-tag-incremental' });
             else if (version.content) msgRow.createEl('span', { text: '完整', cls: 'version-tag version-tag-full' });
@@ -5361,10 +5367,75 @@ class VersionControlSettingTab extends PluginSettingTab {
             .addToggle(toggle => toggle
                 .setValue(this.plugin.settings.useRelativeTime)
                 .onChange(async (value) => {
-                    this.plugin.settings.useRelativeTime = value;
+                        this.plugin.settings.useRelativeTime = value;
+                        await this.plugin.saveSettings();
+                        this.plugin.refreshVersionHistoryView();
+                    }));
+
+        diffSec.createEl('h3', { text: '差异对比设置' });
+        new Setting(diffSec)
+            .setName('默认差异粒度')
+            .setDesc('选择差异对比的默认精细程度')
+            .addDropdown(dropdown => dropdown
+                .addOption('char', '字符级')
+                .addOption('word', '单词级')
+                .addOption('line', '行级')
+                .setValue(this.plugin.settings.diffGranularity)
+                .onChange(async (value: 'char' | 'word' | 'line') => {
+                    this.plugin.settings.diffGranularity = value;
                     await this.plugin.saveSettings();
-                    this.plugin.refreshVersionHistoryView();
                 }));
+
+        new Setting(diffSec)
+            .setName('默认视图模式')
+            .setDesc('选择差异对比的默认显示方式')
+            .addDropdown(dropdown => dropdown
+                .addOption('unified', '统一视图')
+                .addOption('split', '左右分栏')
+                .setValue(this.plugin.settings.diffViewMode)
+                .onChange(async (value: 'unified' | 'split') => {
+                    this.plugin.settings.diffViewMode = value;
+                    await this.plugin.saveSettings();
+                }));
+        
+        new Setting(diffSec)
+            .setName('差异上下文行数')
+            .setDesc('差异对比时，在变更内容周围显示的上下文行数 (0=仅变更, 9999=显示全部)。')
+            .addText(text => text
+                .setPlaceholder('3')
+                .setValue(String(this.plugin.settings.diffContextLines))
+                .onChange(async (value) => {
+                    const num = parseInt(value);
+                    if (!isNaN(num) && num >= 0) {
+                        this.plugin.settings.diffContextLines = num;
+                        await this.plugin.saveSettings();
+                    }
+                }));
+
+        new Setting(diffSec)
+            .setName('行内差异算法')
+            .setDesc('当使用“行级”对比时，指定行内高亮的算法。')
+            .addDropdown(dropdown => dropdown
+                .addOption('word', '按单词（推荐）')
+                .addOption('char', '按字符（更精确）')
+                .addOption('line', '按行')
+                .setValue(this.plugin.settings.inlineDiffAlgorithm)
+                .onChange(async (value: 'word' | 'char' | 'line') => {
+                    this.plugin.settings.inlineDiffAlgorithm = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        diffSec.createEl('h3', { text: '版本标签与备注' });
+        new Setting(diffSec)
+            .setName('启用版本标签')
+            .setDesc('为版本添加标签以便分类和筛选')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.enableVersionTags)
+                .onChange(async (value) => {
+                        this.plugin.settings.useRelativeTime = value;
+                        await this.plugin.saveSettings();
+                        this.plugin.refreshVersionHistoryView();
+                    }));
 
         diffSec.createEl('h3', { text: '差异对比设置' });
         new Setting(diffSec)
@@ -5516,17 +5587,7 @@ class VersionControlSettingTab extends PluginSettingTab {
         ul1.createEl('li', { text: '快速预览 - 无需完整对比即可查看版本内容' });
         ul1.createEl('li', { text: '版本备注 - 为版本添加详细说明' });
         ul1.createEl('li', { text: '星标标记 - 标记重要版本便于查找' });
-        ul1.createEl('li', { text: '高级筛选 - 按标签、星标筛选版本' });
-        ul1.createEl('li', { text: '增强差异对比 - 智能行内高亮、智能折叠' });
-        
-        const feature2 = infoEl.createEl('div', { cls: 'feature-item' });
-        feature2.createEl('strong', { text: '💡 使用技巧:' });
-        const ul2 = feature2.createEl('ul');
-        ul2.createEl('li', { text: '右键点击版本可查看更多操作选项' });
-        ul2.createEl('li', { text: '点击标签可快速筛选相关版本' });
-        ul2.createEl('li', { text: '使用星标标记重要的里程碑版本' });
-        ul2.createEl('li', { text: '定期运行"优化存储"以保持最佳性能' });
-        ul2.createEl('li', { text: '增量存储和压缩可节省大部分空间' });
+        ul1.createEl('li', { text: '存储优化 - 压缩与逆向差分双引擎驱动' });
     }
 
     async clearAllVersions() {
@@ -5608,7 +5669,7 @@ class IntegrityReportModal extends Modal {
 }
 
 // =======================================================================
-// ======================= 上下文行数输入模态框 ==========================
+// =========================== 上下文行数输入模态框 =======================
 // =======================================================================
 class ContextLineInputModal extends Modal {
     currentLines: number;
