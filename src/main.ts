@@ -1,24 +1,5 @@
 
-import { 
-    App, 
-    Plugin, 
-    PluginSettingTab, 
-    Setting, 
-    TFile, 
-    Notice, 
-    Modal, 
-    ItemView, 
-    WorkspaceLeaf, 
-    Menu, 
-    MarkdownRenderer, 
-    Platform, 
-    TFolder, 
-    setIcon, 
-    moment, 
-    normalizePath, 
-    debounce, 
-    DataAdapter 
-} from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, Modal, ItemView, WorkspaceLeaf, Menu, MarkdownRenderer, Platform, TFolder, setIcon, moment, normalizePath, debounce, DataAdapter, TAbstractFile } from 'obsidian';
 import * as Diff from 'diff';
 
 // --- 工具函数：安全地提取错误信息 ---
@@ -30,15 +11,8 @@ export function getErrorMessage(error: unknown): string {
 }
 
 // --- 差异渲染的类型定义 ---
-interface InlineChange {
-    value: string;
-    added?: boolean;
-    removed?: boolean;
-}
-
 type ProcessedDiff = {
     type: 'context' | 'added' | 'removed' | 'modified';
-    inlineDuffs?: InlineChange[][];
 } & Diff.Change;
 
 // --- LRU 缓存：元数据高速缓存器 (O(k) 前缀清除优化版) ---
@@ -61,7 +35,7 @@ class LRUCache<K, V> {
         return val;
     }
 
-    set(key: K, val: V): void {
+    set(key: K, val: V) {
         if (this.cache.has(key)) {
             this.cache.delete(key);
         } else if (this.cache.size >= this.max) {
@@ -80,12 +54,12 @@ class LRUCache<K, V> {
         return this.cache.delete(key);
     }
 
-    clear(): void {
+    clear() {
         this.cache.clear();
         this.prefixGroups.clear();
     }
 
-    private addToTracking(key: K): void {
+    private addToTracking(key: K) {
         if (typeof key === 'string' && key.includes('::')) {
             const prefix = key.split('::')[0]!;
             if (!this.prefixGroups.has(prefix)) {
@@ -95,7 +69,7 @@ class LRUCache<K, V> {
         }
     }
 
-    private deleteFromTracking(key: K): void {
+    private deleteFromTracking(key: K) {
         if (typeof key === 'string' && key.includes('::')) {
             const prefix = key.split('::')[0]!;
             const group = this.prefixGroups.get(prefix);
@@ -108,7 +82,7 @@ class LRUCache<K, V> {
         }
     }
 
-    deletePrefix(prefix: string): void {
+    deletePrefix(prefix: string) {
         const cleanPrefix = prefix.endsWith('::') ? prefix.slice(0, -2) : prefix;
         const group = this.prefixGroups.get(cleanPrefix);
         if (group) {
@@ -192,6 +166,7 @@ interface VersionControlSettings {
     showLastSaveTimeInStatusBar: boolean;
     inlineDiffAlgorithm: 'word' | 'char' | 'line';
     diffContextLines: number;
+    compactUnifiedDiff: boolean; 
     deleteHistoryOnDelete: boolean; 
     compactHistoryView: boolean; 
     globalHistoryTimeMode: 'modified' | 'saved'; 
@@ -228,6 +203,7 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
     showLastSaveTimeInStatusBar: true,
     inlineDiffAlgorithm: 'word',
     diffContextLines: 3,
+    compactUnifiedDiff: false, 
     deleteHistoryOnDelete: false, 
     compactHistoryView: false, 
     globalHistoryTimeMode: 'modified', 
@@ -247,224 +223,45 @@ class PersistentDiffWorker {
 
     private initWorker() {
         const workerCode = `
-            class StringInterner {
-                constructor() {
-                    this.map = new Map();
-                    this.idCounter = 1;
-                }
-                intern(str) {
-                    let id = this.map.get(str);
-                    if (id === undefined) {
-                        id = this.idCounter++;
-                        this.map.set(str, id);
-                    }
-                    return id;
-                }
-            }
-
-            function tokenizeWords(str) {
-                return str.split(/([ \\t\\n\\r]+|[，。！？；：、()（）""'']+)/).filter(Boolean);
-            }
-
-            function tokenizeChars(str) {
-                return Array.from(str);
-            }
-
-            // ...（保留原Worker核心算法以维持对比功能稳定，移除在主线程没用到的 compact 标志依赖）...
-            function myersDiffInt(aIds, bIds, aTokens, bTokens) {
-                const N = aIds.length;
-                const M = bIds.length;
-                if (N === 0) return bTokens.map(val => ({ value: val, added: true, removed: false }));
-                if (M === 0) return aTokens.map(val => ({ value: val, added: false, removed: true }));
-
-                const MAX = N + M;
-                const V = new Int32Array(2 * MAX + 1);
-                const V_offset = MAX;
-                const trace = [];
-                V[V_offset + 1] = 0;
-
-                let found = false;
-                for (let d = 0; d <= MAX; d++) {
-                    trace.push(new Int32Array(V));
-                    for (let k = -d; k <= d; k += 2) {
-                        const idx = V_offset + k;
-                        let down = (k === -d || (k !== d && V[idx - 1] < V[idx + 1]));
-                        let prev_x = down ? V[idx + 1] : V[idx - 1];
-                        let x = down ? prev_x : prev_x + 1;
-                        let y = x - k;
-
-                        while (x < N && y < M && aIds[x] === bIds[y]) {
-                            x++; y++;
-                        }
-                        V[idx] = x;
-                        if (x >= N && y >= M) {
-                            found = true;
-                            break;
-                        }
-                    }
-                    if (found) break;
-                }
-
-                let curr_x = N;
-                let curr_y = M;
-                const result = [];
-                for (let d = trace.length - 1; d >= 0; d--) {
-                    const V_d = trace[d];
-                    const k = curr_x - curr_y;
-                    const idx = V_offset + k;
-                    
-                    let down = (k === -d || (k !== d && V_d[idx - 1] < V_d[idx + 1]));
-                    const prev_k = down ? k + 1 : k - 1;
-                    
-                    const prev_x = V_d[V_offset + prev_k];
-                    const prev_y = prev_x - prev_k;
-
-                    while (curr_x > prev_x && curr_y > prev_y) {
-                        result.unshift({ value: bTokens[curr_y - 1], added: false, removed: false });
-                        curr_x--;
-                        curr_y--;
-                    }
-
-                    if (d > 0) {
-                        if (down) {
-                            result.unshift({ value: bTokens[curr_y - 1], added: true, removed: false });
-                            curr_y--;
-                        } else {
-                            result.unshift({ value: aTokens[curr_x - 1], added: false, removed: true });
-                            curr_x--;
-                        }
-                    }
-                }
-                return result;
-            }
-
-            function patienceAlign(aLines, bLines) {
-                const countUnique = (lines) => {
-                    const counts = new Map();
-                    lines.forEach((line, index) => {
-                        const count = counts.get(line) || { count: 0, index };
-                        count.count++;
-                        counts.set(line, count);
-                    });
-                    return counts;
-                };
-
-                const aCounts = countUnique(aLines);
-                const bCounts = countUnique(bLines);
-                const matchingLines = [];
-
-                aLines.forEach((line, aIdx) => {
-                    const aInfo = aCounts.get(line);
-                    const bInfo = bCounts.get(line);
-                    if (aInfo && aInfo.count === 1 && bInfo && bInfo.count === 1) {
-                        matchingLines.push({ line, aIdx, bIdx: bInfo.index });
-                    }
-                });
-
-                matchingLines.sort((x, y) => x.aIdx - y.aIdx);
-                
-                const lis = [];
-                const parent = [];
-                for (let i = 0; i < matchingLines.length; i++) {
-                    let low = 1, high = lis.length;
-                    while (low <= high) {
-                        let mid = Math.ceil((low + high) / 2);
-                        if (matchingLines[lis[mid - 1]].bIdx < matchingLines[i].bIdx) {
-                            low = mid + 1;
-                        } else {
-                            high = mid - 1;
-                        }
-                    }
-                    const idx = low - 1;
-                    lis[idx] = i;
-                    parent[i] = idx > 0 ? lis[idx - 1] : -1;
-                }
-
-                if (lis.length === 0) return [];
-                
-                const aligned = [];
-                let curr = lis[lis.length - 1];
-                while (curr !== -1 && curr !== undefined) {
-                    aligned.unshift(matchingLines[curr]);
-                    curr = parent[curr];
-                }
-                return aligned;
-            }
-
-            function solveGaps(aLines, bLines, aIds, bIds) {
-                const aligned = patienceAlign(aLines, bLines);
-                if (aligned.length === 0) {
-                    return myersDiffInt(aIds, bIds, aLines, bLines);
-                }
-
-                let result = [];
-                let lastA = 0;
-                let lastB = 0;
-
-                for (const match of aligned) {
-                    if (match.aIdx > lastA || match.bIdx > lastB) {
-                        const subA = aLines.slice(lastA, match.aIdx);
-                        const subB = bLines.slice(lastB, match.bIdx);
-                        const subAIds = aIds.slice(lastA, match.aIdx);
-                        const subBIds = bIds.slice(lastB, match.bIdx);
-                        result = result.concat(myersDiffInt(subAIds, subBIds, subA, subB));
-                    }
-                    result.push({ value: match.line, added: false, removed: false });
-                    lastA = match.aIdx + 1;
-                    lastB = match.bIdx + 1;
-                }
-
-                if (lastA < aLines.length || lastB < bLines.length) {
-                    const subA = aLines.slice(lastA);
-                    const subB = bLines.slice(lastB);
-                    const subAIds = aIds.slice(lastA);
-                    const subBIds = bIds.slice(lastB);
-                    result = result.concat(myersDiffInt(subAIds, subBIds, subA, subB));
-                }
-
-                return result;
-            }
-
-            function runInlineWordDiff(leftLine, rightLine, algorithm) {
-                const interner = new StringInterner();
-                const tokenize = algorithm === 'char' ? tokenizeChars : tokenizeWords;
-                const t1 = tokenize(leftLine);
-                const t2 = tokenize(rightLine);
-                const t1Ids = t1.map(t => interner.intern(t));
-                const t2Ids = t2.map(t => interner.intern(t));
-                return myersDiffInt(t1Ids, t2Ids, t1, t2);
-            }
-
             self.onmessage = function(e) {
-                const { id, left, right, granularity, ignoreWhitespace, inlineAlgorithm } = e.data;
+                const { id, left, right, granularity, ignoreWhitespace } = e.data;
                 try {
-                    const interner = new StringInterner();
-                    
                     const tokenize = (str) => {
-                        if (granularity === 'char') return tokenizeChars(str);
-                        if (granularity === 'word') return tokenizeWords(str);
-                        const lines = [];
-                        let last = 0;
-                        for (let i = 0; i < str.length; i++) {
-                            if (str[i] === '\\n') {
-                                lines.push(str.substring(last, i + 1));
-                                last = i + 1;
+                        if (granularity === 'char') {
+                            return Array.from(str);
+                        } else if (granularity === 'word') {
+                            return str.split(/([ \\t\\n\\r]+|[，。！？；：、()（）""'']+)/).filter(Boolean);
+                        } else {
+                            const lines = [];
+                            let last = 0;
+                            for (let i = 0; i < str.length; i++) {
+                                if (str[i] === '\\n') {
+                                    lines.push(str.substring(last, i + 1));
+                                    last = i + 1;
+                                }
                             }
+                            if (last < str.length) {
+                                lines.push(str.substring(last));
+                            }
+                            return lines;
                         }
-                        if (last < str.length) lines.push(str.substring(last));
-                        return lines;
                     };
 
                     const tokens1 = tokenize(left);
                     const tokens2 = tokenize(right);
 
+                    // 1. 首尾部无差异文本快速裁剪 (Prefix/Suffix Stripping)
                     let prefixCount = 0;
                     const maxPrefix = Math.min(tokens1.length, tokens2.length);
                     while (prefixCount < maxPrefix) {
                         const t1 = tokens1[prefixCount];
                         const t2 = tokens2[prefixCount];
                         const match = ignoreWhitespace ? t1.trim() === t2.trim() : t1 === t2;
-                        if (match) prefixCount++; else break;
+                        if (match) {
+                            prefixCount++;
+                        } else {
+                            break;
+                        }
                     }
 
                     let suffixCount = 0;
@@ -473,27 +270,98 @@ class PersistentDiffWorker {
                         const t1 = tokens1[tokens1.length - 1 - suffixCount];
                         const t2 = tokens2[tokens2.length - 1 - suffixCount];
                         const match = ignoreWhitespace ? t1.trim() === t2.trim() : t1 === t2;
-                        if (match) suffixCount++; else break;
+                        if (match) {
+                            suffixCount++;
+                        } else {
+                            break;
+                        }
                     }
 
                     const mid1 = tokens1.slice(prefixCount, tokens1.length - suffixCount);
                     const mid2 = tokens2.slice(prefixCount, tokens2.length - suffixCount);
 
                     let midResult = [];
+
+                    // 2. 仅对发生变化的中段部分采用 Myers 差分算法计算
                     if (mid1.length > 0 || mid2.length > 0) {
-                        if (mid1.length + mid2.length > 20000) {
-                            midResult = [
-                                ...mid1.map(val => ({ value: val, added: false, removed: true })),
-                                ...mid2.map(val => ({ value: val, added: true, removed: false }))
-                            ];
+                        const N = mid1.length;
+                        const M = mid2.length;
+                        
+                        if (N === 0) {
+                            midResult = mid2.map(val => ({ value: val, added: true, removed: false }));
+                        } else if (M === 0) {
+                            midResult = mid1.map(val => ({ value: val, added: false, removed: true }));
                         } else {
-                            const mid1Ids = mid1.map(t => interner.intern(ignoreWhitespace ? t.trim() : t));
-                            const mid2Ids = mid2.map(t => interner.intern(ignoreWhitespace ? t.trim() : t));
-                            
-                            if (granularity === 'line') {
-                                midResult = solveGaps(mid1, mid2, mid1Ids, mid2Ids);
+                            const MAX = N + M;
+                            if (MAX > 15000) {
+                                midResult = [
+                                    ...mid1.map(val => ({ value: val, added: false, removed: true })),
+                                    ...mid2.map(val => ({ value: val, added: true, removed: false }))
+                                ];
                             } else {
-                                midResult = myersDiffInt(mid1Ids, mid2Ids, mid1, mid2);
+                                const V = new Int32Array(2 * MAX + 1);
+                                const V_offset = MAX;
+                                const trace = [];
+                                V[V_offset + 1] = 0;
+
+                                let found = false;
+                                for (let d = 0; d <= MAX; d++) {
+                                    trace.push(new Int32Array(V));
+                                    for (let k = -d; k <= d; k += 2) {
+                                        const idx = V_offset + k;
+                                        let down = (k === -d || (k !== d && V[idx - 1] < V[idx + 1]));
+                                        let prev_x = down ? V[idx + 1] : V[idx - 1];
+                                        let x = down ? prev_x : prev_x + 1;
+                                        let y = x - k;
+
+                                        while (x < N && y < M) {
+                                            const match = ignoreWhitespace 
+                                                ? mid1[x].trim() === mid2[y].trim() 
+                                                : mid1[x] === mid2[y];
+                                            if (match) {
+                                                x++; y++;
+                                            } else {
+                                                break;
+                                            }
+                                        }
+                                        V[idx] = x;
+                                        if (x >= N && y >= M) {
+                                            found = true;
+                                            break;
+                                        }
+                                    }
+                                    if (found) break;
+                                }
+
+                                let curr_x = N;
+                                let curr_y = M;
+                                for (let d = trace.length - 1; d >= 0; d--) {
+                                    const V_d = trace[d];
+                                    const k = curr_x - curr_y;
+                                    const idx = V_offset + k;
+                                    
+                                    let down = (k === -d || (k !== d && V_d[idx - 1] < V_d[idx + 1]));
+                                    const prev_k = down ? k + 1 : k - 1;
+                                    
+                                    const prev_x = V_d[V_offset + prev_k];
+                                    const prev_y = prev_x - prev_k;
+
+                                    while (curr_x > prev_x && curr_y > prev_y) {
+                                        midResult.unshift({ value: mid2[curr_y - 1], added: false, removed: false });
+                                        curr_x--;
+                                        curr_y--;
+                                    }
+
+                                    if (d > 0) {
+                                        if (down) {
+                                            midResult.unshift({ value: mid2[curr_y - 1], added: true, removed: false });
+                                            curr_y--;
+                                        } else {
+                                            midResult.unshift({ value: mid1[curr_x - 1], added: false, removed: true });
+                                            curr_x--;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -516,27 +384,6 @@ class PersistentDiffWorker {
                             lastPart.value += part.value;
                         } else {
                             merged.push({ value: part.value, added: part.added, removed: part.removed });
-                        }
-                    }
-
-                    if (granularity === 'line' && inlineAlgorithm && inlineAlgorithm !== 'line') {
-                        for (let i = 0; i < merged.length; i++) {
-                            const current = merged[i];
-                            const next = merged[i + 1];
-                            if (current && current.removed && next && next.added) {
-                                const leftLines = current.value.replace(/\\n$/, '').split('\\n');
-                                const rightLines = next.value.replace(/\\n$/, '').split('\\n');
-                                
-                                if (leftLines.length === rightLines.length) {
-                                    current.inlineDuffs = [];
-                                    next.inlineDuffs = [];
-                                    for (let j = 0; j < leftLines.length; j++) {
-                                        const inlineResult = runInlineWordDiff(leftLines[j], rightLines[j], inlineAlgorithm);
-                                        current.inlineDuffs.push(inlineResult);
-                                        next.inlineDuffs.push(inlineResult);
-                                    }
-                                }
-                            }
                         }
                     }
 
@@ -568,26 +415,20 @@ class PersistentDiffWorker {
         };
     }
 
-    runDiff(
-        left: string, 
-        right: string, 
-        granularity: 'char' | 'word' | 'line', 
-        ignoreWhitespace: boolean,
-        inlineAlgorithm?: 'word' | 'char' | 'line'
-    ): Promise<any[]> {
+    runDiff(left: string, right: string, granularity: 'char' | 'word' | 'line', ignoreWhitespace: boolean): Promise<Diff.Change[]> {
         return new Promise((resolve, reject) => {
             const id = this.messageId++;
             
             const timeoutId = window.setTimeout(() => {
                 this.activeRequests.delete(id);
-                console.warn('[VersionControl] Web Worker diff timed out. Falling back to main thread.');
+                console.warn('[VersionControl] Web Worker diff timed out. Falling back to main thread calculation.');
                 try {
                     const fallbackResult = Diff.diffLines(left, right, { ignoreWhitespace });
                     resolve(fallbackResult);
                 } catch (err) {
                     reject(new Error('Diff calculation failed both in worker and main thread.'));
                 }
-            }, 8000); 
+            }, 4000);
 
             this.activeRequests.set(id, { 
                 resolve: (res) => {
@@ -599,7 +440,7 @@ class PersistentDiffWorker {
                     reject(err);
                 } 
             });
-            this.worker?.postMessage({ id, left, right, granularity, ignoreWhitespace, inlineAlgorithm });
+            this.worker?.postMessage({ id, left, right, granularity, ignoreWhitespace });
         });
     }
 
@@ -637,14 +478,6 @@ export default class VersionControlPlugin extends Plugin {
     debouncedUpdateStatusBar: () => void;
     private lastRenderedStatusText = '';
 
-    debouncedSaveDirtyFiles = debounce(async () => {
-        const adapter = this.app.vault.adapter;
-        const path = normalizePath(`${this.settings.versionFolder}/dirty-files.json`);
-        try {
-            await adapter.write(path, JSON.stringify(Array.from(this.dirtyFiles)));
-        } catch {}
-    }, 2000, true);
-
     async onload() {
         this.isUnloaded = false;
         await this.loadSettings();
@@ -662,7 +495,7 @@ export default class VersionControlPlugin extends Plugin {
 
         if (this.settings.enableStatusBarDiff) {
             this.statusBarItem.addClass('version-control-statusbar-clickable');
-            this.registerDomEvent(this.statusBarItem, 'click', () => {
+            this.statusBarItem.addEventListener('click', () => {
                 this.quickDiffFromStatusBar();
             });
         }
@@ -687,11 +520,8 @@ export default class VersionControlPlugin extends Plugin {
 
                 if (file instanceof TFile) {
                     if (!this.isExcluded(file.path)) {
-                        const previousSize = this.dirtyFiles.size;
                         this.dirtyFiles.add(file.path);
-                        if (this.dirtyFiles.size !== previousSize) {
-                            this.saveDirtyFiles();
-                        }
+                        await this.saveDirtyFiles();
                     }
                     if (this.settings.autoSave && this.settings.autoSaveOnModify) {
                         this.handleFileModify(file);
@@ -733,7 +563,7 @@ export default class VersionControlPlugin extends Plugin {
                 leaves.forEach(leaf => { 
                     if (leaf.view instanceof VersionHistoryView) leaf.view.updateRelativeTimes(); 
                 });
-            }, 1000)
+            }, 1000) as unknown as number
         );
 
         setTimeout(() => {
@@ -764,7 +594,7 @@ export default class VersionControlPlugin extends Plugin {
         this.globalHistoryCache = null;
     }
 
-    async yieldToMain(): Promise<void> { 
+    async yieldToMain() { 
         return new Promise(resolve => setTimeout(resolve, 0)); 
     }
 
@@ -1100,7 +930,7 @@ export default class VersionControlPlugin extends Plugin {
                     if (this.dirtyFiles.has(oldPath)) {
                         this.dirtyFiles.delete(oldPath);
                         this.dirtyFiles.add(file.path);
-                        this.saveDirtyFiles();
+                        await this.saveDirtyFiles();
                     }
 
                     await this.updateGlobalIndexForRename(oldPath, file.path);
@@ -1131,7 +961,7 @@ export default class VersionControlPlugin extends Plugin {
                 
                 if (this.dirtyFiles.has(filePath)) {
                     this.dirtyFiles.delete(filePath);
-                    this.saveDirtyFiles();
+                    await this.saveDirtyFiles();
                 }
 
                 await this.clearGlobalIndexForFile(filePath);
@@ -1214,15 +1044,7 @@ export default class VersionControlPlugin extends Plugin {
     async activateVersionHistoryView() { 
         const { workspace } = this.app;
         let leaf = workspace.getLeavesOfType('version-history')[0];
-        if (!leaf) { 
-            const rightLeaf = workspace.getRightLeaf(false); 
-            if (!rightLeaf) { 
-                new Notice('无法打开版本历史视图'); 
-                return; 
-            } 
-            leaf = rightLeaf; 
-            await leaf.setViewState({ type: 'version-history', active: true, }); 
-        }
+        if (!leaf) { const rightLeaf = workspace.getRightLeaf(false); if (!rightLeaf) { new Notice('无法打开版本历史视图'); return; } leaf = rightLeaf; await leaf.setViewState({ type: 'version-history', active: true, }); }
         workspace.revealLeaf(leaf);
     }
 
@@ -1284,12 +1106,6 @@ export default class VersionControlPlugin extends Plugin {
         
         const lengthDiff = Math.abs(oldText.length - newText.length);
         if (lengthDiff >= this.settings.autoSaveMinChanges) return lengthDiff;
-
-        if (oldText === newText) return 0;
-
-        if (oldText.length > 200000 || newText.length > 200000) {
-            return lengthDiff || 1; 
-        }
 
         const changes = Diff.diffLines(oldText, newText); 
         let changeCount = 0;
@@ -1399,9 +1215,7 @@ export default class VersionControlPlugin extends Plugin {
                     try {
                         await this.yieldToMain(); 
                         const reversePatch = this.createDiff(content, prevContent);
-                        await this.yieldToMain(); 
                         const testApply = Diff.applyPatch(content, reversePatch);
-                        await this.yieldToMain(); 
                         if (testApply !== false && this.normalizeText(testApply) === prevContent) {
                             prevVersion.diff = reversePatch;
                             prevVersion.baseVersionId = id; 
@@ -1436,7 +1250,7 @@ export default class VersionControlPlugin extends Plugin {
             this.contentCache.set(`${file.path}::${newVersion.id}`, content);
 
             this.dirtyFiles.delete(file.path);
-            this.saveDirtyFiles();
+            await this.saveDirtyFiles();
 
             await this.updateGlobalIndex({
                 filePath: file.path,
@@ -1615,8 +1429,7 @@ export default class VersionControlPlugin extends Plugin {
                         const content = await adapter.read(path); 
                         JSON.parse(content); 
                         return content; 
-                    } 
-                    catch { throw e; }
+                    } catch { throw e; }
                 }
             } else {
                 try {
@@ -2012,8 +1825,12 @@ export default class VersionControlPlugin extends Plugin {
         this.clearGlobalCache();
     }
 
-    saveDirtyFiles(): void {
-        this.debouncedSaveDirtyFiles();
+    async saveDirtyFiles() {
+        const adapter = this.app.vault.adapter;
+        const path = normalizePath(`${this.settings.versionFolder}/dirty-files.json`);
+        try {
+            await adapter.write(path, JSON.stringify(Array.from(this.dirtyFiles)));
+        } catch {}
     }
 
     async loadDirtyFiles() {
@@ -2301,8 +2118,8 @@ class QuickPreviewModal extends Modal {
     private versionContent: string;
     private toggleButton: HTMLButtonElement;
 
-    constructor(app: App, plugin: VersionControlPlugin, file: TFile, versionId: string) {
-        super(app);
+    constructor(App: App, plugin: VersionControlPlugin, file: TFile, versionId: string) {
+        super(App);
         this.plugin = plugin;
         this.file = file;
         this.versionId = versionId;
@@ -2435,6 +2252,16 @@ class VersionHistoryView extends ItemView {
                 }
             })
         );
+        
+        this.registerEvent(
+            this.app.vault.on('rename', (file: TAbstractFile, oldPath: string) => {
+                if (this.currentViewMode === 'current' && this.currentFile && oldPath === this.currentFile.path) {
+                    if (file instanceof TFile) { this.currentFile = file; this.refresh(); }
+                } else {
+                    this.debouncedRefresh();
+                }
+            })
+        );
 
         this.registerEvent(
             this.app.vault.on('modify', (file) => {
@@ -2458,7 +2285,7 @@ class VersionHistoryView extends ItemView {
         );
 
         this.registerEvent(
-            this.app.vault.on('create', () => {
+            this.app.vault.on('create', (file) => {
                 this.debouncedRefresh();
             })
         );
@@ -2630,7 +2457,7 @@ class VersionHistoryView extends ItemView {
                 } else {
                     container.prepend(toolbar);
                 }
-                toolbar.createEl('span', { cls: 'batch-count-label' });
+                const label = toolbar.createEl('span', { cls: 'batch-count-label' });
                 const clearBtn = toolbar.createEl('button', { text: '清空选择' });
                 clearBtn.addEventListener('click', () => {
                     this.selectedVersions.clear();
@@ -2743,7 +2570,7 @@ class VersionHistoryView extends ItemView {
                 const itemEl = actionEl.closest('.version-item');
                 if (itemEl) {
                     if (isStarred) itemEl.classList.remove('version-starred');
-                    else itemEl.addClass('version-starred');
+                    else itemEl.classList.add('version-starred');
                 }
                 await this.plugin.toggleVersionStar(file.path, versionId);
             } else if (action === 'restore') {
@@ -3206,9 +3033,7 @@ class VersionHistoryView extends ItemView {
         history.forEach(({ version, filePath, file }) => {
             const primaryTime = isModifiedMode ? (file ? file.stat.mtime : version.timestamp) : version.timestamp;
             const secondaryTime = isModifiedMode ? version.timestamp : (file ? file.stat.mtime : null);
-            
-            const saveTypeLabel = this.plugin.getSaveTypeLabel(version.message);
-            const secondaryLabel = isModifiedMode ? saveTypeLabel : '修改时间';
+            const secondaryLabel = isModifiedMode ? '保存时间' : '修改时间';
 
             const dateObj = new Date(primaryTime);
             const dateStr = dateObj.toLocaleDateString();
@@ -3264,14 +3089,12 @@ class VersionHistoryView extends ItemView {
             }
 
             const msgRow = info.createEl('div', { cls: 'version-message-row' });
+            const saveTypeLabel = this.plugin.getSaveTypeLabel(version.message);
             let tagClass = 'version-tag-auto';
             if (saveTypeLabel === '手动保存') tagClass = 'version-tag-manual';
             else if (saveTypeLabel === '全库版本') tagClass = 'version-tag-snapshot';
             else if (saveTypeLabel === '恢复前备份') tagClass = 'version-tag-backup';
-            
-            if (!isModifiedMode) {
-                msgRow.createEl('span', { text: saveTypeLabel, cls: "version-tag " + tagClass });
-            }
+            msgRow.createEl('span', { text: saveTypeLabel, cls: "version-tag " + tagClass });
 
             if (version.diff) msgRow.createEl('span', { text: '增量', cls: 'version-tag version-tag-incremental' });
             else if (version.content) msgRow.createEl('span', { text: '完整', cls: 'version-tag version-tag-full' });
@@ -3678,204 +3501,20 @@ class DiffModal extends Modal {
         return text.replace(/\t/g, '→   ').replace(/ /g, '·');
     }
 
-    buildInteractiveContextGap(
-        hiddenLines: string[], 
-        leftStart: number, 
-        rightStart: number, 
-        isSplit: boolean,
-        linkedGapElPair?: { left?: HTMLElement, right?: HTMLElement }
-    ): HTMLElement {
-        const gapEl = document.createElement('div');
-        gapEl.className = 'diff-line diff-context-gap-interactive';
-        
-        if (this.showLineNumbers) {
-            if (isSplit) {
-                const gutter = gapEl.createEl('div', { cls: 'diff-gutter-column' });
-                gutter.createEl('span', { text: '...' });
-            } else {
-                const gutterLeft = gapEl.createEl('div', { cls: 'diff-gutter-column diff-gutter-left' });
-                gutterLeft.createEl('span', { text: '...' });
-                const gutterRight = gapEl.createEl('div', { cls: 'diff-gutter-column diff-gutter-right' });
-                gutterRight.createEl('span', { text: '...' });
-            }
-        }
-        
-        if (!isSplit) {
-            gapEl.createEl('span', { cls: 'diff-marker', text: ' ' });
-        }
-        
-        const contentEl = gapEl.createEl('div', { cls: 'gap-interactive-content' });
-        const count = hiddenLines.length;
-        
-        const renderControls = () => {
-            contentEl.empty();
-            if (count < 50) {
-                const btn = contentEl.createEl('button', { 
-                    cls: 'gap-expand-btn gap-expand-all', 
-                    text: `↕ 展开全部 ${count} 行` 
-                });
-                btn.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    this.expandGapRange(gapEl, hiddenLines, leftStart, rightStart, isSplit, 'all', linkedGapElPair);
-                });
-            } else {
-                contentEl.createEl('span', { 
-                    cls: 'gap-expand-label', 
-                    text: `折叠了 ${count} 行` 
-                });
-                
-                const btnUp = contentEl.createEl('button', { 
-                    cls: 'gap-expand-btn gap-expand-up', 
-                    text: `⬇ 展开上方 20 行` 
-                });
-                btnUp.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    this.expandGapRange(gapEl, hiddenLines, leftStart, rightStart, isSplit, 'up', linkedGapElPair);
-                });
-
-                const btnDown = contentEl.createEl('button', { 
-                    cls: 'gap-expand-btn gap-expand-down', 
-                    text: `⬆ 展开下方 20 行` 
-                });
-                btnDown.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    this.expandGapRange(gapEl, hiddenLines, leftStart, rightStart, isSplit, 'down', linkedGapElPair);
-                });
-
-                const btnAll = contentEl.createEl('button', { 
-                    cls: 'gap-expand-btn gap-expand-all-pill', 
-                    text: `↕ 全部展开` 
-                });
-                btnAll.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    this.expandGapRange(gapEl, hiddenLines, leftStart, rightStart, isSplit, 'all', linkedGapElPair);
-                });
-            }
-        };
-        
-        renderControls();
-        return gapEl;
-    }
-
-    expandGapRange(
-        gapEl: HTMLElement, 
-        hiddenLines: string[], 
-        leftStart: number, 
-        rightStart: number, 
-        isSplit: boolean, 
-        direction: 'up' | 'down' | 'all',
-        linkedGapElPair?: { left?: HTMLElement, right?: HTMLElement }
-    ) {
-        let linesToRender: string[] = [];
-        let renderStartIdx = 0;
-        let renderLeftStart = leftStart;
-        let renderRightStart = rightStart;
-        
-        if (direction === 'all') {
-            linesToRender = hiddenLines;
-        } else if (direction === 'up') {
-            linesToRender = hiddenLines.slice(0, 20);
-        } else if (direction === 'down') {
-            linesToRender = hiddenLines.slice(hiddenLines.length - 20);
-            renderStartIdx = hiddenLines.length - 20;
-            renderLeftStart = leftStart + renderStartIdx;
-            renderRightStart = rightStart + renderStartIdx;
-        }
-        
-        const parent = gapEl.parentElement;
-        if (!parent) return;
-        
-        if (isSplit) {
-            const leftGap = linkedGapElPair?.left;
-            const rightGap = linkedGapElPair?.right;
-            if (!leftGap || !rightGap) return;
-            
-            const leftParent = leftGap.parentElement;
-            const rightParent = rightGap.parentElement;
-            if (!leftParent || !rightParent) return;
-            
-            const leftFrags = document.createDocumentFragment();
-            linesToRender.forEach((line, i) => {
-                const leftLineEl = this.buildLineDOM('context', line, renderLeftStart + i, null, true);
-                if (leftLineEl) leftFrags.appendChild(leftLineEl);
-            });
-            
-            const rightFrags = document.createDocumentFragment();
-            linesToRender.forEach((line, i) => {
-                const rightLineEl = this.buildLineDOM('context', line, null, renderRightStart + i, true);
-                if (rightLineEl) rightFrags.appendChild(rightLineEl);
-            });
-            
-            if (direction === 'all') {
-                leftParent.insertBefore(leftFrags, leftGap);
-                rightParent.insertBefore(rightFrags, rightGap);
-                leftGap.remove();
-                rightGap.remove();
-            } else if (direction === 'up') {
-                leftParent.insertBefore(leftFrags, leftGap);
-                rightParent.insertBefore(rightFrags, rightGap);
-                
-                const remainingLines = hiddenLines.slice(20);
-                const nextLeftStart = leftStart + 20;
-                const nextRightStart = rightStart + 20;
-                
-                const newLeftGap = this.buildInteractiveContextGap(remainingLines, nextLeftStart, nextRightStart, true, linkedGapElPair);
-                const newRightGap = this.buildInteractiveContextGap(remainingLines, nextLeftStart, nextRightStart, true, linkedGapElPair);
-                
-                if (linkedGapElPair) {
-                    linkedGapElPair.left = newLeftGap;
-                    linkedGapElPair.right = newRightGap;
-                }
-                
-                leftParent.replaceChild(newLeftGap, leftGap);
-                rightParent.replaceChild(newRightGap, rightGap);
-            } else if (direction === 'down') {
-                leftParent.insertBefore(leftFrags, leftGap.nextSibling);
-                rightParent.insertBefore(rightFrags, rightGap.nextSibling);
-                
-                const remainingLines = hiddenLines.slice(0, hiddenLines.length - 20);
-                
-                const newLeftGap = this.buildInteractiveContextGap(remainingLines, leftStart, rightStart, true, linkedGapElPair);
-                const newRightGap = this.buildInteractiveContextGap(remainingLines, leftStart, rightStart, true, linkedGapElPair);
-                
-                if (linkedGapElPair) {
-                    linkedGapElPair.left = newLeftGap;
-                    linkedGapElPair.right = newRightGap;
-                }
-                
-                leftParent.replaceChild(newLeftGap, leftGap);
-                rightParent.replaceChild(newRightGap, rightGap);
-            }
-            
-            this.alignSplitViewLines();
-        } else {
-            const frags = document.createDocumentFragment();
-            linesToRender.forEach((line, i) => {
-                const lineEl = this.buildLineDOM('context', line, renderLeftStart + i, renderRightStart + i, false);
-                if (lineEl) frags.appendChild(lineEl);
-            });
-            
-            if (direction === 'all') {
-                parent.insertBefore(frags, gapEl);
-                gapEl.remove();
-            } else if (direction === 'up') {
-                parent.insertBefore(frags, gapEl);
-                
-                const remainingLines = hiddenLines.slice(20);
-                const nextLeftStart = leftStart + 20;
-                const nextRightStart = rightStart + 20;
-                
-                const newGap = this.buildInteractiveContextGap(remainingLines, nextLeftStart, nextRightStart, false);
-                parent.replaceChild(newGap, gapEl);
-            } else if (direction === 'down') {
-                parent.insertBefore(frags, gapEl.nextSibling);
-                
-                const remainingLines = hiddenLines.slice(0, hiddenLines.length - 20);
-                
-                const newGap = this.buildInteractiveContextGap(remainingLines, leftStart, rightStart, false);
-                parent.replaceChild(newGap, gapEl);
-            }
-        }
+    diffWordsCJK(text1: string, text2: string): Diff.Change[] {
+        const tokenize = (str: string) => str.split(/([ \t\n\r]+|[，。！？；：、()（）""'']+)/).filter(Boolean);
+        const tokens1 = tokenize(text1);
+        const tokens2 = tokenize(text2);
+        const result = Diff.diffArrays(tokens1, tokens2);
+        return result.map(part => {
+            const textValue = part.value ? part.value.join('') : '';
+            return {
+                count: textValue.length,
+                added: part.added || false,
+                removed: part.removed || false,
+                value: textValue
+            };
+        }) as Diff.Change[];
     }
 
     private buildLineDOM(type: string, content: string | DocumentFragment, leftNum: number | null, rightNum: number | null, isSplit: boolean): HTMLElement {
@@ -3885,18 +3524,17 @@ class DiffModal extends Modal {
         else if (type === 'removed') lineEl.addClass('diff-line-bg-removed');
         else if (type === 'modified') lineEl.addClass('diff-line-bg-modified');
 
+        const gutterCol = lineEl.createEl('div', { cls: 'diff-gutter-column' });
+        const numsRow = gutterCol.createEl('div', { cls: 'diff-gutter-nums' });
+        
         if (this.showLineNumbers) {
             if (isSplit) {
-                const gutterCol = lineEl.createEl('div', { cls: 'diff-gutter-column' });
-                const numsRow = gutterCol.createEl('div', { cls: 'diff-gutter-nums' });
                 const num = leftNum || rightNum;
                 numsRow.createEl('span', { text: num ? String(num) : '' });
             } else {
-                const gutterLeft = lineEl.createEl('div', { cls: 'diff-gutter-column diff-gutter-left' });
-                gutterLeft.createEl('span', { text: leftNum ? String(leftNum) : '' });
-
-                const gutterRight = lineEl.createEl('div', { cls: 'diff-gutter-column diff-gutter-right' });
-                gutterRight.createEl('span', { text: rightNum ? String(rightNum) : '' });
+                if (leftNum) numsRow.createEl('span', { text: String(leftNum) });
+                if (leftNum && rightNum) numsRow.createEl('span', { text: '|', attr: {style: 'opacity:0.3'} });
+                if (rightNum) numsRow.createEl('span', { text: String(rightNum) });
             }
         }
 
@@ -4050,6 +3688,14 @@ class DiffModal extends Modal {
             menu.addItem(item => item.setTitle('统一视图').setIcon('align-justify').setChecked(isUnified).onClick(() => { modeSelect.value = 'unified'; modeSelect.dispatchEvent(new Event('change')); }));
             menu.addItem(item => item.setTitle('左右分栏').setIcon('columns').setChecked(!isUnified).onClick(() => { modeSelect.value = 'split'; modeSelect.dispatchEvent(new Event('change')); }));
             
+            if (isUnified) {
+                menu.addItem(item => item.setTitle('紧凑型统一视图').setIcon('shrink').setChecked(this.plugin.settings.compactUnifiedDiff).onClick(async () => {
+                    this.plugin.settings.compactUnifiedDiff = !this.plugin.settings.compactUnifiedDiff;
+                    await this.plugin.saveSettings();
+                    this.renderTextDiff();
+                }));
+            }
+
             menu.addSeparator();
 
             if (isLineBased) {
@@ -4107,6 +3753,52 @@ class DiffModal extends Modal {
         this.scope.register([], 'ArrowDown', () => { if (!nextBtn.disabled) nextBtn.click(); return false; });
 
         await this.updateDiffView();
+    }
+
+    compactDiffChanges(rawDiff: Diff.Change[]): Diff.Change[] {
+        const result: Diff.Change[] = [];
+        let i = 0;
+        while (i < rawDiff.length) {
+            let part = rawDiff[i]!;
+            if (part.added || part.removed) {
+                let leftValue = ''; let rightValue = '';
+                let leftCount = 0; let rightCount = 0;
+                let j = i;
+                while (j < rawDiff.length) {
+                    const p = rawDiff[j]!;
+                    if (p.added) { rightValue += p.value; rightCount += p.count || 0; j++; } 
+                    else if (p.removed) { leftValue += p.value; leftCount += p.count || 0; j++; } 
+                    else {
+                        let nextChangeIdx = -1;
+                        for (let k = j + 1; k < rawDiff.length; k++) {
+                            if (rawDiff[k]!.added || rawDiff[k]!.removed) { nextChangeIdx = k; break; }
+                        }
+                        let canMerge = false;
+                        if (nextChangeIdx !== -1) {
+                            let purelyMergeable = true;
+                            for (let k = j; k < nextChangeIdx; k++) {
+                                const ctx = rawDiff[k]!;
+                                const isWhitespace = ctx.value.trim() === '';
+                                const isShort = ctx.count !== undefined && ctx.count <= 2;
+                                if (!isWhitespace && !isShort) { purelyMergeable = false; break; }
+                            }
+                            canMerge = purelyMergeable;
+                        }
+                        if (canMerge) {
+                            leftValue += p.value; leftCount += p.count || 0;
+                            rightValue += p.value; rightCount += p.count || 0;
+                            j++;
+                        } else { break; }
+                    }
+                }
+                if (leftCount > 0) result.push({ removed: true, added: false, value: leftValue, count: leftCount });
+                if (rightCount > 0) result.push({ added: true, removed: false, value: rightValue, count: rightCount });
+                i = j;
+            } else {
+                result.push(part); i++;
+            }
+        }
+        return result;
     }
 
     updateGranularity(granularity: 'char' | 'word' | 'line') {
@@ -4274,93 +3966,6 @@ class DiffModal extends Modal {
         }
     }
 
-    async renderTextDiff() {
-        const container = this.textDiffContainer;
-        container.empty();
-        this.diffElements = [];
-        this.currentDiffIndex = 0;
-        this.totalDiffs = 0;
-        
-        let leftProcessed = this.leftContent;
-        let rightProcessed = this.rightContent;
-
-        if (leftProcessed === rightProcessed) {
-            container.empty();
-            container.removeClass('diff-split');
-            const emptyState = container.createEl('div', { 
-                attr: { style: 'display: flex; flex-direction: column; align-items: center; justify-content: center; width: 100%; height: 100%; min-height: 250px; color: var(--text-muted); text-align: center;' } 
-            });
-            emptyState.createEl('div', { text: '✨', attr: { style: 'font-size: 48px; margin-bottom: 16px; opacity: 0.9;' } });
-            emptyState.createEl('h3', { text: '这两个版本完全一致', attr: { style: 'color: var(--text-normal); margin: 0 0 8px 0; font-size: 16px;' } });
-            emptyState.createEl('p', { text: '没有检测到任何修改内容' + (this.ignoreWhitespace ? ' (已忽略空白字符)' : ''), attr: { style: 'margin: 0; font-size: 13px;' } });
-            
-            this.updateNavState();
-            this.updateCompactDiffInfo([]);
-            return;
-        }
-        
-        const safeLeft = leftProcessed + '\n';
-        const safeRight = rightProcessed + '\n';
-        
-        this.loadingOverlay.style.display = 'flex';
-        const msgEl = this.loadingOverlay.querySelector('.diff-loading-message') as HTMLElement;
-        if (msgEl) msgEl.textContent = "正在计算差异中...";
-        
-        const requestId = this.currentDiffRequestId;
-        let rawDiffResult: any[];
-        if (this.currentGranularity === 'char' || this.currentGranularity === 'word') {
-            rawDiffResult = await this.plugin.diffWorker.runDiff(leftProcessed, rightProcessed, this.currentGranularity, this.ignoreWhitespace);
-        } else {
-            rawDiffResult = await this.plugin.diffWorker.runDiff(
-                safeLeft, 
-                safeRight, 
-                'line', 
-                this.ignoreWhitespace, 
-                this.plugin.settings.inlineDiffAlgorithm
-            );
-        }
-        
-        if (requestId !== this.currentDiffRequestId) return;
-
-        const rawDiff = rawDiffResult;
-            
-        this.loadingOverlay.style.display = 'none';
-
-        const modeSelect = this.containerEl.querySelector('.diff-select[aria-label="视图模式"]') as HTMLSelectElement;
-        
-        if (modeSelect.value === 'unified') {
-            container.removeClass('diff-split');
-            await this.renderUnifiedDiff(container, rawDiff);
-        } else {
-            container.addClass('diff-split');
-            const leftLabelEl = this.containerEl.querySelector('.diff-left-version-btn') as HTMLElement;
-            const rightLabelEl = this.containerEl.querySelector('.diff-right-version-btn') as HTMLElement;
-            await this.renderSplitDiff(container, rawDiff, leftLabelEl.textContent || '版本 A', rightLabelEl.textContent || '版本 B');
-        }
-
-        if (this.wrapLines) container.addClass('diff-wrap-lines');
-        else container.removeClass('diff-wrap-lines');
-
-        this.totalDiffs = this.diffElements.length;
-
-        if (this.totalDiffs === 0) {
-            container.empty();
-            container.removeClass('diff-split');
-            const emptyState = container.createEl('div', { 
-                attr: { style: 'display: flex; flex-direction: column; align-items: center; justify-content: center; width: 100%; height: 100%; min-height: 250px; color: var(--text-muted); text-align: center;' } 
-            });
-            emptyState.createEl('div', { text: '✨', attr: { style: 'font-size: 48px; margin-bottom: 16px; opacity: 0.9;' } });
-            emptyState.createEl('h3', { text: '这两个版本完全一致', attr: { style: 'color: var(--text-normal); margin: 0 0 8px 0; font-size: 16px;' } });
-            emptyState.createEl('p', { text: '没有检测到任何修改内容' + (this.ignoreWhitespace ? ' (已忽略空白字符)' : ''), attr: { style: 'margin: 0; font-size: 13px;' } });
-        }
-
-        this.updateNavState();
-        if (this.totalDiffs > 0) setTimeout(() => this.scrollToDiff(), 100);
-        
-        this.updateCompactDiffInfo(rawDiff);
-        this.plugin.refreshVersionHistoryView();
-    }
-
     updateSelectorButtonLabels() {
         const leftBtn = this.containerEl.querySelector('.diff-left-version-btn') as HTMLButtonElement;
         const rightBtn = this.containerEl.querySelector('.diff-right-version-btn') as HTMLButtonElement;
@@ -4448,19 +4053,122 @@ class DiffModal extends Modal {
             this.alignSplitViewLines();
         }
     }
+
+    async renderTextDiff() {
+        const container = this.textDiffContainer;
+        container.empty();
+        this.diffElements = [];
+        this.currentDiffIndex = 0;
+        this.totalDiffs = 0;
+        
+        let leftProcessed = this.leftContent;
+        let rightProcessed = this.rightContent;
+
+        if (leftProcessed === rightProcessed) {
+            container.empty();
+            container.removeClass('diff-split');
+            const emptyState = container.createEl('div', { 
+                attr: { style: 'display: flex; flex-direction: column; align-items: center; justify-content: center; width: 100%; height: 100%; min-height: 250px; color: var(--text-muted); text-align: center;' } 
+            });
+            emptyState.createEl('div', { text: '✨', attr: { style: 'font-size: 48px; margin-bottom: 16px; opacity: 0.9;' } });
+            emptyState.createEl('h3', { text: '这两个版本完全一致', attr: { style: 'color: var(--text-normal); margin: 0 0 8px 0; font-size: 16px;' } });
+            emptyState.createEl('p', { text: '没有检测到任何修改内容' + (this.ignoreWhitespace ? ' (已忽略空白字符)' : ''), attr: { style: 'margin: 0; font-size: 13px;' } });
+            
+            this.updateNavState();
+            this.updateCompactDiffInfo([]);
+            return;
+        }
+        
+        const safeLeft = leftProcessed + '\n';
+        const safeRight = rightProcessed + '\n';
+        const useCompactView = this.plugin.settings.compactUnifiedDiff;
+        
+        this.loadingOverlay.style.display = 'flex';
+        const msgEl = this.loadingOverlay.querySelector('.diff-loading-message') as HTMLElement;
+        if (msgEl) msgEl.textContent = "正在计算差异中...";
+        
+        const requestId = this.currentDiffRequestId;
+        let rawDiffResult: Diff.Change[];
+        if (this.currentGranularity === 'char' || this.currentGranularity === 'word') {
+            rawDiffResult = await this.plugin.diffWorker.runDiff(leftProcessed, rightProcessed, this.currentGranularity, this.ignoreWhitespace);
+        } else {
+            rawDiffResult = await this.plugin.diffWorker.runDiff(safeLeft, safeRight, 'line', this.ignoreWhitespace);
+        }
+        
+        if (requestId !== this.currentDiffRequestId) return;
+
+        const rawDiff = (this.currentGranularity === 'line' && useCompactView) 
+            ? this.compactDiffChanges(rawDiffResult) 
+            : rawDiffResult;
+            
+        this.loadingOverlay.style.display = 'none';
+
+        const modeSelect = this.containerEl.querySelector('.diff-select[aria-label="视图模式"]') as HTMLSelectElement;
+        
+        if (modeSelect.value === 'unified') {
+            container.removeClass('diff-split');
+            await this.renderUnifiedDiff(container, rawDiff);
+        } else {
+            container.addClass('diff-split');
+            const leftLabelEl = this.containerEl.querySelector('.diff-left-version-btn') as HTMLElement;
+            const rightLabelEl = this.containerEl.querySelector('.diff-right-version-btn') as HTMLElement;
+            await this.renderSplitDiff(container, rawDiff, leftLabelEl.textContent || '版本 A', rightLabelEl.textContent || '版本 B');
+        }
+
+        if (this.wrapLines) container.addClass('diff-wrap-lines');
+        else container.removeClass('diff-wrap-lines');
+
+        this.totalDiffs = this.diffElements.length;
+
+        if (this.totalDiffs === 0) {
+            container.empty();
+            container.removeClass('diff-split');
+            const emptyState = container.createEl('div', { 
+                attr: { style: 'display: flex; flex-direction: column; align-items: center; justify-content: center; width: 100%; height: 100%; min-height: 250px; color: var(--text-muted); text-align: center;' } 
+            });
+            emptyState.createEl('div', { text: '✨', attr: { style: 'font-size: 48px; margin-bottom: 16px; opacity: 0.9;' } });
+            emptyState.createEl('h3', { text: '这两个版本完全一致', attr: { style: 'color: var(--text-normal); margin: 0 0 8px 0; font-size: 16px;' } });
+            emptyState.createEl('p', { text: '没有检测到任何修改内容' + (this.ignoreWhitespace ? ' (已忽略空白字符)' : ''), attr: { style: 'margin: 0; font-size: 13px;' } });
+        }
+
+        this.updateNavState();
+        if (this.totalDiffs > 0) setTimeout(() => this.scrollToDiff(), 100);
+        
+        this.updateCompactDiffInfo(rawDiff);
+        this.plugin.refreshVersionHistoryView();
+    }
     
     updateCompactDiffInfo(diffResult: Diff.Change[]) {
         const container = this.infoBannerContainer;
         if (!container) return;
         container.empty();
 
+        const useCompact = this.plugin.settings.compactUnifiedDiff; 
         let addedLines = 0;
         let removedLines = 0;
+        let modifiedLines = 0; 
 
         for (let i = 0; i < diffResult.length; i++) {
             const part = diffResult[i]!;
-            if (part.added) addedLines += part.count || 0;
-            else if (part.removed) removedLines += part.count || 0;
+            const nextPart = diffResult[i + 1];
+            const isRemoveAdd = part.removed && nextPart?.added;
+            const isAddRemove = part.added && nextPart?.removed;
+
+            if (useCompact && (isRemoveAdd || isAddRemove)) {
+                 const removedPart = isRemoveAdd ? part : nextPart!;
+                 const addedPart = isRemoveAdd ? nextPart! : part;
+                 const leftLines = removedPart.value.replace(/\n$/, '').split('\n');
+                 const rightLines = addedPart.value.replace(/\n$/, '').split('\n');
+                 const stats = this.plugin.calculateCompactBlockStats(leftLines, rightLines);
+                 
+                 modifiedLines += stats.mods;
+                 removedLines += stats.rems; 
+                 addedLines += stats.adds;   
+                 i++; 
+            } else {
+                if (part.added) addedLines += part.count || 0;
+                else if (part.removed) removedLines += part.count || 0;
+            }
         }
         
         const leftLinesCount = this.leftContent.split('\n').length;
@@ -4490,6 +4198,10 @@ class DiffModal extends Modal {
             attr: { style: 'margin-left: 8px;', title: "版本 A: " + leftCharCountNum.toLocaleString() + " 字符\n版本 B: " + rightCharCountNum.toLocaleString() + " 字符" }
         });
         
+        if (modifiedLines > 0) {
+            const modSpan = container.createEl('span', { text: "~" + modifiedLines + " (修)", cls: 'diff-info-changed' });
+            modSpan.style.color = 'var(--text-accent)'; 
+        }
         container.createEl('span', { text: "+" + addedLines, cls: 'diff-info-added' });
         container.createEl('span', { text: "-" + removedLines, cls: 'diff-info-removed' });
 
@@ -4497,8 +4209,9 @@ class DiffModal extends Modal {
         setTimeout(() => { container.removeClass('diff-info-updated'); }, 500);
     }
 
-    async renderUnifiedDiff(container: HTMLElement, rawDiff: any[]) {
+    async renderUnifiedDiff(container: HTMLElement, rawDiff: Diff.Change[]) {
         const renderTasks: ((frag: DocumentFragment) => void)[] = [];
+        const useCompactView = this.plugin.settings.compactUnifiedDiff;
 
         if (this.currentGranularity === 'char' || this.currentGranularity === 'word') {
             let diffIdx = 0;
@@ -4527,26 +4240,38 @@ class DiffModal extends Modal {
             return;
         }
 
-        const processedDiff: ProcessedDiff[] = rawDiff.map(part => ({ ...part, type: (part.added ? 'added' : part.removed ? 'removed' : 'context') as any }));
+        const processedDiff: ProcessedDiff[] = rawDiff.map(part => ({ ...part, type: (part.added ? 'added' : part.removed ? 'removed' : 'context') as 'added' | 'removed' | 'context' }));
 
         let leftLineNum = 1;
         let rightLineNum = 1;
         let diffIdx = 0;
+        
+        const secondaryDiffFn = (text1: string, text2: string): Diff.Change[] => {
+             if (this.plugin.settings.inlineDiffAlgorithm === 'line') {
+                 return Diff.diffLines(text1, text2);
+             } else if (this.plugin.settings.inlineDiffAlgorithm === 'char') {
+                 return Diff.diffChars(text1, text2);
+             } else {
+                 return this.diffWordsCJK(text1, text2);
+             }
+        };
 
-        const createHighlightedFragmentFromPrecalculated = (inlineParts: any[], includeRemoved: boolean): DocumentFragment => {
+        const createHighlightedFragment = (diffParts: Diff.Change[], includeRemoved: boolean = true): DocumentFragment => {
             const fragment = document.createDocumentFragment();
-            if (!inlineParts) return fragment;
-            
-            inlineParts.forEach(part => {
-                if (part.removed && !includeRemoved) return;
-                if (part.added && includeRemoved) return; 
+            (diffParts || []).forEach((part: Diff.Change) => {
                 const className = part.added ? 'diff-word-added' : (part.removed ? 'diff-word-removed' : '');
                 const processedText = this.showWhitespace ? this.visualizeWhitespace(part.value) : part.value;
-                if (className) {
-                    fragment.append(createEl('span', { text: processedText, cls: className }));
-                } else {
-                    fragment.append(document.createTextNode(processedText));
-                }
+                
+                if (part.removed && !includeRemoved) return;
+
+                const lines = processedText.split('\n');
+                lines.forEach((line, index) => {
+                    if (index > 0) fragment.appendChild(createEl('br'));
+                    if (line.length > 0) {
+                        if (className) fragment.append(createEl('span', { text: line, cls: className }));
+                        else fragment.append(document.createTextNode(line));
+                    }
+                });
             });
             return fragment;
         };
@@ -4565,79 +4290,128 @@ class DiffModal extends Modal {
         };
 
         for (let i = 0; i < processedDiff.length; i++) {
+            if (i % 80 === 0) {
+                await this.plugin.yieldToMain();
+            }
+            
             const part = processedDiff[i]!;
             const nextPart = processedDiff[i + 1];
             const isRemoveAdd = part.removed && nextPart?.added;
+            const isAddRemove = part.added && nextPart?.removed;
 
-            if (isRemoveAdd) {
-                const leftLines = part.value.replace(/\n$/, '').split('\n');
-                const rightLines = nextPart.value.replace(/\n$/, '').split('\n');
+            if (isRemoveAdd || isAddRemove) {
+                const removedPart = isRemoveAdd ? part : nextPart!;
+                const addedPart = isRemoveAdd ? nextPart! : part;
+                const leftLines = removedPart.value.replace(/\n$/, '').split('\n');
+                const rightLines = addedPart.value.replace(/\n$/, '').split('\n');
 
-                if (leftLines.length === rightLines.length && part.inlineDuffs) {
-                    for (let j = 0; j < leftLines.length; j++) {
-                        const precalc = part.inlineDuffs[j];
-                        if (precalc) {
-                            const leftFrag = createHighlightedFragmentFromPrecalculated(precalc, true);
-                            renderLine(leftFrag, 'removed', leftLineNum++, null);
-                            const rightFrag = createHighlightedFragmentFromPrecalculated(precalc, false);
-                            renderLine(rightFrag, 'added', null, rightLineNum++);
-                        } else {
-                            renderLine(leftLines[j]!, 'removed', leftLineNum++, null);
-                            renderLine(rightLines[j]!, 'added', null, rightLineNum++);
+                if (useCompactView) {
+                    if (leftLines.length === rightLines.length) {
+                        for (let j = 0; j < leftLines.length; j++) {
+                            const lLine = leftLines[j]!;
+                            const rLine = rightLines[j]!;
+                            if (lLine === rLine) {
+                                renderLine(lLine, 'context', leftLineNum++, rightLineNum++);
+                            } else {
+                                const lineDiff = secondaryDiffFn(lLine, rLine);
+                                const combinedFrag = createHighlightedFragment(lineDiff, true);
+                                renderLine(combinedFrag, 'modified', leftLineNum++, rightLineNum++);
+                            }
+                        }
+                    } else {
+                        let lIndex = 0;
+                        let rIndex = 0;
+
+                        while (lIndex < leftLines.length || rIndex < rightLines.length) {
+                            const lLine = leftLines[lIndex];
+                            const rLine = rightLines[rIndex];
+
+                            if (lLine === undefined) {
+                                renderLine(rLine!, 'added', null, rightLineNum++);
+                                rIndex++;
+                                continue;
+                            }
+                            if (rLine === undefined) {
+                                renderLine(lLine!, 'removed', leftLineNum++, null);
+                                lIndex++;
+                                continue;
+                            }
+
+                            const currentSim = this.plugin.calculateSimilarity(lLine, rLine);
+                            const nextRightLine = rightLines[rIndex + 1];
+                            const insertionSim = nextRightLine !== undefined ? this.plugin.calculateSimilarity(lLine, nextRightLine) : 0;
+                            const nextLeftLine = leftLines[lIndex + 1];
+                            const deletionSim = nextLeftLine !== undefined ? this.plugin.calculateSimilarity(nextLeftLine, rLine) : 0;
+                            const threshold = 30; 
+
+                            if (insertionSim > currentSim + threshold) {
+                                renderLine(rLine!, 'added', null, rightLineNum++);
+                                rIndex++;
+                            } else if (deletionSim > currentSim + threshold) {
+                                renderLine(lLine!, 'removed', leftLineNum++, null);
+                                lIndex++;
+                            } else {
+                                if (lLine === rLine) {
+                                    renderLine(lLine, 'context', leftLineNum++, rightLineNum++);
+                                } else {
+                                    const lineDiff = secondaryDiffFn(lLine!, rLine!);
+                                    const combinedFrag = createHighlightedFragment(lineDiff, true);
+                                    renderLine(combinedFrag, 'modified', leftLineNum++, rightLineNum++);
+                                }
+                                lIndex++;
+                                rIndex++;
+                            }
                         }
                     }
+                } else if (leftLines.length === rightLines.length) {
+                    for (let j = 0; j < leftLines.length; j++) {
+                        if (j % 15 === 0) {
+                            await this.plugin.yieldToMain(); 
+                        }
+                        const oldLine = leftLines[j]!;
+                        const newLine = rightLines[j]!;
+                        const lineDiff = secondaryDiffFn(oldLine, newLine);
+                        
+                        const leftFrag = createHighlightedFragment((lineDiff || []).filter((p: Diff.Change) => !p.added), true);
+                        renderLine(leftFrag, 'removed', leftLineNum++, null);
+                        const rightFrag = createHighlightedFragment((lineDiff || []).filter((p: Diff.Change) => !p.removed), false);
+                        renderLine(rightFrag, 'added', null, rightLineNum++);
+                    }
                 } else {
-                    leftLines.forEach((line) => renderLine(line, 'removed', leftLineNum++, null));
-                    rightLines.forEach((line) => renderLine(line, 'added', null, rightLineNum++));
+                    leftLines.forEach((line: string) => renderLine(line, 'removed', leftLineNum++, null));
+                    rightLines.forEach((line: string) => renderLine(line, 'added', null, rightLineNum++));
                 }
                 i++; 
-            } else {
+            } else { 
                 const lines = part.value.replace(/\n$/, '').split('\n');
                 if (part.type === 'context') {
-                    const prevPartIsChange = i > 0 && processedDiff[i - 1]!.type !== 'context';
-                    const nextPartIsChange = i < processedDiff.length - 1 && processedDiff[i + 1]!.type !== 'context';
-                    let lastLineShown = -1;
-                    for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+                   const prevPartIsChange = i > 0 && processedDiff[i - 1]!.type !== 'context';
+                   const nextPartIsChange = i < processedDiff.length - 1 && processedDiff[i + 1]!.type !== 'context';
+                   let lastLineShown = -1;
+                   for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
                         const line = lines[lineIdx]!;
                         let showLine = false;
                         if (this.contextLines >= 9999) { showLine = true; } 
                         else {
-                            const distanceToPrev = prevPartIsChange ? lineIdx : Infinity;
-                            const distanceToNext = nextPartIsChange ? (lines.length - 1 - lineIdx) : Infinity;
-                            if (distanceToPrev < this.contextLines || distanceToNext < this.contextLines) { showLine = true; }
+                             const distanceToPrev = prevPartIsChange ? lineIdx : Infinity;
+                             const distanceToNext = nextPartIsChange ? (lines.length - 1 - lineIdx) : Infinity;
+                             if (distanceToPrev < this.contextLines || distanceToNext < this.contextLines) { showLine = true; }
                         }
 
                         if (showLine) {
-                            if (lineIdx > lastLineShown + 1 && this.contextLines < 9999) {
-                                const startHidden = lastLineShown + 1;
-                                const endHidden = lineIdx - 1;
-                                const hiddenLines = lines.slice(startHidden, endHidden + 1);
-                                const leftStart = leftLineNum - (lineIdx - startHidden);
-                                const rightStart = rightLineNum - (lineIdx - startHidden);
-
-                                renderTasks.push((frag: DocumentFragment) => {
-                                    const skippedEl = this.buildInteractiveContextGap(hiddenLines, leftStart, rightStart, false);
-                                    frag.appendChild(skippedEl);
-                                });
-                            }
-                            renderLine(line, 'context', leftLineNum, rightLineNum);
-                            lastLineShown = lineIdx;
+                             if (lineIdx > lastLineShown + 1 && this.contextLines < 9999) {
+                                 renderTasks.push((frag: DocumentFragment) => {
+                                     const skippedEl = frag.createEl('div', { cls: 'diff-line diff-context-gap' });
+                                     skippedEl.createEl('span', { cls: 'line-number-container' });
+                                     skippedEl.createEl('span', { cls: 'diff-marker', text: '...' });
+                                 });
+                             }
+                             renderLine(line, 'context', leftLineNum, rightLineNum);
+                             lastLineShown = lineIdx;
                         }
                         leftLineNum++;
                         rightLineNum++;
-                    }
-                    if (lastLineShown < lines.length - 1 && this.contextLines < 9999) {
-                        const startHidden = lastLineShown + 1;
-                        const endHidden = lines.length - 1;
-                        const hiddenLines = lines.slice(startHidden, endHidden + 1);
-                        const leftStart = leftLineNum - (lines.length - startHidden);
-                        const rightStart = rightLineNum - (lines.length - startHidden);
-                        
-                        renderTasks.push((frag: DocumentFragment) => {
-                            const skippedEl = this.buildInteractiveContextGap(hiddenLines, leftStart, rightStart, false);
-                            frag.appendChild(skippedEl);
-                        });
-                    }
+                   }
                 } else {
                     for (const line of lines) {
                         if (part.added) renderLine(line, 'added', null, rightLineNum++);
@@ -4649,7 +4423,7 @@ class DiffModal extends Modal {
         await this.executeRenderTasks(container, renderTasks);
     }
 
-    async renderSplitDiff(container: HTMLElement, rawDiff: any[], leftLabel: string, rightLabel: string) {
+    async renderSplitDiff(container: HTMLElement, rawDiff: Diff.Change[], leftLabel: string, rightLabel: string) {
         const leftPanel = container.createEl('div', { cls: 'diff-panel' });
         const rightPanel = container.createEl('div', { cls: 'diff-panel' });
         leftPanel.createEl('h3', { text: leftLabel });
@@ -4660,9 +4434,10 @@ class DiffModal extends Modal {
         await this.renderSplitViewAdvancedAsync(leftContentEl, rightContentEl, rawDiff);
     }
 
-    async renderSplitViewAdvancedAsync(leftPanel: HTMLElement, rightPanel: HTMLElement, rawDiff: any[]) {
+    async renderSplitViewAdvancedAsync(leftPanel: HTMLElement, rightPanel: HTMLElement, rawDiff: Diff.Change[]) {
         const renderTasksLeft: ((frag: DocumentFragment) => void)[] = [];
         const renderTasksRight: ((frag: DocumentFragment) => void)[] = [];
+        const useCompactView = this.plugin.settings.compactUnifiedDiff;
 
         if (this.currentGranularity === 'char' || this.currentGranularity === 'word') {
             let diffIdx = 0;
@@ -4703,26 +4478,36 @@ class DiffModal extends Modal {
             return;
         }
 
-        const diff: ProcessedDiff[] = rawDiff.map(p => ({ ...p, type: (p.added ? 'added' : p.removed ? 'removed' : 'context') as any }));
+        const diff: ProcessedDiff[] = rawDiff.map(p => ({ ...p, type: (p.added ? 'added' : p.removed ? 'removed' : 'context') as 'added' | 'removed' | 'context' }));
 
         let leftLineNum = 1;
         let rightLineNum = 1;
         let diffIdx = 0;
 
-        const createHighlightedFragmentFromPrecalculated = (inlineParts: any[], includeRemoved: boolean): DocumentFragment => {
+        const secondaryDiffFn = (text1: string, text2: string): Diff.Change[] => {
+            if (this.plugin.settings.inlineDiffAlgorithm === 'line') {
+                return Diff.diffLines(text1, text2);
+            } else if (this.plugin.settings.inlineDiffAlgorithm === 'char') {
+                return Diff.diffChars(text1, text2);
+            } else {
+                return this.diffWordsCJK(text1, text2);
+            }
+        };
+    
+        const createHighlightedFragment = (diffParts: Diff.Change[]): DocumentFragment => {
             const fragment = document.createDocumentFragment();
-            if (!inlineParts) return fragment;
-            
-            inlineParts.forEach(part => {
-                if (part.removed && !includeRemoved) return;
-                if (part.added && includeRemoved) return; 
-                const className = part.added ? 'diff-word-added' : (part.removed ? 'diff-word-removed' : '');
+            (diffParts || []).forEach((part: Diff.Change) => {
+                const className = part.added ? 'diff-word-added' : part.removed ? 'diff-word-removed' : '';
                 const processedText = this.showWhitespace ? this.visualizeWhitespace(part.value) : part.value;
-                if (className) {
-                    fragment.append(createEl('span', { text: processedText, cls: className }));
-                } else {
-                    fragment.append(document.createTextNode(processedText));
-                }
+                
+                const lines = processedText.split('\n');
+                lines.forEach((line, index) => {
+                    if (index > 0) fragment.appendChild(createEl('br'));
+                    if (line.length > 0) {
+                        if (className) fragment.append(createEl('span', { text: line, cls: className }));
+                        else fragment.append(document.createTextNode(line));
+                    }
+                });
             });
             return fragment;
         };
@@ -4730,7 +4515,7 @@ class DiffModal extends Modal {
         const renderLine = (isLeft: boolean, content: string | DocumentFragment, type: string, lineNum: number | null) => {
             const task = (frag: DocumentFragment) => {
                 const lineEl = this.buildLineDOM(type, content, isLeft ? lineNum : null, isLeft ? null : lineNum, true);
-                if ((type as string) !== 'context' && (type as string) !== 'placeholder') {
+                if (type !== 'context' && type !== 'placeholder') {
                     lineEl.dataset.diffIndex = String(diffIdx++);
                     this.diffElements.push(lineEl);
                 }
@@ -4742,26 +4527,96 @@ class DiffModal extends Modal {
         };
     
         for (let i = 0; i < diff.length; i++) {
+            if (i % 80 === 0) {
+                await this.plugin.yieldToMain();
+            }
             const part = diff[i]!;
             const nextPart = diff[i + 1];
             const isRemoveAdd = part.removed && nextPart?.added;
+            const isAddRemove = part.added && nextPart?.removed;
 
-            if (isRemoveAdd) {
-                const leftLines = part.value.replace(/\n$/, '').split('\n');
-                const rightLines = nextPart.value.replace(/\n$/, '').split('\n');
+            if (isRemoveAdd || isAddRemove) {
+                const removedPart = isRemoveAdd ? part : nextPart!;
+                const addedPart = isRemoveAdd ? nextPart! : part;
+                const leftLines = removedPart.value.replace(/\n$/, '').split('\n');
+                const rightLines = addedPart.value.replace(/\n$/, '').split('\n');
 
-                if (leftLines.length === rightLines.length && part.inlineDuffs) {
-                    for (let j = 0; j < leftLines.length; j++) {
-                        const precalc = part.inlineDuffs[j];
-                        if (precalc) {
-                            const leftFrag = createHighlightedFragmentFromPrecalculated(precalc, true);
-                            const rightFrag = createHighlightedFragmentFromPrecalculated(precalc, false);
-                            renderLine(true, leftFrag, 'modified', leftLineNum++);
-                            renderLine(false, rightFrag, 'modified', rightLineNum++);
-                        } else {
-                            renderLine(true, leftLines[j]!, 'removed', leftLineNum++);
-                            renderLine(false, rightLines[j]!, 'added', rightLineNum++);
+                if (useCompactView) {
+                    if (leftLines.length === rightLines.length) {
+                        for (let j = 0; j < leftLines.length; j++) {
+                            const lLine = leftLines[j]!;
+                            const rLine = rightLines[j]!;
+                            if (lLine === rLine) {
+                                renderLine(true, lLine, 'context', leftLineNum++);
+                                renderLine(false, rLine, 'context', rightLineNum++);
+                            } else {
+                                const lineDiff = secondaryDiffFn(lLine, rLine);
+                                const leftFrag = createHighlightedFragment((lineDiff || []).filter((p: Diff.Change) => !p.added));
+                                const rightFrag = createHighlightedFragment((lineDiff || []).filter((p: Diff.Change) => !p.removed));
+                                renderLine(true, leftFrag, 'modified', leftLineNum++);
+                                renderLine(false, rightFrag, 'modified', rightLineNum++);
+                            }
                         }
+                    } else {
+                        let lIndex = 0;
+                        let rIndex = 0;
+
+                        while (lIndex < leftLines.length || rIndex < rightLines.length) {
+                            const lLine = leftLines[lIndex];
+                            const rLine = rightLines[rIndex];
+
+                            if (lLine === undefined) {
+                                renderLine(true, '', 'placeholder', null);
+                                renderLine(false, rLine!, 'added', rightLineNum++);
+                                rIndex++;
+                                continue;
+                            }
+                            if (rLine === undefined) {
+                                renderLine(true, lLine!, 'removed', leftLineNum++);
+                                renderLine(false, '', 'placeholder', null);
+                                lIndex++;
+                                continue;
+                            }
+
+                            const currentSim = this.plugin.calculateSimilarity(lLine, rLine);
+                            const nextRightLine = rightLines[rIndex + 1];
+                            const insertionSim = nextRightLine !== undefined ? this.plugin.calculateSimilarity(lLine, nextRightLine) : 0;
+                            const nextLeftLine = leftLines[lIndex + 1];
+                            const deletionSim = nextLeftLine !== undefined ? this.plugin.calculateSimilarity(nextLeftLine, rLine) : 0;
+                            const threshold = 30; 
+
+                            if (insertionSim > currentSim + threshold) {
+                                renderLine(true, '', 'placeholder', null);
+                                renderLine(false, rLine!, 'added', rightLineNum++);
+                                rIndex++;
+                            } else if (deletionSim > currentSim + threshold) {
+                                renderLine(true, lLine!, 'removed', leftLineNum++);
+                                renderLine(false, '', 'placeholder', null);
+                                lIndex++;
+                            } else {
+                                const lineDiff = secondaryDiffFn(lLine, rLine);
+                                const leftFrag = createHighlightedFragment((lineDiff || []).filter((p: Diff.Change) => !p.added));
+                                const rightFrag = createHighlightedFragment((lineDiff || []).filter((p: Diff.Change) => !p.removed));
+                                renderLine(true, leftFrag, 'modified', leftLineNum++);
+                                renderLine(false, rightFrag, 'modified', rightLineNum++);
+                                lIndex++;
+                                rIndex++;
+                            }
+                        }
+                    }
+                } else if (leftLines.length === rightLines.length) {
+                    for (let j = 0; j < leftLines.length; j++) {
+                        if (j % 15 === 0) {
+                            await this.plugin.yieldToMain();
+                        }
+                        const oldLine = leftLines[j]!;
+                        const newLine = rightLines[j]!;
+                        const lineDiff = secondaryDiffFn(oldLine, newLine);
+                        
+                        const leftFrag = createHighlightedFragment((lineDiff || []).filter((p: Diff.Change) => !p.added));
+                        const rightFrag = createHighlightedFragment((lineDiff || []).filter((p: Diff.Change) => !p.removed));
+                        renderLine(true, leftFrag, 'removed', leftLineNum++);
+                        renderLine(false, rightFrag, 'added', rightLineNum++);
                     }
                 } else {
                     leftLines.forEach((line: string) => {
@@ -4807,24 +4662,15 @@ class DiffModal extends Modal {
 
                     if (showLine) {
                         if (lineIdx > lastLineShown + 1 && this.contextLines < 9999) {
-                            const startHidden = lastLineShown + 1;
-                            const endHidden = lineIdx - 1;
-                            const hiddenLines = lines.slice(startHidden, endHidden + 1);
-                            const leftStart = leftLineNum - (lineIdx - startHidden);
-                            const rightStart = rightLineNum - (lineIdx - startHidden);
-                            
-                            const linkedPair: { left?: HTMLElement, right?: HTMLElement } = {};
-
                             renderTasksLeft.push((frag: DocumentFragment) => {
-                                const skippedLeft = this.buildInteractiveContextGap(hiddenLines, leftStart, rightStart, true, linkedPair);
-                                linkedPair.left = skippedLeft;
-                                frag.appendChild(skippedLeft);
+                                const skippedLeft = frag.createEl('div', { cls: 'diff-line diff-context-gap' });
+                                skippedLeft.createEl('span', { cls: 'line-number-container' });
+                                skippedLeft.createEl('span', { cls: 'diff-marker', text: '...' });
                             });
-
                             renderTasksRight.push((frag: DocumentFragment) => {
-                                const skippedRight = this.buildInteractiveContextGap(hiddenLines, leftStart, rightStart, true, linkedPair);
-                                    linkedPair.right = skippedRight;
-                                    frag.appendChild(skippedRight);
+                                const skippedRight = frag.createEl('div', { cls: 'diff-line diff-context-gap' });
+                                skippedRight.createEl('span', { cls: 'line-number-container' });
+                                skippedRight.createEl('span', { cls: 'diff-marker', text: '...' });
                             });
                         }
                         renderLine(true, line, 'context', leftLineNum);
@@ -4834,27 +4680,9 @@ class DiffModal extends Modal {
                     leftLineNum++;
                     rightLineNum++;
                 }
-                if (lastLineShown < lines.length - 1 && this.contextLines < 9999) {
-                    const startHidden = lastLineShown + 1;
-                    const endHidden = lines.length - 1;
-                    const hiddenLines = lines.slice(startHidden, endHidden + 1);
-                    const leftStart = leftLineNum - (lines.length - startHidden);
-                    const rightStart = rightLineNum - (lines.length - startHidden);
-                    
-                    const linkedPair: { left?: HTMLElement, right?: HTMLElement } = {};
-                    renderTasksLeft.push((frag: DocumentFragment) => {
-                        const skippedLeft = this.buildInteractiveContextGap(hiddenLines, leftStart, rightStart, true, linkedPair);
-                        linkedPair.left = skippedLeft;
-                        frag.appendChild(skippedLeft);
-                    });
-                    renderTasksRight.push((frag: DocumentFragment) => {
-                        const skippedRight = this.buildInteractiveContextGap(hiddenLines, leftStart, rightStart, true, linkedPair);
-                        linkedPair.right = skippedRight;
-                        frag.appendChild(skippedRight);
-                    });
-                }
             }
         }
+
         await Promise.all([
             this.executeRenderTasks(leftPanel, renderTasksLeft),
             this.executeRenderTasks(rightPanel, renderTasksRight)
@@ -4863,7 +4691,7 @@ class DiffModal extends Modal {
     }
 
     private setupScrollSync(leftPanel: HTMLElement, rightPanel: HTMLElement) {
-let activeScrollSource: HTMLElement | null = null;
+        let activeScrollSource: HTMLElement | null = null;
         const onScrollLeft = () => {
             if (activeScrollSource === null) {
                 activeScrollSource = leftPanel;
@@ -4880,8 +4708,8 @@ let activeScrollSource: HTMLElement | null = null;
                 requestAnimationFrame(() => { activeScrollSource = null; });
             }
         };
-        this.plugin.registerDomEvent(leftPanel, 'scroll', onScrollLeft);
-        this.plugin.registerDomEvent(rightPanel, 'scroll', onScrollRight);
+        leftPanel.addEventListener('scroll', onScrollLeft);
+        rightPanel.addEventListener('scroll', onScrollRight);
     }
 
     scrollToDiff() {
@@ -4910,6 +4738,64 @@ class VersionControlSettingTab extends PluginSettingTab {
     constructor(app: App, plugin: VersionControlPlugin) {
         super(app, plugin);
         this.plugin = plugin;
+        this.injectAccordionStyles();
+    }
+
+    injectAccordionStyles() {
+        const styleId = 'vc-accordion-styles';
+        if (!document.getElementById(styleId)) {
+            const style = document.createElement('style');
+            style.id = styleId;
+            style.textContent = `
+                details.vc-setting-accordion {
+                    border: 1px solid var(--background-modifier-border);
+                    border-radius: var(--radius-m);
+                    margin-bottom: 12px;
+                    background-color: var(--background-primary-alt);
+                    overflow: hidden;
+                    transition: border-color 0.2s;
+                }
+                details.vc-setting-accordion[open] {
+                    border-color: var(--interactive-accent);
+                }
+                summary.vc-setting-summary {
+                    padding: 12px 16px;
+                    font-weight: 600;
+                    cursor: pointer;
+                    user-select: none;
+                    background-color: var(--background-secondary);
+                    display: flex;
+                    align-items: center;
+                }
+                summary.vc-setting-summary::-webkit-details-marker {
+                    display: none;
+                }
+                summary.vc-setting-summary::before {
+                    content: '▶';
+                    display: inline-block;
+                    margin-right: 10px;
+                    transition: transform 0.2s;
+                    font-size: 0.8em;
+                    color: var(--text-muted);
+                }
+                details.vc-setting-accordion[open] summary.vc-setting-summary::before {
+                    transform: rotate(90deg);
+                    color: var(--text-accent);
+                }
+                .vc-setting-accordion-content {
+                    padding: 8px 16px;
+                    background-color: var(--background-primary);
+                    border-top: 1px solid var(--background-modifier-border);
+                }
+                .vc-setting-accordion-content .setting-item {
+                    border-bottom: 1px solid var(--background-modifier-border-subtle);
+                }
+                .vc-setting-accordion-content .setting-item:last-child {
+                    border-bottom: none;
+                }
+            `;
+            document.head.appendChild(style);
+        }
     }
 
     createAccordionSection(containerEl: HTMLElement, title: string, icon: string, defaultOpen = false): HTMLElement {
@@ -4931,10 +4817,7 @@ class VersionControlSettingTab extends PluginSettingTab {
             const headerEl = statsEl.createEl('div', { cls: 'stats-header' });
             headerEl.createEl('h3', { text: '📊 存储统计' });
             const refreshBtn = headerEl.createEl('button', { text: '🔄 刷新', cls: 'stats-refresh-btn' });
-            
-            this.plugin.registerDomEvent(refreshBtn, 'click', () => { 
-                this.display(); 
-            });
+            refreshBtn.addEventListener('click', () => { this.display(); });
 
             const statsGrid = statsEl.createEl('div', { cls: 'stats-grid' });
             
@@ -4998,8 +4881,8 @@ class VersionControlSettingTab extends PluginSettingTab {
                 }));
 
         new Setting(basicSec)
-            .setName('版本文件夹路径')
-            .setDesc('所有版本的存储文件夹路径，需要以英文句号或者名称直接开始（默认为 .versions）')
+            .setName('版本存储路径')
+            .setDesc('指定版本数据的存储位置(相对于库根目录)')
             .addText(text => text
                 .setPlaceholder('.versions')
                 .setValue(this.plugin.settings.versionFolder)
@@ -5401,11 +5284,21 @@ class VersionControlSettingTab extends PluginSettingTab {
         feature1.createEl('strong', { text: '✨ 功能特性:' });
         const ul1 = feature1.createEl('ul');
         ul1.createEl('li', { text: '分级缓存 - 为大型 Vault 带来的零延迟体验' });
-        ul1.createEl('li', { text: '版本标签 system - 为重要版本添加标签进行分类' });
+        ul1.createEl('li', { text: '版本标签系统 - 为重要版本添加标签进行分类' });
         ul1.createEl('li', { text: '快速预览 - 无需完整对比即可查看版本内容' });
         ul1.createEl('li', { text: '版本备注 - 为版本添加详细说明' });
         ul1.createEl('li', { text: '星标标记 - 标记重要版本便于查找' });
-        ul1.createEl('li', { text: '存储优化 - 压缩与逆向差分双引擎驱动' });
+        ul1.createEl('li', { text: '高级筛选 - 按标签、星标筛选版本' });
+        ul1.createEl('li', { text: '增强差异对比 - 智能行内高亮、智能折叠' });
+        
+        const feature2 = infoEl.createEl('div', { cls: 'feature-item' });
+        feature2.createEl('strong', { text: '💡 使用技巧:' });
+        const ul2 = feature2.createEl('ul');
+        ul2.createEl('li', { text: '右键点击版本可查看更多操作选项' });
+        ul2.createEl('li', { text: '点击标签可快速筛选相关版本' });
+        ul2.createEl('li', { text: '使用星标标记重要的里程碑版本' });
+        ul2.createEl('li', { text: '定期运行"优化存储"以保持最佳性能' });
+        ul2.createEl('li', { text: '增量存储和压缩可节省大部分空间' });
     }
 
     async clearAllVersions() {
@@ -5425,12 +5318,13 @@ class VersionControlSettingTab extends PluginSettingTab {
             }
         } catch (error: unknown) {
             console.error('清空版本失败:', getErrorMessage(error), error);
+            new Notice('❌ 清空失败,请查看控制台');
         }
     }
 }
 
 // =======================================================================
-// ========================== 完整性报告模态框 ============================
+// ========================== 完整性检查报告 =============================
 // =======================================================================
 class IntegrityReportModal extends Modal {
     plugin: VersionControlPlugin;
@@ -5444,41 +5338,74 @@ class IntegrityReportModal extends Modal {
 
     onOpen() {
         const { contentEl } = this;
-        contentEl.addClass('integrity-report-modal');
-        contentEl.createEl('h2', { text: '⚠️ 检测到异常版本记录' });
+        contentEl.createEl('h2', { text: '🛡️ 版本完整性检查报告' });
 
-        const desc = contentEl.createEl('p', { cls: 'integrity-warning' });
-        desc.setText(`有 ${this.report.length} 个文件的版本记录存在潜在损坏或依赖丢失：`);
+        if (this.report.length === 0) {
+            const successDiv = contentEl.createEl('div', { cls: 'integrity-success' });
+            successDiv.createEl('h3', { text: '✅ 所有检查通过' });
+            successDiv.createEl('p', { text: '未发现损坏的版本记录。' });
+        } else {
+            const headerContainer = contentEl.createEl('div', { attr: { style: 'display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;' } });
+            headerContainer.createEl('p', { text: `⚠️ 发现 ${this.report.length} 个文件存在问题:`, attr: { style: 'margin: 0;' } });
+            const repairAllBtn = headerContainer.createEl('button', { text: '✨ 一键修复所有哈希', cls: 'mod-cta' });
+            
+            repairAllBtn.addEventListener('click', async () => {
+                repairAllBtn.setText('正在修复中...');
+                repairAllBtn.disabled = true;
+                
+                let successCount = 0;
+                let failCount = 0;
+                const total = this.report.length;
+                const notice = new Notice(`正在批量修复哈希... 0/${total}`, 0);
 
-        const list = contentEl.createEl('div', { cls: 'integrity-list' });
-        this.report.forEach(item => {
-            const itemEl = list.createEl('div', { cls: 'integrity-item' });
-            itemEl.createEl('div', { text: item.filePath, cls: 'integrity-filepath' });
-            const errorsUl = itemEl.createEl('ul', { cls: 'integrity-errors' });
-            item.errors.forEach(err => {
-                errorsUl.createEl('li', { text: err });
-            });
-
-            const fixBtn = itemEl.createEl('button', { text: '尝试修复哈希', cls: 'mod-warning' });
-            fixBtn.addEventListener('click', async () => {
-                fixBtn.setText('正在修复...');
-                fixBtn.disabled = true;
-                const success = await this.plugin.repairVersionFile(item.filePath);
-                if (success) {
-                    fixBtn.setText('✅ 修复成功');
-                    fixBtn.removeClass('mod-warning');
-                    fixBtn.addClass('mod-cta');
-                } else {
-                    fixBtn.setText('修复失败');
-                    new Notice('无法自动修复，可能是依赖链断裂。');
+                for (let i = 0; i < total; i++) {
+                    const item = this.report[i]!;
+                    try {
+                        const repaired = await this.plugin.repairVersionFile(item.filePath);
+                        if (repaired) successCount++;
+                        else failCount++; 
+                    } catch (e: unknown) { failCount++; }
+                    
+                    if (i % 5 === 0) {
+                        notice.setMessage(`正在批量修复哈希... ${i + 1}/${total}`);
+                        repairAllBtn.setText(`修复中 ${i + 1}/${total}...`);
+                        await this.plugin.yieldToMain();
+                    }
                 }
-            });
-        });
 
-        const btnContainer = contentEl.createEl('div', { cls: 'modal-button-container' });
-        const closeBtn = btnContainer.createEl('button', { text: '关闭' });
-        closeBtn.addEventListener('click', () => this.close());
-        btnContainer.appendChild(closeBtn);
+                notice.hide();
+                new Notice(`✅ 批量修复完成！\n成功修复 ${successCount} 个文件。\n（若有残留错误，可能是文件严重损坏）`, 8000);
+                this.close(); 
+            });
+            
+            const listContainer = contentEl.createEl('div', { cls: 'integrity-report-list' });
+            this.report.forEach(item => {
+                const fileContainer = listContainer.createEl('div', { cls: 'integrity-item' });
+                fileContainer.createEl('h4', { text: item.filePath });
+                
+                const errorList = fileContainer.createEl('ul');
+                item.errors.forEach(err => {
+                    errorList.createEl('li', { text: err, attr: { style: 'color: var(--text-error);' } });
+                });
+
+                const repairBtn = fileContainer.createEl('button', { text: '尝试修复哈希' });
+                repairBtn.addEventListener('click', async () => {
+                    repairBtn.setText('修复中...');
+                    repairBtn.disabled = true;
+                    const repaired = await this.plugin.repairVersionFile(item.filePath);
+                    if (repaired) {
+                        repairBtn.setText('✅ 修复成功');
+                        repairBtn.addClass('mod-cta'); 
+                    } else {
+                        repairBtn.setText('修复失败');
+                        new Notice('无法自动修复，可能是依赖链断裂或内容已损坏。');
+                    }
+                });
+            });
+        }
+
+        const btnContainer = contentEl.createEl('div', { cls: 'modal-button-container', attr: { style: 'margin-top: 20px;' } });
+        btnContainer.createEl('button', { text: '关闭' }).addEventListener('click', () => this.close());
     }
 
     onClose() {
@@ -5487,44 +5414,45 @@ class IntegrityReportModal extends Modal {
 }
 
 // =======================================================================
-// =========================== 上下文行数输入模态框 =======================
+// ======================= 上下文行数输入模态框 ==========================
 // =======================================================================
 class ContextLineInputModal extends Modal {
-    currentLines: number;
+    currentValue: number;
     onSubmit: (lines: number) => void;
 
-    constructor(app: App, currentLines: number, onSubmit: (lines: number) => void) {
+    constructor(app: App, currentValue: number, onSubmit: (lines: number) => void) {
         super(app);
-        this.currentLines = currentLines;
+        this.currentValue = currentValue;
         this.onSubmit = onSubmit;
     }
 
     onOpen() {
         const { contentEl } = this;
         contentEl.createEl('h2', { text: '设置上下文行数' });
-        contentEl.createEl('p', { text: '输入在差异对比中，变化位置上下保留显示的未修改行数 (0 表示只显示修改行, 9999 表示显示全部)。' });
+        contentEl.createEl('p', { text: '输入在差异行周围显示的未修改行数 (0 表示只显示修改行, 9999 表示显示全部)。' });
 
         const inputContainer = contentEl.createEl('div', { attr: { style: 'margin: 20px 0;' } });
         const input = inputContainer.createEl('input', { type: 'number' }) as HTMLInputElement;
-        input.value = String(this.currentLines);
+        input.value = String(this.currentValue);
         input.focus();
 
         const btnContainer = contentEl.createEl('div', { cls: 'modal-button-container' });
         const cancelBtn = btnContainer.createEl('button', { text: '取消' }) as HTMLButtonElement;
-        const saveBtn = btnContainer.createEl('button', { text: '保存', cls: 'mod-cta' }) as HTMLButtonElement;
-        
-        btnContainer.appendChild(cancelBtn);
-        btnContainer.appendChild(saveBtn);
-
         cancelBtn.addEventListener('click', () => this.close());
-        saveBtn.addEventListener('click', async () => {
+        
+        const saveBtn = btnContainer.createEl('button', { text: '保存', cls: 'mod-cta' }) as HTMLButtonElement;
+        saveBtn.addEventListener('click', () => {
             const val = parseInt(input.value, 10);
             if (!isNaN(val) && val >= 0) {
-                this.close();
                 this.onSubmit(val);
+                this.close();
             } else {
                 new Notice('请输入有效的正整数');
             }
+        });
+
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') saveBtn.click();
         });
     }
 
