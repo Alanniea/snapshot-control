@@ -1,7 +1,7 @@
 import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, Modal, ItemView, WorkspaceLeaf, Menu, MarkdownRenderer, TFolder, setIcon, moment, normalizePath, debounce, DataAdapter } from 'obsidian';
 import * as Diff from 'diff';
 
-// --- 工具函数 ---
+// --- 工具函数：安全提取错误信息 ---
 export function getErrorMessage(error: unknown): string {
     if (error instanceof Error) return error.message;
     if (typeof error === 'string') return error;
@@ -9,6 +9,7 @@ export function getErrorMessage(error: unknown): string {
     return 'Unknown error occurred';
 }
 
+// --- 高效哈希算法 (cyrb53) ---
 function cyrb53(str: string, seed = 0): number {
     let h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;
     for (let i = 0, ch; i < str.length; i++) {
@@ -27,7 +28,7 @@ function hashString(str: string): string {
     return cyrb53(str).toString(36);
 }
 
-// --- 简单高效的 LRU 缓存 ---
+// --- 纯净轻量级 LRU 缓存 ---
 class SimpleLRU<K, V> {
     private max: number;
     private cache: Map<K, V> = new Map();
@@ -56,7 +57,7 @@ class SimpleLRU<K, V> {
     clear() { this.cache.clear(); }
 }
 
-// --- 数据接口 ---
+// --- 数据结构定义 ---
 interface VersionData {
     id: string;
     timestamp: number;
@@ -78,18 +79,13 @@ interface VersionFile {
     versionIndex?: Map<string, number>;
 }
 
-interface GlobalIndexEntry {
+export interface GlobalHistoryItem {
+    version: VersionData;
     filePath: string;
-    versionId: string;
-    timestamp: number;
-    message: string;
-    size: number;
-    tags?: string[];
-    starred?: boolean;
-    note?: string;
+    file: TFile | null;
+    hasUnsavedChanges?: boolean;
+    isUnversioned?: boolean;
 }
-
-interface GlobalIndex { entries: GlobalIndexEntry[]; }
 
 interface VersionControlSettings {
     versionFolder: string;
@@ -121,7 +117,7 @@ const DEFAULT_SETTINGS: VersionControlSettings = {
     enableMaxVersions: true,
     maxDays: 30,
     enableMaxDays: false,
-    useRelativeTime: false,
+    useRelativeTime: true,
     enableDeduplication: true,
     showNotifications: true,
     excludedFolders: [],
@@ -146,7 +142,7 @@ export default class VersionControlPlugin extends Plugin {
     
     versionCache: SimpleLRU<string, VersionFile> = new SimpleLRU(50);
     contentCache: SimpleLRU<string, string> = new SimpleLRU(50); 
-    globalHistoryCache: { version: VersionData, filePath: string, file: TFile | null }[] | null = null;
+    globalHistoryCache: GlobalHistoryItem[] | null = null;
     
     activeFileLastSaveTime: number | null = null;
     activeFileSaveLabel = '';
@@ -166,14 +162,14 @@ export default class VersionControlPlugin extends Plugin {
         this.debouncedUpdateStatusBar();
 
         if (this.settings.enableStatusBarDiff) {
-            this.statusBarItem.addClass('version-control-statusbar-clickable');
+            this.statusBarItem.addClass('vc-statusbar-pill');
             this.statusBarItem.addEventListener('click', () => this.quickDiffFromStatusBar());
         }
 
         this.registerView('version-history', (leaf) => new VersionHistoryView(leaf, this));
 
         this.addCommand({ id: 'show-version-history', name: '显示版本历史', callback: () => this.activateVersionHistoryView() });
-        this.addCommand({ id: 'create-manual-version', name: '保存当前文件新版本', callback: () => this.createManualVersion() });
+        this.addCommand({ id: 'create-manual-version', name: '保存当前文件快照', callback: () => this.createManualVersion() });
         this.addCommand({ id: 'check-version-integrity', name: '检查版本完整性', callback: () => this.checkAllVersionsIntegrity() });
 
         this.addSettingTab(new VersionControlSettingTab(this.app, this));
@@ -208,8 +204,6 @@ export default class VersionControlPlugin extends Plugin {
                 });
             }, 1000) as unknown as number
         );
-
-        if (this.settings.showNotifications) new Notice('✅ 版本控制插件已启动');
     }
 
     onunload() {
@@ -321,7 +315,6 @@ export default class VersionControlPlugin extends Plugin {
                     this.lastModifiedTime.delete(oldPath);
                     this.lastModifiedTime.set(file.path, versionFile.lastModified);
 
-                    await this.updateGlobalIndexForRename(oldPath, file.path);
                     this.clearGlobalCache();
                     this.refreshVersionHistoryView();
                 } catch (e) { console.error("Rename Error", e); }
@@ -342,7 +335,6 @@ export default class VersionControlPlugin extends Plugin {
                 this.contentCache.deletePrefix(filePath + "::");
                 this.lastModifiedTime.delete(filePath);
                 this.debouncedSaves.delete(filePath);
-                await this.clearGlobalIndexForFile(filePath);
                 this.clearGlobalCache();
                 this.refreshVersionHistoryView();
             }
@@ -355,12 +347,12 @@ export default class VersionControlPlugin extends Plugin {
     getSaveTypeLabel(message: string): string { 
         if (message.includes('[Auto Save]')) return '自动保存';
         if (message.includes('[Before Restore]')) return '恢复前备份';
-        return '手动保存';
+        return '手动快照';
     }
 
     async updateStatusBar() {
         if (!this.settings.autoSave) { 
-            this.statusBarItem.setText('⏸ 版本控制: 暂停'); 
+            this.statusBarItem.setText('⏸ 历史暂停'); 
             this.activeFileLastSaveTime = null;
             return; 
         }
@@ -388,12 +380,12 @@ export default class VersionControlPlugin extends Plugin {
     renderStatusBarTime() {
         if (this.activeFileLastSaveTime === null) return;
         const relativeTime = this.getRelativeTime(this.activeFileLastSaveTime);
-        const newText = `${this.activeFileSaveLabel}: ${relativeTime}`;
+        const newText = `${this.activeFileSaveLabel} · ${relativeTime}`;
         if (this.lastRenderedStatusText !== newText) {
             this.statusBarItem.setText(newText);
             this.lastRenderedStatusText = newText;
         }
-        this.statusBarItem.title = `${this.activeFileSaveLabel}于 ${new Date(this.activeFileLastSaveTime).toLocaleString('zh-CN')}。点击快速对比。`;
+        this.statusBarItem.title = `${this.activeFileSaveLabel}于 ${new Date(this.activeFileLastSaveTime).toLocaleString('zh-CN')}。点击对比差异。`;
     }
 
     async quickDiffFromStatusBar() {
@@ -473,14 +465,10 @@ export default class VersionControlPlugin extends Plugin {
                         latest.tags = tags.length > 0 ? tags : latest.tags;
                         await this.saveVersionFile(file.path, versionFile);
                         this.versionCache.set(file.path, versionFile);
-                        await this.updateGlobalIndex({
-                            filePath: file.path, versionId: latest.id, timestamp,
-                            message, size: latest.size, tags: latest.tags, starred: latest.starred, note: latest.note
-                        });
                         this.clearGlobalCache(); 
                         this.refreshVersionHistoryView();
                         this.debouncedUpdateStatusBar();
-                        if (showNotification && this.settings.showNotifications) new Notice(`✅ 版本已保存 (更新了自动保存版本)`);
+                        if (showNotification && this.settings.showNotifications) new Notice(`✨ 已将自动保存转换为手动快照`);
                         return;
                     }
                     if (showNotification && this.settings.showNotifications) new Notice('ℹ️ 内容无变动，跳过版本创建');
@@ -532,17 +520,13 @@ export default class VersionControlPlugin extends Plugin {
             this.versionCache.set(file.path, versionFile);
             this.contentCache.set(`${file.path}::${newVersion.id}`, content);
 
-            await this.updateGlobalIndex({
-                filePath: file.path, versionId: id, timestamp, message,
-                size: content.length, tags: newVersion.tags, starred: false
-            });
-
+            // 清理缓存触发全局无感实时同步
             this.clearGlobalCache(); 
             this.refreshVersionHistoryView();
             this.lastModifiedTime.set(file.path, timestamp);
             this.debouncedUpdateStatusBar();
             
-            if (showNotification && this.settings.showNotifications) new Notice(`✅ 版本已保存: ${message}`);
+            if (showNotification && this.settings.showNotifications) new Notice(`✨ 快照保存成功`);
         } catch (error) {
             console.error('保存版本失败:', getErrorMessage(error));
             if (showNotification) new Notice('❌ 保存版本失败');
@@ -615,11 +599,6 @@ export default class VersionControlPlugin extends Plugin {
             }
         }
 
-        const removedIds = versionFile.versions.filter(v => !keepSet.has(v.id)).map(v => v.id);
-        for (const id of removedIds) {
-            await this.updateGlobalIndex({ filePath: versionFile.filePath, versionId: id, timestamp: 0, message: '', size: 0 }, true);
-        }
-
         versionFile.versions = proposedList;
         this.clearGlobalCache(); 
         return originalCount - versionFile.versions.length;
@@ -635,7 +614,12 @@ export default class VersionControlPlugin extends Plugin {
         if (await adapter.exists(path)) {
             try {
                 const loaded = await this.readCompressedOrRaw(path);
-                finalVersionFile = JSON.parse(loaded) as VersionFile;
+                if (loaded) {
+                    finalVersionFile = JSON.parse(loaded) as VersionFile;
+                    if (finalVersionFile && Array.isArray(finalVersionFile.versions)) {
+                        finalVersionFile.versions.sort((a, b) => b.timestamp - a.timestamp);
+                    }
+                }
             } catch (e) { console.error("无法解析版本文件:", e); }
         }
 
@@ -648,16 +632,19 @@ export default class VersionControlPlugin extends Plugin {
     async readCompressedOrRaw(path: string): Promise<string> {
         const adapter = this.app.vault.adapter;
         if (!await adapter.exists(path)) return "";
+        
         try {
-            if (this.settings.enableCompression) {
-                const raw = await adapter.readBinary(path);
-                return await this.decompressText(raw);
-            } else {
-                return await adapter.read(path);
+            const text = await adapter.read(path);
+            if (text && (text.trim().startsWith('{') || text.includes('"versions"'))) {
+                return text;
             }
-        } catch {
+        } catch {}
+
+        try {
             const raw = await adapter.readBinary(path);
             return await this.decompressText(raw);
+        } catch {
+            return "";
         }
     }
 
@@ -667,6 +654,8 @@ export default class VersionControlPlugin extends Plugin {
         try {
             const parentDir = path.substring(0, path.lastIndexOf('/'));
             if (!(await adapter.exists(parentDir))) await adapter.mkdir(parentDir);
+
+            versionFile.versions.sort((a, b) => b.timestamp - a.timestamp);
 
             const content = JSON.stringify({ 
                 filePath: versionFile.filePath, 
@@ -686,7 +675,7 @@ export default class VersionControlPlugin extends Plugin {
     async getAllVersions(filePath: string): Promise<VersionData[]> { 
         try { 
             const vf = await this.loadVersionFile(filePath); 
-            return vf.versions; 
+            return vf.versions.sort((a, b) => b.timestamp - a.timestamp); 
         } catch { return []; } 
     }
     
@@ -790,88 +779,106 @@ export default class VersionControlPlugin extends Plugin {
         new IntegrityReportModal(this.app, this, report).open(); 
     }
 
-    async updateGlobalIndex(entry: GlobalIndexEntry, isDeletion = false) {
-        const adapter = this.app.vault.adapter;
-        const indexPath = normalizePath(`${this.settings.versionFolder}/global-index.json`);
-        let index: GlobalIndex = { entries: [] };
-        try {
-            if (await adapter.exists(indexPath)) index = JSON.parse(await adapter.read(indexPath));
-        } catch {}
-
-        index.entries = index.entries.filter((e) => e.versionId !== entry.versionId);
-        if (!isDeletion) index.entries.unshift(entry);
-        index.entries = index.entries.sort((a, b) => b.timestamp - a.timestamp).slice(0, 1000);
-
-        try { await adapter.write(indexPath, JSON.stringify(index, null, 2)); } catch {}
+    countWords(str: string): number {
+        if (!str) return 0;
+        const cjk = (str.match(/[\u4e00-\u9fa5\u3040-\u30ff\uac00-\ud7af]/g) || []).length;
+        const western = (str.replace(/[\u4e00-\u9fa5\u3040-\u30ff\uac00-\ud7af]/g, ' ').match(/[a-zA-Z0-9_]+/g) || []).length;
+        return cjk + western;
     }
 
-    async updateGlobalIndexForRename(oldPath: string, newPath: string) {
-        const adapter = this.app.vault.adapter;
-        const indexPath = normalizePath(`${this.settings.versionFolder}/global-index.json`);
-        if (!(await adapter.exists(indexPath))) return;
-        try {
-            const index = JSON.parse(await adapter.read(indexPath)) as GlobalIndex;
-            let changed = false;
-            index.entries.forEach((e) => {
-                if (e.filePath === oldPath) { e.filePath = newPath; changed = true; }
-            });
-            if (changed) await adapter.write(indexPath, JSON.stringify(index, null, 2));
-        } catch {}
+    // --- 高性能动态相对时间计算 (逐秒精准递增) ---
+    getRelativeTime(timestamp: number): string { 
+        const now = Date.now();
+        const diff = Math.max(0, now - timestamp);
+        
+        if (diff < 60000) return `${Math.floor(diff / 1000)}秒前`;
+        if (diff < 3600000) return `${Math.floor(diff / 60000)}分钟前`;
+        if (diff < 86400000) return `${Math.floor(diff / 3600000)}小时前`;
+        if (diff < 172800000) return '昨天';
+        if (diff < 604800000) return `${Math.floor(diff / 86400000)}天前`;
+        return moment(timestamp).format('MM-DD');
     }
 
-    async clearGlobalIndexForFile(filePath: string) {
-        const adapter = this.app.vault.adapter;
-        const indexPath = normalizePath(`${this.settings.versionFolder}/global-index.json`);
-        if (!(await adapter.exists(indexPath))) return;
-        try {
-            const index = JSON.parse(await adapter.read(indexPath)) as GlobalIndex;
-            index.entries = index.entries.filter((e) => e.filePath !== filePath);
-            await adapter.write(indexPath, JSON.stringify(index, null, 2));
-        } catch {}
-    }
+    // --- 全库时间线：按真实最近修改时间倒序排列 ---
+    async getGlobalHistory(limit = 100): Promise<GlobalHistoryItem[]> {
+        if (this.globalHistoryCache) return this.globalHistoryCache.slice(0, limit);
 
-    async syncGlobalIndexMetadata(filePath: string, versionId: string, updates: Partial<GlobalIndexEntry>) {
-        const adapter = this.app.vault.adapter;
-        const indexPath = normalizePath(`${this.settings.versionFolder}/global-index.json`);
-        if (!(await adapter.exists(indexPath))) return;
-        try {
-            const index = JSON.parse(await adapter.read(indexPath)) as GlobalIndex;
-            const entry = index.entries.find((e) => e.filePath === filePath && e.versionId === versionId);
-            if (entry) {
-                Object.assign(entry, updates);
-                await adapter.write(indexPath, JSON.stringify(index, null, 2));
-            }
-        } catch {}
-    }
-
-    async rebuildGlobalIndex(): Promise<void> {
-        const adapter = this.app.vault.adapter;
         const folder = this.settings.versionFolder;
-        if (!(await adapter.exists(folder))) return;
+        const adapter = this.app.vault.adapter;
 
-        const files = await this.getJSONFilesRecursively(folder);
-        const index: GlobalIndex = { entries: [] };
+        const snapshotMap = new Map<string, VersionData>();
+        if (await adapter.exists(folder)) {
+            const files = await this.getJSONFilesRecursively(folder);
+            for (const file of files) {
+                try {
+                    const raw = await this.readCompressedOrRaw(file);
+                    if (!raw) continue;
+                    const vf = JSON.parse(raw) as VersionFile;
+                    if (!vf || !Array.isArray(vf.versions) || vf.versions.length === 0) continue;
+                    if (!vf.filePath) continue;
 
-        for (const file of files) {
-            try {
-                const raw = await this.readCompressedOrRaw(file);
-                if (!raw) continue;
-                const vf = JSON.parse(raw) as VersionFile;
-                if (!vf.versions) continue;
-
-                vf.versions.forEach(v => {
-                    index.entries.push({
-                        filePath: vf.filePath, versionId: v.id, timestamp: v.timestamp,
-                        message: v.message, size: v.size, tags: v.tags, starred: v.starred, note: v.note
-                    });
-                });
-            } catch {}
-            await this.yieldToMain();
+                    vf.versions.sort((a, b) => b.timestamp - a.timestamp);
+                    snapshotMap.set(vf.filePath, vf.versions[0]!);
+                } catch {}
+                await this.yieldToMain();
+            }
         }
 
-        index.entries = index.entries.sort((a, b) => b.timestamp - a.timestamp).slice(0, 1000);
-        await adapter.write(normalizePath(`${folder}/global-index.json`), JSON.stringify(index, null, 2));
-        this.clearGlobalCache();
+        const entries: GlobalHistoryItem[] = [];
+        const seenPaths = new Set<string>();
+
+        const allVaultFiles = this.app.vault.getMarkdownFiles().filter(f => !this.isExcluded(f.path));
+
+        for (const file of allVaultFiles) {
+            seenPaths.add(file.path);
+            const latestSnapshot = snapshotMap.get(file.path);
+
+            if (latestSnapshot) {
+                const hasUnsaved = file.stat.mtime > (latestSnapshot.timestamp + 2000);
+                entries.push({
+                    version: latestSnapshot,
+                    filePath: file.path,
+                    file: file,
+                    hasUnsavedChanges: hasUnsaved,
+                    isUnversioned: false
+                });
+            } else {
+                entries.push({
+                    version: {
+                        id: 'unversioned',
+                        timestamp: file.stat.mtime,
+                        message: '未保存快照',
+                        size: file.stat.size,
+                        hash: ''
+                    },
+                    filePath: file.path,
+                    file: file,
+                    hasUnsavedChanges: true,
+                    isUnversioned: true
+                });
+            }
+        }
+
+        for (const [filePath, snap] of snapshotMap.entries()) {
+            if (!seenPaths.has(filePath)) {
+                entries.push({
+                    version: snap,
+                    filePath: filePath,
+                    file: null,
+                    hasUnsavedChanges: false,
+                    isUnversioned: false
+                });
+            }
+        }
+
+        entries.sort((a, b) => {
+            const timeA = a.file ? a.file.stat.mtime : a.version.timestamp;
+            const timeB = b.file ? b.file.stat.mtime : b.version.timestamp;
+            return timeB - timeA;
+        });
+
+        this.globalHistoryCache = entries;
+        return entries.slice(0, limit);
     }
 
     async updateVersionTags(filePath: string, versionId: string, tags: string[]) {
@@ -883,7 +890,6 @@ export default class VersionControlPlugin extends Plugin {
                     vf.versions[idx]!.tags = tags.length > 0 ? tags : undefined;
                     await this.saveVersionFile(filePath, vf);
                     this.versionCache.set(filePath, vf);
-                    await this.syncGlobalIndexMetadata(filePath, versionId, { tags: tags.length > 0 ? tags : undefined });
                     this.clearGlobalCache(); 
                     this.refreshVersionHistoryView();
                 }
@@ -900,7 +906,6 @@ export default class VersionControlPlugin extends Plugin {
                     vf.versions[idx]!.note = note.trim() || undefined;
                     await this.saveVersionFile(filePath, vf);
                     this.versionCache.set(filePath, vf);
-                    await this.syncGlobalIndexMetadata(filePath, versionId, { note: note.trim() || undefined });
                     this.clearGlobalCache(); 
                     this.refreshVersionHistoryView();
                 }
@@ -918,7 +923,6 @@ export default class VersionControlPlugin extends Plugin {
                     vf.versions[idx]!.starred = next;
                     await this.saveVersionFile(filePath, vf);
                     this.versionCache.set(filePath, vf);
-                    await this.syncGlobalIndexMetadata(filePath, versionId, { starred: next });
                     this.clearGlobalCache(); 
                 }
             } catch {}
@@ -938,7 +942,6 @@ export default class VersionControlPlugin extends Plugin {
                 this.buildVersionIndex(vf);
                 await this.saveVersionFile(filePath, vf);
                 this.versionCache.set(filePath, vf);
-                await this.updateGlobalIndex({ filePath, versionId, timestamp: 0, message: '', size: 0 }, true);
                 this.clearGlobalCache(); 
                 this.refreshVersionHistoryView();
             } catch {}
@@ -951,7 +954,7 @@ export default class VersionControlPlugin extends Plugin {
             await this.createVersion(file, '[Before Restore]', false);
             const content = await this.getVersionContent(file.path, versionId);
             await this.app.vault.modify(file, content);
-            if (this.settings.showNotifications) new Notice('✅ 版本已恢复');
+            if (this.settings.showNotifications) new Notice('✅ 版本恢复成功');
             this.refreshVersionHistoryView();
         } catch { 
             new Notice('❌ 恢复版本失败'); 
@@ -960,61 +963,14 @@ export default class VersionControlPlugin extends Plugin {
         }
     }
 
-    async exportVersionAsFile(filePath: string, versionId: string): Promise<void> { 
-        try { 
-            const content = await this.getVersionContent(filePath, versionId); 
-            const fileName = filePath.replace(/\.[^/.]+$/, ''); 
-            const exportPath = normalizePath(`${fileName}_v${versionId.substring(0,8)}.md`); 
-            await this.app.vault.create(exportPath, content); 
-            new Notice(`✅ 已导出为: ${exportPath}`); 
-        } catch { new Notice('❌ 导出失败'); } 
-    }
-
-    getRelativeTime(timestamp: number): string { 
-        const diff = Math.max(0, Date.now() - timestamp);
-        if (diff < 60000) return `${Math.floor(diff / 1000)}秒前`;
-        if (diff < 120000) return `1分钟前`;
-        return moment(timestamp).fromNow(); 
-    }
-
-    async getGlobalHistory(limit = 100): Promise<{ version: VersionData, filePath: string, file: TFile | null }[]> {
-        if (this.globalHistoryCache) return this.globalHistoryCache.slice(0, limit);
-        const adapter = this.app.vault.adapter;
-        const indexPath = normalizePath(`${this.settings.versionFolder}/global-index.json`);
-        if (!(await adapter.exists(indexPath))) await this.rebuildGlobalIndex();
-
-        try {
-            const raw = await adapter.read(indexPath);
-            const data = JSON.parse(raw) as GlobalIndex;
-            const results = data.entries.map(entry => {
-                const tFile = this.app.vault.getAbstractFileByPath(entry.filePath);
-                return {
-                    version: {
-                        id: entry.versionId,
-                        timestamp: entry.timestamp,
-                        message: entry.message,
-                        size: entry.size,
-                        tags: entry.tags,
-                        starred: entry.starred,
-                        note: entry.note
-                    } as VersionData,
-                    filePath: entry.filePath,
-                    file: (tFile instanceof TFile) ? tFile : null
-                };
-            });
-            this.globalHistoryCache = results;
-            return results.slice(0, limit);
-        } catch { return []; }
-    }
-
     formatFileSize(bytes: number): string { 
         if (bytes < 1024) return `${bytes} B`; 
-        if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(2)} KB`; 
-        return `${(bytes / (1024 * 1024)).toFixed(2)} MB`; 
+        if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`; 
+        return `${(bytes / (1024 * 1024)).toFixed(1)} MB`; 
     }
 
     formatTime(timestamp: number): string { 
-        return this.settings.useRelativeTime ? moment(timestamp).fromNow() : moment(timestamp).format('YYYY-MM-DD HH:mm:ss'); 
+        return moment(timestamp).format('YYYY-MM-DD HH:mm:ss'); 
     }
 
     refreshVersionHistoryView() { 
@@ -1026,7 +982,7 @@ export default class VersionControlPlugin extends Plugin {
 }
 
 // =======================================================================
-// ==================== 全面增强的差异对比模态框 ==========================
+// ==================== 现代代码审查模态框 (字符级高亮+无删除线) ==========
 // =======================================================================
 class DiffModal extends Modal {
     plugin: VersionControlPlugin;
@@ -1034,17 +990,18 @@ class DiffModal extends Modal {
     versionId: string;
     secondVersionId: string;
     ignoreWhitespace = true;
+    showLineNumbers = true;
     leftContent = '';
     rightContent = '';
     
-    // 差异项列表与导航
     private diffElements: HTMLElement[] = [];
     private currentDiffIdx = 0;
     private totalDiffCount = 0;
     
+    private metricsBar: HTMLElement;
     private textDiffContainer: HTMLElement;
     private allVersions: VersionData[] = [];
-    private statsChip: HTMLElement;
+    private statsBadge: HTMLElement;
     private prevBtn: HTMLButtonElement;
     private nextBtn: HTMLButtonElement;
 
@@ -1058,77 +1015,123 @@ class DiffModal extends Modal {
 
     async onOpen() {
         const { contentEl } = this; 
-        contentEl.addClass('diff-modal');
+        contentEl.addClass('diff-modal', 'vc-raycast-modal');
 
         this.allVersions = await this.plugin.getAllVersions(this.file.path);
 
-        // 1. 紧凑顶部标题
-        const header = contentEl.createEl('div', { cls: 'diff-modal-header' });
-        header.createEl('h3', { text: `📊 ${this.file.basename}`, cls: 'diff-modal-title' });
-        
-        // 2. 增强的双版本胶囊选择器
-        const selectorBar = contentEl.createEl('div', { cls: 'diff-mobile-selector-bar' });
-        
-        const leftBtn = selectorBar.createEl('button', { cls: 'diff-version-chip' });
-        this.updateChipText(leftBtn, this.versionId);
-        leftBtn.addEventListener('click', (e) => this.showVersionMenu(e, 'left'));
+        const header = contentEl.createEl('div', { cls: 'vc-diff-header' });
+        const titleArea = header.createEl('div', { cls: 'vc-diff-title-area' });
+        const iconSpan = titleArea.createEl('span', { cls: 'vc-diff-type-icon' });
+        setIcon(iconSpan, 'git-commit');
+        titleArea.createEl('span', { text: this.file.basename, cls: 'vc-diff-filename' });
+        titleArea.createEl('span', { text: this.file.path, cls: 'vc-diff-filepath' });
 
-        const swapBtn = selectorBar.createEl('button', { text: '⇄', cls: 'diff-swap-icon-btn', attr: { title: '交换版本对比侧' } });
+        const selectorBar = contentEl.createEl('div', { cls: 'vc-diff-version-bar' });
+        
+        const leftBtn = selectorBar.createEl('button', { cls: 'vc-diff-version-capsule is-left-history' });
+        this.updateChipText(leftBtn, this.versionId, '左侧历史');
+        leftBtn.addEventListener('click', (e: MouseEvent) => this.showVersionMenu(e, 'left'));
+
+        const swapBtn = selectorBar.createEl('button', { cls: 'vc-diff-swap-btn', attr: { 'aria-label': '调换两侧对比版本' } });
+        setIcon(swapBtn, 'arrow-right-left');
         swapBtn.addEventListener('click', async () => {
             [this.versionId, this.secondVersionId] = [this.secondVersionId, this.versionId];
             await this.updateDiffView();
         });
 
-        const rightBtn = selectorBar.createEl('button', { cls: 'diff-version-chip' });
-        this.updateChipText(rightBtn, this.secondVersionId);
-        rightBtn.addEventListener('click', (e) => this.showVersionMenu(e, 'right'));
+        const rightBtn = selectorBar.createEl('button', { cls: 'vc-diff-version-capsule is-right-latest' });
+        this.updateChipText(rightBtn, this.secondVersionId, '右侧最新');
+        rightBtn.addEventListener('click', (e: MouseEvent) => this.showVersionMenu(e, 'right'));
 
-        // 3. 增强的导航与控制工具栏
-        const controls = contentEl.createEl('div', { cls: 'diff-toolbar-compact' });
+        this.metricsBar = contentEl.createEl('div', { cls: 'vc-diff-metrics-bar' });
+
+        const toolbar = contentEl.createEl('div', { cls: 'vc-diff-toolbar' });
         
-        // 导航组 (上一处 / 下一处差异)
-        const navGroup = controls.createEl('div', { cls: 'diff-nav-group' });
-        this.prevBtn = navGroup.createEl('button', { text: '↑', cls: 'diff-nav-btn', attr: { title: '上一个变动' } });
+        const navPill = toolbar.createEl('div', { cls: 'vc-diff-nav-pill' });
+        this.prevBtn = navPill.createEl('button', { cls: 'vc-diff-nav-arrow', attr: { 'aria-label': '上一个差异' } });
+        setIcon(this.prevBtn, 'chevron-up');
         this.prevBtn.addEventListener('click', () => this.navigateDiff(-1));
 
-        this.statsChip = navGroup.createEl('span', { text: '计算中...', cls: 'diff-stats-badge' });
+        this.statsBadge = navPill.createEl('span', { text: '0 / 0', cls: 'vc-diff-nav-counter' });
 
-        this.nextBtn = navGroup.createEl('button', { text: '↓', cls: 'diff-nav-btn', attr: { title: '下一个变动' } });
+        this.nextBtn = navPill.createEl('button', { cls: 'vc-diff-nav-arrow', attr: { 'aria-label': '下一个差异' } });
+        setIcon(this.nextBtn, 'chevron-down');
         this.nextBtn.addEventListener('click', () => this.navigateDiff(1));
 
-        // 空白符开关胶囊
-        const wsToggle = controls.createEl('button', { 
-            text: this.ignoreWhitespace ? '空白: 忽略' : '空白: 严格',
-            cls: `diff-chip-toggle ${this.ignoreWhitespace ? 'active' : ''}`
+        const togglesGroup = toolbar.createEl('div', { cls: 'vc-diff-toggles' });
+
+        const saveSnapshotBtn = togglesGroup.createEl('button', { 
+            cls: 'vc-toggle-chip vc-btn-save-snapshot',
+            attr: { 'aria-label': '保存当前工作区为新快照' }
         });
-        wsToggle.addEventListener('click', () => {
-            this.ignoreWhitespace = !this.ignoreWhitespace;
-            wsToggle.setText(this.ignoreWhitespace ? '空白: 忽略' : '空白: 严格');
-            wsToggle.toggleClass('active', this.ignoreWhitespace);
+        const saveIcon = saveSnapshotBtn.createEl('span', { cls: 'vc-chip-icon' });
+        setIcon(saveIcon, 'bookmark-plus');
+        saveSnapshotBtn.createEl('span', { text: '保存快照' });
+
+        saveSnapshotBtn.addEventListener('click', async () => {
+            saveSnapshotBtn.disabled = true;
+            saveSnapshotBtn.setText('保存中...');
+            try {
+                await this.plugin.createVersion(this.file, '[Manual Save]', true, [], true);
+                this.allVersions = await this.plugin.getAllVersions(this.file.path);
+                await this.updateDiffView();
+            } finally {
+                saveSnapshotBtn.disabled = false;
+                saveSnapshotBtn.empty();
+                const icon = saveSnapshotBtn.createEl('span', { cls: 'vc-chip-icon' });
+                setIcon(icon, 'bookmark-plus');
+                saveSnapshotBtn.createEl('span', { text: '保存快照' });
+            }
+        });
+
+        const numToggle = togglesGroup.createEl('button', { 
+            text: this.showLineNumbers ? '# 行号' : '# 无行号',
+            cls: `vc-toggle-chip ${this.showLineNumbers ? 'is-active' : ''}`
+        });
+        numToggle.addEventListener('click', () => {
+            this.showLineNumbers = !this.showLineNumbers;
+            numToggle.setText(this.showLineNumbers ? '# 行号' : '# 无行号');
+            numToggle.toggleClass('is-active', this.showLineNumbers);
             this.renderDiff();
         });
 
-        this.textDiffContainer = contentEl.createEl('div', { cls: 'diff-container' });
+        const wsToggle = togglesGroup.createEl('button', { 
+            text: this.ignoreWhitespace ? '忽略空白' : '严格对比',
+            cls: `vc-toggle-chip ${this.ignoreWhitespace ? 'is-active' : ''}`
+        });
+        wsToggle.addEventListener('click', () => {
+            this.ignoreWhitespace = !this.ignoreWhitespace;
+            wsToggle.setText(this.ignoreWhitespace ? '忽略空白' : '严格对比');
+            wsToggle.toggleClass('is-active', this.ignoreWhitespace);
+            this.renderDiff();
+        });
+
+        this.textDiffContainer = contentEl.createEl('div', { cls: 'vc-diff-viewport' });
         await this.updateDiffView();
     }
 
-    updateChipText(btn: HTMLButtonElement, versionId: string) {
+    updateChipText(btn: HTMLButtonElement, versionId: string, rolePrefix: string) {
+        btn.empty();
+        const iconSpan = btn.createEl('span', { cls: 'vc-capsule-icon' });
         if (versionId === 'current') {
-            btn.setText('📄 当前笔记');
+            setIcon(iconSpan, 'file-edit');
+            btn.createEl('span', { text: `${rolePrefix} · 当前工作区` });
         } else {
+            setIcon(iconSpan, 'history');
             const v = this.allVersions.find(item => item.id === versionId);
-            btn.setText(v ? `🕒 ${this.plugin.formatTime(v.timestamp)}` : '历史版本');
+            btn.createEl('span', { text: v ? `${rolePrefix} · ${this.plugin.formatTime(v.timestamp)}` : '历史快照' });
         }
     }
 
     showVersionMenu(event: MouseEvent, side: 'left' | 'right') {
         const menu = new Menu();
-        menu.addItem(i => i.setTitle('📄 当前笔记').onClick(() => {
+        menu.addItem(i => i.setTitle('📄 当前工作区内容 (最新)').setIcon('file-edit').onClick(() => {
             if (side === 'left') this.versionId = 'current'; else this.secondVersionId = 'current';
             this.updateDiffView();
         }));
-        this.allVersions.forEach(v => {
-            menu.addItem(i => i.setTitle(`🕒 ${this.plugin.formatTime(v.timestamp)} [${this.plugin.getSaveTypeLabel(v.message)}]`).onClick(() => {
+        this.allVersions.forEach((v: VersionData, idx: number) => {
+            const isLatestTag = idx === 0 ? ' [最新]' : '';
+            menu.addItem(i => i.setTitle(`🕒 ${this.plugin.formatTime(v.timestamp)} · ${this.plugin.getSaveTypeLabel(v.message)}${isLatestTag}`).setIcon('history').onClick(() => {
                 if (side === 'left') this.versionId = v.id; else this.secondVersionId = v.id;
                 this.updateDiffView();
             }));
@@ -1136,10 +1139,51 @@ class DiffModal extends Modal {
         menu.showAtMouseEvent(event);
     }
 
+    private renderMetricsBar() {
+        if (!this.metricsBar) return;
+        this.metricsBar.empty();
+
+        const leftLines = this.leftContent ? this.leftContent.split('\n').length : 0;
+        const rightLines = this.rightContent ? this.rightContent.split('\n').length : 0;
+        const diffLines = rightLines - leftLines;
+
+        const leftWords = this.plugin.countWords(this.leftContent);
+        const rightWords = this.plugin.countWords(this.rightContent);
+        const diffWords = rightWords - leftWords;
+
+        const leftChars = this.leftContent.length;
+        const rightChars = this.rightContent.length;
+        const diffChars = rightChars - leftChars;
+
+        const formatDelta = (delta: number) => delta > 0 ? `+${delta.toLocaleString()}` : (delta < 0 ? `${delta.toLocaleString()}` : '+0');
+        const getDeltaClass = (delta: number) => delta > 0 ? 'is-plus' : (delta < 0 ? 'is-minus' : 'is-zero');
+
+        const buildMetricItem = (title: string, iconName: string, leftVal: number, rightVal: number, delta: number) => {
+            const item = this.metricsBar.createEl('div', { cls: 'vc-metric-chip' });
+            
+            const titleWrap = item.createEl('div', { cls: 'vc-metric-header' });
+            const labelGroup = titleWrap.createEl('div', { cls: 'vc-metric-label-group' });
+            const icon = labelGroup.createEl('span', { cls: 'vc-metric-icon' });
+            setIcon(icon, iconName);
+            labelGroup.createEl('span', { text: title, cls: 'vc-metric-title' });
+
+            titleWrap.createEl('span', { text: formatDelta(delta), cls: `vc-metric-delta ${getDeltaClass(delta)}` });
+
+            const dataWrap = item.createEl('div', { cls: 'vc-metric-body' });
+            dataWrap.createEl('span', { text: leftVal.toLocaleString(), cls: 'vc-metric-old', attr: { title: '历史快照' } });
+            dataWrap.createEl('span', { text: '➔', cls: 'vc-metric-arrow' });
+            dataWrap.createEl('span', { text: rightVal.toLocaleString(), cls: 'vc-metric-new', attr: { title: '当前工作区' } });
+        };
+
+        buildMetricItem('行数', 'rows', leftLines, rightLines, diffLines);
+        buildMetricItem('词数', 'file-text', leftWords, rightWords, diffWords);
+        buildMetricItem('字符数', 'type', leftChars, rightChars, diffChars);
+    }
+
     async updateDiffView() {
-        const chips = this.contentEl.querySelectorAll('.diff-version-chip') as NodeListOf<HTMLButtonElement>;
-        if (chips[0]) this.updateChipText(chips[0], this.versionId);
-        if (chips[1]) this.updateChipText(chips[1], this.secondVersionId);
+        const chips = this.contentEl.querySelectorAll('.vc-diff-version-capsule') as NodeListOf<HTMLButtonElement>;
+        if (chips[0]) this.updateChipText(chips[0], this.versionId, '左侧历史');
+        if (chips[1]) this.updateChipText(chips[1], this.secondVersionId, '右侧最新');
 
         this.leftContent = this.versionId === 'current' 
             ? await this.app.vault.read(this.file) 
@@ -1149,6 +1193,7 @@ class DiffModal extends Modal {
             ? await this.app.vault.read(this.file) 
             : await this.plugin.getVersionContent(this.file.path, this.secondVersionId);
 
+        this.renderMetricsBar();
         this.renderDiff();
     }
 
@@ -1156,10 +1201,10 @@ class DiffModal extends Modal {
         if (this.totalDiffCount === 0) return;
         this.currentDiffIdx = (this.currentDiffIdx + step + this.totalDiffCount) % this.totalDiffCount;
         
-        this.diffElements.forEach(el => el.removeClass('diff-current-highlight'));
+        this.diffElements.forEach(el => el.removeClass('is-active-diff-row'));
         const target = this.diffElements[this.currentDiffIdx];
         if (target) {
-            target.addClass('diff-current-highlight');
+            target.addClass('is-active-diff-row');
             target.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
         this.updateNavStats();
@@ -1167,11 +1212,11 @@ class DiffModal extends Modal {
 
     updateNavStats() {
         if (this.totalDiffCount === 0) {
-            this.statsChip.setText('无差异');
+            this.statsBadge.setText('无变动');
             this.prevBtn.disabled = true;
             this.nextBtn.disabled = true;
         } else {
-            this.statsChip.setText(`${this.currentDiffIdx + 1}/${this.totalDiffCount}`);
+            this.statsBadge.setText(`${this.currentDiffIdx + 1} / ${this.totalDiffCount}`);
             this.prevBtn.disabled = false;
             this.nextBtn.disabled = false;
         }
@@ -1182,36 +1227,33 @@ class DiffModal extends Modal {
         this.diffElements = [];
         this.currentDiffIdx = 0;
 
-        // 1. 信息丰满的“完全一致”空状态
         if (this.leftContent === this.rightContent) {
             this.totalDiffCount = 0;
             this.updateNavStats();
 
-            const emptyBox = this.textDiffContainer.createEl('div', { cls: 'diff-empty-state' });
-            emptyBox.createEl('div', { text: '✨', cls: 'diff-empty-icon' });
-            emptyBox.createEl('h4', { text: '两处内容完全一致' });
+            const emptyCard = this.textDiffContainer.createEl('div', { cls: 'vc-empty-hero' });
+            const iconBox = emptyCard.createEl('div', { cls: 'vc-empty-hero-icon' });
+            setIcon(iconBox, 'check-circle-2');
             
-            const metaCard = emptyBox.createEl('div', { cls: 'diff-empty-meta' });
-            metaCard.createEl('span', { text: `行数: ${this.leftContent.split('\n').length} 行` });
-            metaCard.createEl('span', { text: `大小: ${this.plugin.formatFileSize(this.leftContent.length)}` });
-            metaCard.createEl('span', { text: `校验哈希一致 ✓` });
+            emptyCard.createEl('h4', { text: '两处内容完全一致' });
+            emptyCard.createEl('p', { text: '历史版本与当前工作区完全相同。' });
 
-            const actionBtn = emptyBox.createEl('button', { text: '选择其他历史版本对比', cls: 'mod-cta' });
-            actionBtn.addEventListener('click', (e) => this.showVersionMenu(e, 'left'));
+            const switchBtn = emptyCard.createEl('button', { text: '选择其他快照版本', cls: 'mod-cta' });
+            switchBtn.addEventListener('click', (e: MouseEvent) => this.showVersionMenu(e, 'left'));
             return;
         }
 
-        // 2. 行级 + 行内词级（Word-level）精准对比
+        let oldLineNum = 1;
+        let newLineNum = 1;
+
         const rawLineDiff = Diff.diffLines(this.leftContent, this.rightContent, { ignoreWhitespace: this.ignoreWhitespace });
         const frag = document.createDocumentFragment();
-
-        let adds = 0, rems = 0, mods = 0;
 
         for (let i = 0; i < rawLineDiff.length; i++) {
             const part = rawLineDiff[i]!;
             const nextPart = rawLineDiff[i + 1];
 
-            // 智能识别“修改”行：一个删除紧随一个新增
+            // 智能识别修改行：使用 Diff.diffChars 精确到每一个字符 (彻底解决如 111 ➔ 11 误判为整词删除的问题)
             if (part.removed && nextPart && nextPart.added) {
                 const oldLines = part.value.replace(/\n$/, '').split('\n');
                 const newLines = nextPart.value.replace(/\n$/, '').split('\n');
@@ -1222,50 +1264,50 @@ class DiffModal extends Modal {
                     const rLine = newLines[k];
 
                     if (lLine !== undefined && rLine !== undefined) {
-                        mods++;
-                        // 行内词级精细对比
-                        const wordDiff = Diff.diffWordsWithSpace(lLine, rLine);
+                        const curOld = oldLineNum++;
+                        const curNew = newLineNum++;
+                        // 🌟 核心升级：行内采用纯字符级（Char-level）高精度对比
+                        const charDiff = Diff.diffChars(lLine, rLine);
+
                         const lineEl = document.createElement('div');
-                        lineEl.className = 'diff-line diff-modified';
-                        lineEl.createEl('span', { cls: 'diff-marker', text: '~' });
+                        lineEl.className = 'vc-diff-line vc-diff-line-modified';
+
+                        if (this.showLineNumbers) {
+                            this.buildGutter(lineEl, curOld, curNew);
+                        }
+
+                        lineEl.createEl('span', { cls: 'vc-diff-sign', text: '~' });
                         
-                        const contentSpan = lineEl.createEl('span', { cls: 'line-content' });
-                        wordDiff.forEach(wp => {
-                            if (wp.added) {
-                                contentSpan.createEl('span', { cls: 'diff-word-added', text: wp.value });
-                            } else if (wp.removed) {
-                                contentSpan.createEl('span', { cls: 'diff-word-removed', text: wp.value });
+                        const textSpan = lineEl.createEl('span', { cls: 'vc-diff-code' });
+                        charDiff.forEach((cp: Diff.Change) => {
+                            if (cp.added) {
+                                textSpan.createEl('span', { cls: 'vc-word-badge-added', text: cp.value });
+                            } else if (cp.removed) {
+                                textSpan.createEl('span', { cls: 'vc-word-badge-removed', text: cp.value });
                             } else {
-                                contentSpan.appendText(wp.value);
+                                textSpan.appendText(cp.value);
                             }
                         });
                         this.diffElements.push(lineEl);
                         frag.appendChild(lineEl);
                     } else if (lLine !== undefined) {
-                        rems++;
-                        frag.appendChild(this.buildSingleLineDOM('-', lLine, 'removed'));
+                        frag.appendChild(this.buildLineDOM('-', lLine, 'removed', oldLineNum++, null));
                     } else if (rLine !== undefined) {
-                        adds++;
-                        frag.appendChild(this.buildSingleLineDOM('+', rLine, 'added'));
+                        frag.appendChild(this.buildLineDOM('+', rLine, 'added', null, newLineNum++));
                     }
                 }
-                i++; // 跳过 nextPart
+                i++;
             } else if (part.added) {
-                const lines = part.value.replace(/\n$/, '').split('\n');
-                lines.forEach(l => {
-                    adds++;
-                    frag.appendChild(this.buildSingleLineDOM('+', l, 'added'));
+                part.value.replace(/\n$/, '').split('\n').forEach((l: string) => {
+                    frag.appendChild(this.buildLineDOM('+', l, 'added', null, newLineNum++));
                 });
             } else if (part.removed) {
-                const lines = part.value.replace(/\n$/, '').split('\n');
-                lines.forEach(l => {
-                    rems++;
-                    frag.appendChild(this.buildSingleLineDOM('-', l, 'removed'));
+                part.value.replace(/\n$/, '').split('\n').forEach((l: string) => {
+                    frag.appendChild(this.buildLineDOM('-', l, 'removed', oldLineNum++, null));
                 });
             } else {
-                const lines = part.value.replace(/\n$/, '').split('\n');
-                lines.forEach(l => {
-                    frag.appendChild(this.buildSingleLineDOM(' ', l, 'context'));
+                part.value.replace(/\n$/, '').split('\n').forEach((l: string) => {
+                    frag.appendChild(this.buildLineDOM(' ', l, 'context', oldLineNum++, newLineNum++));
                 });
             }
         }
@@ -1274,17 +1316,27 @@ class DiffModal extends Modal {
         this.totalDiffCount = this.diffElements.length;
         this.updateNavStats();
         
-        // 自动聚焦第一个差异
         if (this.totalDiffCount > 0) {
             setTimeout(() => this.navigateDiff(0), 100);
         }
     }
 
-    private buildSingleLineDOM(marker: string, text: string, type: 'added' | 'removed' | 'context'): HTMLElement {
+    private buildGutter(container: HTMLElement, oldNum: number | null, newNum: number | null) {
+        const gutter = container.createEl('div', { cls: 'vc-diff-gutter' });
+        gutter.createEl('span', { cls: 'vc-gutter-num vc-gutter-old', text: oldNum !== null ? String(oldNum) : '' });
+        gutter.createEl('span', { cls: 'vc-gutter-num vc-gutter-new', text: newNum !== null ? String(newNum) : '' });
+    }
+
+    private buildLineDOM(marker: string, text: string, type: 'added' | 'removed' | 'context', oldNum: number | null, newNum: number | null): HTMLElement {
         const lineEl = document.createElement('div');
-        lineEl.className = `diff-line diff-${type}`;
-        lineEl.createEl('span', { cls: 'diff-marker', text: marker });
-        lineEl.createEl('span', { cls: 'line-content', text: text });
+        lineEl.className = `vc-diff-line vc-diff-line-${type}`;
+
+        if (this.showLineNumbers) {
+            this.buildGutter(lineEl, oldNum, newNum);
+        }
+
+        lineEl.createEl('span', { cls: 'vc-diff-sign', text: marker });
+        lineEl.createEl('span', { cls: 'vc-diff-code', text });
         if (type !== 'context') this.diffElements.push(lineEl);
         return lineEl;
     }
@@ -1293,7 +1345,7 @@ class DiffModal extends Modal {
 }
 
 // =======================================================================
-// ======================== 版本历史叶子视图 ==============================
+// ================= 现代化时间轴视图 (精准逐秒跳动版) ====================
 // =======================================================================
 class VersionHistoryView extends ItemView {
     plugin: VersionControlPlugin;
@@ -1302,9 +1354,15 @@ class VersionHistoryView extends ItemView {
     globalSearchQuery = ''; 
     currentViewMode: ViewMode = 'current';
 
+    private debouncedAutoRefresh: () => void;
+
     constructor(leaf: WorkspaceLeaf, plugin: VersionControlPlugin) {
         super(leaf);
         this.plugin = plugin;
+        this.debouncedAutoRefresh = debounce(() => {
+            this.plugin.clearGlobalCache();
+            this.refresh();
+        }, 300, true);
     }
 
     getViewType(): string { return 'version-history'; }
@@ -1325,50 +1383,60 @@ class VersionHistoryView extends ItemView {
                 }
             })
         );
+
+        this.registerEvent(
+            this.app.vault.on('modify', (file) => {
+                if (file instanceof TFile && !this.plugin.isExcluded(file.path)) {
+                    this.debouncedAutoRefresh();
+                }
+            })
+        );
+        this.registerEvent(this.app.vault.on('rename', () => this.debouncedAutoRefresh()));
+        this.registerEvent(this.app.vault.on('delete', () => this.debouncedAutoRefresh()));
+
         await this.refresh();
     }
 
     updateRelativeTimes() {
-        if (this.plugin.settings.useRelativeTime) {
-            const timeEls = this.contentEl.querySelectorAll('.version-time');
-            timeEls.forEach(el => {
-                const ts = (el as HTMLElement).dataset.timestamp;
-                if (ts) el.textContent = this.plugin.getRelativeTime(parseInt(ts, 10));
-            });
-        }
+        const timeEls = this.contentEl.querySelectorAll('.vc-rel-time');
+        timeEls.forEach((el: Element) => {
+            const tsStr = (el as HTMLElement).dataset.timestamp;
+            if (tsStr) {
+                const ts = parseInt(tsStr, 10);
+                if (!isNaN(ts) && ts > 0) {
+                    el.textContent = `(${this.plugin.getRelativeTime(ts)})`;
+                }
+            }
+        });
     }
 
     async refresh() {
         const container = this.contentEl;
         container.empty();
-        const buffer = container.createDiv({ cls: 'version-history-view' });
+        const buffer = container.createDiv({ cls: 'vc-root-shell' });
 
-        // Tab栏
-        const tabBar = buffer.createEl('div', { cls: 'vc-tab-bar' });
-        const tabs: { id: ViewMode, label: string }[] = [
-            { id: 'current', label: '当前文件' },
-            { id: 'global', label: '全库历史' }
+        const headerBar = buffer.createEl('div', { cls: 'vc-segmented-nav' });
+        const tabs: { id: ViewMode, label: string, icon: string }[] = [
+            { id: 'current', label: '当前笔记', icon: 'file-text' },
+            { id: 'global', label: '全库时间线', icon: 'git-branch' }
         ];
+
         tabs.forEach(tab => {
-            const btn = tabBar.createEl('button', { 
-                cls: `vc-tab-btn ${this.currentViewMode === tab.id ? 'mod-cta' : ''}`, 
-                text: tab.label 
+            const btn = headerBar.createEl('button', { 
+                cls: `vc-nav-tab ${this.currentViewMode === tab.id ? 'is-active' : ''}` 
             });
-            btn.addEventListener('click', () => { 
+            const icon = btn.createEl('span', { cls: 'vc-nav-icon' });
+            setIcon(icon, tab.icon);
+            btn.createEl('span', { text: tab.label });
+            
+            btn.addEventListener('click', async () => { 
                 this.currentViewMode = tab.id; 
-                this.refresh(); 
+                this.plugin.clearGlobalCache();
+                await this.refresh(); 
             });
         });
 
-        const refreshBtn = tabBar.createEl('button', { cls: 'vc-global-refresh', attr: { 'title': '刷新' } });
-        setIcon(refreshBtn, 'refresh-cw'); 
-        refreshBtn.addEventListener('click', async () => {
-            this.plugin.versionCache.clear(); 
-            this.plugin.clearGlobalCache(); 
-            await this.refresh(); 
-        });
-
-        const contentArea = buffer.createEl('div', { cls: 'vc-content-area' });
+        const contentArea = buffer.createEl('div', { cls: 'vc-timeline-container' });
         if (this.currentViewMode === 'current') await this.renderCurrentFileHistory(contentArea);
         else await this.renderGlobalHistory(contentArea);
     }
@@ -1377,63 +1445,104 @@ class VersionHistoryView extends ItemView {
         const file = this.app.workspace.getActiveFile();
         this.currentFile = file;
         if (!file) { 
-            container.createEl('div', { text: '请先打开一篇笔记', cls: 'version-history-empty' }); 
+            const empty = container.createEl('div', { cls: 'vc-timeline-empty' });
+            const icon = empty.createEl('div', { cls: 'vc-timeline-empty-icon' });
+            setIcon(icon, 'file-x');
+            empty.createEl('h4', { text: '未聚焦文件' });
+            empty.createEl('p', { text: '在工作区打开任意笔记即可浏览其修改脉络。' });
             return; 
         }
 
-        const header = container.createEl('div', { cls: 'version-header' });
-        const title = header.createEl('div', { cls: 'version-title' });
-        title.createEl('h3', { text: file.basename });
-
-        const actions = header.createEl('div', { cls: 'version-header-actions' });
-        const searchInput = actions.createEl('input', { type: 'text', placeholder: '搜索快照...', cls: 'version-search' });
+        const actionHeader = container.createEl('div', { cls: 'vc-timeline-search-bar' });
+        const searchBox = actionHeader.createEl('div', { cls: 'vc-search-capsule' });
+        const searchIcon = searchBox.createEl('span', { cls: 'vc-search-icon' });
+        setIcon(searchIcon, 'search');
+        
+        const searchInput = searchBox.createEl('input', { type: 'text', placeholder: '过滤历史版本...' });
         searchInput.value = this.searchQuery;
-        searchInput.addEventListener('input', (e) => { 
+        searchInput.addEventListener('input', (e: Event) => { 
             this.searchQuery = (e.target as HTMLInputElement).value; 
             this.refresh(); 
         });
 
-        const createBtn = actions.createEl('button', { cls: 'mod-cta', text: '+ 快照' });
-        createBtn.addEventListener('click', () => this.plugin.createManualVersion());
+        const snapBtn = actionHeader.createEl('button', { cls: 'vc-btn-record', attr: { 'aria-label': '立即保存快照' } });
+        setIcon(snapBtn, 'bookmark-plus');
+        snapBtn.createEl('span', { text: '保存快照' });
+        snapBtn.addEventListener('click', () => this.plugin.createManualVersion());
 
         const versionFile = await this.plugin.loadVersionFile(file.path);
         let versions = versionFile.versions;
         if (versions.length === 0) { 
-            container.createEl('div', { text: '暂无版本记录', cls: 'version-history-empty' }); 
+            const empty = container.createEl('div', { cls: 'vc-timeline-empty' });
+            const icon = empty.createEl('div', { cls: 'vc-timeline-empty-icon' });
+            setIcon(icon, 'history');
+            empty.createEl('h4', { text: '尚无快照记录' });
+            empty.createEl('p', { text: '编辑笔记或点击上方按钮打下第一个版本快照。' });
             return; 
         }
 
         if (this.searchQuery) {
             const q = this.searchQuery.toLowerCase();
-            versions = versions.filter(v => v.message.toLowerCase().includes(q) || (v.tags && v.tags.some(t => t.toLowerCase().includes(q))));
+            versions = versions.filter((v: VersionData) => v.message.toLowerCase().includes(q) || (v.tags && v.tags.some(t => t.toLowerCase().includes(q))));
         }
 
-        const list = container.createEl('div', { cls: 'version-list' });
-        versions.forEach(v => {
-            const item = list.createEl('div', { cls: `version-item ${v.starred ? 'version-starred' : ''}` });
-            const info = item.createEl('div', { cls: 'version-info' });
+        const timeline = container.createEl('div', { cls: 'vc-linear-timeline' });
+
+        versions.forEach((v: VersionData, index: number) => {
+            const isManual = !v.message.includes('[Auto Save]');
+            const item = timeline.createEl('div', { cls: `vc-timeline-entry ${v.starred ? 'is-starred' : ''}` });
             
-            const timeRow = info.createEl('div', { cls: 'version-time-row' });
-            const star = timeRow.createEl('span', { text: v.starred ? '⭐' : '☆', cls: 'version-star-btn' });
-            star.addEventListener('click', async (e) => {
+            const rail = item.createEl('div', { cls: 'vc-timeline-rail' });
+            rail.createEl('div', { cls: `vc-timeline-node ${isManual ? 'is-manual' : ''} ${v.starred ? 'is-star' : ''}` });
+            if (index !== versions.length - 1) {
+                rail.createEl('div', { cls: 'vc-timeline-line' });
+            }
+
+            const body = item.createEl('div', { cls: 'vc-timeline-card' });
+            
+            const top = body.createEl('div', { cls: 'vc-timeline-top' });
+            const badgeGroup = top.createEl('div', { cls: 'vc-badge-group' });
+
+            const typeBadge = badgeGroup.createEl('span', { 
+                cls: `vc-tag-badge ${isManual ? 'badge-manual' : 'badge-auto'}` 
+            });
+            typeBadge.setText(this.plugin.getSaveTypeLabel(v.message));
+
+            if (v.tags) {
+                v.tags.forEach((t: string) => {
+                    badgeGroup.createEl('span', { cls: 'vc-tag-custom', text: t });
+                });
+            }
+
+            const timeWrap = top.createEl('div', { cls: 'vc-timeline-time-box' });
+            timeWrap.createEl('span', { text: this.plugin.formatTime(v.timestamp), cls: 'vc-abs-time' });
+            timeWrap.createEl('span', { 
+                text: `(${this.plugin.getRelativeTime(v.timestamp)})`, 
+                cls: 'vc-rel-time',
+                attr: { 'data-timestamp': String(v.timestamp) } 
+            });
+
+            const actions = body.createEl('div', { cls: 'vc-timeline-actions' });
+            
+            const starBtn = actions.createEl('button', { 
+                cls: `vc-timeline-icon-btn ${v.starred ? 'is-starred' : ''}`, 
+                attr: { 'aria-label': v.starred ? '取消收藏' : '标记为重要' } 
+            });
+            setIcon(starBtn, 'star');
+            starBtn.addEventListener('click', async (e: MouseEvent) => {
                 e.stopPropagation();
                 await this.plugin.toggleVersionStar(file.path, v.id);
                 this.refresh();
             });
 
-            timeRow.createEl('span', { text: this.plugin.formatTime(v.timestamp), cls: 'version-time', attr: { 'data-timestamp': String(v.timestamp) } });
-
-            const msgRow = info.createEl('div', { cls: 'version-message-row' });
-            msgRow.createEl('span', { text: this.plugin.getSaveTypeLabel(v.message), cls: 'version-tag version-tag-auto' });
-            if (v.tags) v.tags.forEach(t => msgRow.createEl('span', { text: t, cls: 'version-tag version-tag-custom' }));
-
-            const act = item.createEl('div', { cls: 'version-actions' });
-            const diffBtn = act.createEl('button', { text: '对比', cls: 'version-btn' });
+            const diffBtn = actions.createEl('button', { cls: 'vc-timeline-icon-btn', attr: { 'aria-label': '对比版本改动' } });
+            setIcon(diffBtn, 'git-compare');
             diffBtn.addEventListener('click', () => new DiffModal(this.app, this.plugin, file, v.id).open());
 
-            const restoreBtn = act.createEl('button', { text: '恢复', cls: 'version-btn' });
+            const restoreBtn = actions.createEl('button', { cls: 'vc-timeline-icon-btn', attr: { 'aria-label': '恢复至此版本' } });
+            setIcon(restoreBtn, 'undo-2');
             restoreBtn.addEventListener('click', () => {
-                new ConfirmModal(this.app, '确认恢复版本', '此操作将用选定快照覆盖当前文件。', async () => {
+                new ConfirmModal(this.app, '确认回退版本', '将使用该快照覆盖当前内容（当前最新状态会自动打下备份）。', async () => {
                     await this.plugin.restoreVersion(file, v.id);
                 }).open();
             });
@@ -1441,40 +1550,97 @@ class VersionHistoryView extends ItemView {
     }
 
     async renderGlobalHistory(container: HTMLElement) {
-        container.createEl('h3', { text: '🌍 全库历史看板' });
-        const searchInput = container.createEl('input', { 
-            type: 'text', 
-            placeholder: '搜索路径或备注...', 
-            cls: 'version-search', 
-            attr: { style: 'width: 100%; margin-bottom: 10px;' } 
-        });
+        const actionHeader = container.createEl('div', { cls: 'vc-timeline-search-bar' });
+        const searchBox = actionHeader.createEl('div', { cls: 'vc-search-capsule' });
+        const searchIcon = searchBox.createEl('span', { cls: 'vc-search-icon' });
+        setIcon(searchIcon, 'search');
+
+        const searchInput = searchBox.createEl('input', { type: 'text', placeholder: '搜索笔记或路径...' });
         searchInput.value = this.globalSearchQuery;
-        searchInput.addEventListener('input', (e) => {
+        searchInput.addEventListener('input', (e: Event) => {
             this.globalSearchQuery = (e.target as HTMLInputElement).value;
             this.refresh();
         });
 
-        let history = await this.plugin.getGlobalHistory(100);
+        let history: GlobalHistoryItem[] = await this.plugin.getGlobalHistory(100);
         if (this.globalSearchQuery) {
             const q = this.globalSearchQuery.toLowerCase();
-            history = history.filter(item => item.filePath.toLowerCase().includes(q));
+            history = history.filter((item: GlobalHistoryItem) => item.filePath.toLowerCase().includes(q));
         }
 
-        const list = container.createEl('div', { cls: 'version-list' });
-        history.forEach(({ version, filePath, file }) => {
-            const item = list.createEl('div', { cls: 'version-item' });
-            const info = item.createEl('div', { cls: 'version-info' });
+        const timeline = container.createEl('div', { cls: 'vc-linear-timeline' });
+
+        history.forEach(({ version, filePath, file, hasUnsavedChanges, isUnversioned }: GlobalHistoryItem, index: number) => {
+            const item = timeline.createEl('div', { cls: `vc-timeline-entry ${hasUnsavedChanges ? 'is-modified-active' : ''}` });
             
-            const titleRow = info.createEl('div', { cls: 'version-time-row' });
-            const link = titleRow.createEl('a', { text: filePath, cls: 'internal-link' });
+            const rail = item.createEl('div', { cls: 'vc-timeline-rail' });
+            rail.createEl('div', { cls: `vc-timeline-node ${isUnversioned ? 'is-unversioned' : (hasUnsavedChanges ? 'is-unsaved' : '')}` });
+            if (index !== history.length - 1) rail.createEl('div', { cls: 'vc-timeline-line' });
+
+            const body = item.createEl('div', { cls: 'vc-timeline-card' });
+            
+            const top = body.createEl('div', { cls: 'vc-timeline-top' });
+            
+            const titleRow = top.createEl('div', { cls: 'vc-timeline-title-row' });
+            const link = titleRow.createEl('a', { text: filePath, cls: 'vc-timeline-link' });
             link.addEventListener('click', () => { if (file) this.app.workspace.getLeaf(false).openFile(file); });
 
-            titleRow.createEl('small', { text: this.plugin.formatTime(version.timestamp), attr: { style: 'color: var(--text-muted);' } });
+            if (isUnversioned) {
+                titleRow.createEl('span', { text: '● 待生成快照', cls: 'vc-status-pill is-unversioned' });
+            } else if (hasUnsavedChanges) {
+                titleRow.createEl('span', { text: '● 有新改动', cls: 'vc-status-pill is-unsaved' });
+            }
+
+            const timeCol = top.createEl('div', { cls: 'vc-global-time-col' });
+
+            if (file && file.stat && file.stat.mtime) {
+                const mtime = file.stat.mtime;
+                const mtimeRow = timeCol.createEl('div', { cls: 'vc-meta-time-row' });
+                const label = mtimeRow.createEl('span', { cls: `vc-meta-badge is-mtime ${hasUnsavedChanges ? 'is-highlight' : ''}` });
+                const icon = label.createEl('span', { cls: 'vc-badge-icon' });
+                setIcon(icon, 'pen-line');
+                label.createEl('span', { text: '编辑' });
+
+                mtimeRow.createEl('span', { text: this.plugin.formatTime(mtime), cls: 'vc-meta-time-abs' });
+                mtimeRow.createEl('span', { 
+                    text: `(${this.plugin.getRelativeTime(mtime)})`, 
+                    cls: 'vc-rel-time',
+                    attr: { 'data-timestamp': String(mtime) } 
+                });
+            }
+
+            const snapRow = timeCol.createEl('div', { cls: 'vc-meta-time-row' });
+            const snapLabel = snapRow.createEl('span', { cls: 'vc-meta-badge is-snap' });
+            const snapIcon = snapLabel.createEl('span', { cls: 'vc-badge-icon' });
+            setIcon(snapIcon, 'bookmark');
+            snapLabel.createEl('span', { text: '快照' });
+
+            if (isUnversioned) {
+                snapRow.createEl('span', { text: '尚未保存快照', cls: 'vc-meta-time-abs is-empty-text' });
+            } else {
+                snapRow.createEl('span', { text: this.plugin.formatTime(version.timestamp), cls: 'vc-meta-time-abs' });
+                snapRow.createEl('span', { 
+                    text: `(${this.plugin.getRelativeTime(version.timestamp)})`, 
+                    cls: 'vc-rel-time',
+                    attr: { 'data-timestamp': String(version.timestamp) } 
+                });
+            }
+
+            const actions = body.createEl('div', { cls: 'vc-timeline-actions' });
 
             if (file) {
-                const act = item.createEl('div', { cls: 'version-actions' });
-                const diffBtn = act.createEl('button', { text: '对比', cls: 'version-btn' });
-                diffBtn.addEventListener('click', () => new DiffModal(this.app, this.plugin, file, version.id).open());
+                if (isUnversioned) {
+                    const saveBtn = actions.createEl('button', { cls: 'vc-timeline-icon-btn is-accent', attr: { 'aria-label': '为此笔记保存首份快照' } });
+                    setIcon(saveBtn, 'bookmark-plus');
+                    saveBtn.addEventListener('click', async () => {
+                        await this.plugin.createVersion(file, '[Manual Save]', true, [], true);
+                        this.refresh();
+                    });
+                } else {
+                    const diffBtn = actions.createEl('button', { cls: 'vc-timeline-icon-btn', attr: { 'aria-label': '对比版本' } });
+                    setIcon(diffBtn, 'git-compare');
+                    diffBtn.addEventListener('click', () => new DiffModal(this.app, this.plugin, file, version.id).open());
+                }
             }
         });
     }
@@ -1487,11 +1653,13 @@ class ConfirmModal extends Modal {
     constructor(app: App, private title: string, private message: string, private onConfirm: () => void) { super(app); }
     onOpen() {
         const { contentEl } = this;
-        contentEl.createEl('h2', { text: this.title });
+        contentEl.addClass('vc-confirm-dialog');
+        contentEl.createEl('h3', { text: this.title });
         contentEl.createEl('p', { text: this.message });
-        const box = contentEl.createEl('div', { cls: 'modal-button-container' });
-        box.createEl('button', { text: '取消' }).addEventListener('click', () => this.close());
-        const ok = box.createEl('button', { text: '确定', cls: 'mod-warning' });
+        const box = contentEl.createEl('div', { cls: 'vc-dialog-actions' });
+        const cancel = box.createEl('button', { text: '放弃' });
+        cancel.addEventListener('click', () => this.close());
+        const ok = box.createEl('button', { text: '确认覆盖', cls: 'mod-warning' });
         ok.addEventListener('click', () => { this.close(); this.onConfirm(); });
     }
     onClose() { this.contentEl.empty(); }
@@ -1501,76 +1669,66 @@ class IntegrityReportModal extends Modal {
     constructor(app: App, private plugin: VersionControlPlugin, private report: { filePath: string; errors: string[] }[]) { super(app); }
     onOpen() {
         const { contentEl } = this;
-        contentEl.createEl('h2', { text: '🛡️ 完整性检查诊断报告' });
+        contentEl.addClass('vc-raycast-modal');
+        contentEl.createEl('h3', { text: '🛡️ 完整性检查诊断报告' });
         if (this.report.length === 0) {
-            contentEl.createEl('p', { text: '✅ 所有版本数据完好无损！' });
+            contentEl.createEl('p', { text: '✅ 所有版本快照完好无损，哈希一致。' });
             return;
         }
         contentEl.createEl('p', { text: `⚠️ 发现 ${this.report.length} 个文件存在异常：`, attr: { style: 'color: var(--text-warning);' } });
-        const list = contentEl.createEl('div', { attr: { style: 'max-height: 350px; overflow-y: auto;' } });
-        this.report.forEach(item => {
-            const row = list.createEl('div', { attr: { style: 'margin-bottom: 8px;' } });
+        const list = contentEl.createEl('div', { cls: 'vc-report-box' });
+        this.report.forEach((item: { filePath: string; errors: string[] }) => {
+            const row = list.createEl('div', { cls: 'vc-report-row' });
             row.createEl('strong', { text: item.filePath });
             const ul = row.createEl('ul');
-            item.errors.forEach(e => ul.createEl('li', { text: e, attr: { style: 'color: var(--text-danger); font-size: 12px;' } }));
+            item.errors.forEach((e: string) => ul.createEl('li', { text: e }));
         });
     }
     onClose() { this.contentEl.empty(); }
 }
 
 // =======================================================================
-// ========================== 插件设置面板 ================================
+// ========================== 现代化设置面板 ==============================
 // =======================================================================
 class VersionControlSettingTab extends PluginSettingTab {
     constructor(app: App, private plugin: VersionControlPlugin) { super(app, plugin); }
     display(): void {
         const { containerEl } = this;
         containerEl.empty();
+        containerEl.addClass('vc-settings-tab');
+        
         containerEl.createEl('h2', { text: '版本控制设置' });
 
         new Setting(containerEl)
             .setName('修改自动保存')
-            .setDesc('停止输入指定秒数后自动创建快照')
-            .addToggle(t => t.setValue(this.plugin.settings.autoSave).onChange(async v => {
+            .setDesc('停止输入后自动生成版本历史快照')
+            .addToggle(t => t.setValue(this.plugin.settings.autoSave).onChange(async (v: boolean) => {
                 this.plugin.settings.autoSave = v;
                 await this.plugin.saveSettings();
             }));
 
         new Setting(containerEl)
-            .setName('自动保存延迟 (秒)')
-            .setDesc('停止键入等待时间')
-            .addText(t => t.setValue(String(this.plugin.settings.autoSaveDelayOnModify)).onChange(async v => {
-                const n = parseInt(v, 10);
-                if (!isNaN(n) && n > 0) {
-                    this.plugin.settings.autoSaveDelayOnModify = n;
-                    await this.plugin.saveSettings();
-                }
+            .setName('保存延迟时间')
+            .setDesc('停止键入等待多少秒后触发快照')
+            .addSlider(s => s.setLimits(10, 300, 10).setValue(this.plugin.settings.autoSaveDelayOnModify).setDynamicTooltip().onChange(async (v: number) => {
+                this.plugin.settings.autoSaveDelayOnModify = v;
+                await this.plugin.saveSettings();
             }));
 
         new Setting(containerEl)
             .setName('原生流压缩 (gzip)')
-            .setDesc('使用 Web 原生压缩流，节省硬盘空间')
-            .addToggle(t => t.setValue(this.plugin.settings.enableCompression).onChange(async v => {
+            .setDesc('采用浏览器标准 Web Stream gzip 压缩，大幅减少磁盘占用')
+            .addToggle(t => t.setValue(this.plugin.settings.enableCompression).onChange(async (v: boolean) => {
                 this.plugin.settings.enableCompression = v;
                 await this.plugin.saveSettings();
             }));
 
         new Setting(containerEl)
-            .setName('启用增量存储')
-            .setDesc('仅记录差异补丁')
-            .addToggle(t => t.setValue(this.plugin.settings.enableIncrementalStorage).onChange(async v => {
+            .setName('增量补丁存储')
+            .setDesc('仅记录差异增量，防止全量副本膨胀')
+            .addToggle(t => t.setValue(this.plugin.settings.enableIncrementalStorage).onChange(async (v: boolean) => {
                 this.plugin.settings.enableIncrementalStorage = v;
                 await this.plugin.saveSettings();
-            }));
-
-        new Setting(containerEl)
-            .setName('重建全局历史索引')
-            .setDesc('全盘扫描并同步历史记录索引看板')
-            .addButton(b => b.setButtonText('一键重建').onClick(async () => {
-                b.setDisabled(true);
-                await this.plugin.rebuildGlobalIndex();
-                new Notice('✨ 全局历史索引已重建完成');
-                b.setDisabled(false);
             }));
     }
 }
