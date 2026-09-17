@@ -1,5 +1,10 @@
-import { App, Plugin, PluginSettingTab, Setting, TFile, Notice, Modal, ItemView, WorkspaceLeaf, Menu, MarkdownRenderer, TFolder, setIcon, moment, normalizePath, debounce, DataAdapter } from 'obsidian';
+import { 
+    Plugin, TFile, TFolder, debounce, moment, normalizePath, DataAdapter, Notice 
+} from 'obsidian';
 import * as Diff from 'diff';
+import { 
+    VersionHistoryView, DiffModal, IntegrityReportModal, VersionControlSettingTab 
+} from './ui';
 
 // --- 工具函数：安全提取错误信息 ---
 export function getErrorMessage(error: unknown): string {
@@ -10,7 +15,7 @@ export function getErrorMessage(error: unknown): string {
 }
 
 // --- 高效哈希算法 (cyrb53) ---
-function cyrb53(str: string, seed = 0): number {
+export function cyrb53(str: string, seed = 0): number {
     let h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;
     for (let i = 0, ch; i < str.length; i++) {
         ch = str.charCodeAt(i);
@@ -24,12 +29,12 @@ function cyrb53(str: string, seed = 0): number {
     return 4294967296 * (2097151 & h2) + (h1 >>> 0);
 }
 
-function hashString(str: string): string {
+export function hashString(str: string): string {
     return cyrb53(str).toString(36);
 }
 
 // --- 纯净轻量级 LRU 缓存 ---
-class SimpleLRU<K, V> {
+export class SimpleLRU<K, V> {
     private max: number;
     private cache: Map<K, V> = new Map();
     constructor(max = 50) { this.max = max; }
@@ -58,7 +63,7 @@ class SimpleLRU<K, V> {
 }
 
 // --- 数据结构定义 ---
-interface VersionData {
+export interface VersionData {
     id: string;
     timestamp: number;
     message: string;
@@ -68,11 +73,10 @@ interface VersionData {
     size: number;
     hash: string;
     tags?: string[];
-    note?: string;
     starred?: boolean;
 }
 
-interface VersionFile {
+export interface VersionFile {
     filePath: string;
     versions: VersionData[];
     lastModified: number;
@@ -81,13 +85,20 @@ interface VersionFile {
 
 export interface GlobalHistoryItem {
     version: VersionData;
+    prevVersion?: VersionData;
     filePath: string;
     file: TFile | null;
     hasUnsavedChanges?: boolean;
     isUnversioned?: boolean;
+    currentChars?: number;
+    snapshotChars?: number;
+    prevSnapshotChars?: number;
+    charDiff: number;
+    diffMode: 'workspace' | 'snapshot' | 'unversioned';
+    totalVersions?: number;
 }
 
-interface VersionControlSettings {
+export interface VersionControlSettings {
     versionFolder: string;
     autoSave: boolean;
     autoSaveDelayOnModify: number;
@@ -96,53 +107,51 @@ interface VersionControlSettings {
     enableMaxVersions: boolean;
     maxDays: number;
     enableMaxDays: boolean;
-    useRelativeTime: boolean;
     enableDeduplication: boolean;
     showNotifications: boolean;
     excludedFolders: string[];
     enableCompression: boolean;
     enableIncrementalStorage: boolean;
-    versionsPerPage: number;
     rebuildBaseInterval: number;
     enableStatusBarDiff: boolean;
     deleteHistoryOnDelete: boolean; 
 }
 
-const DEFAULT_SETTINGS: VersionControlSettings = {
+export const DEFAULT_SETTINGS: VersionControlSettings = {
     versionFolder: '.versions',
     autoSave: true,
-    autoSaveDelayOnModify: 180,
+    autoSaveDelayOnModify: 3,
     autoClear: true,
     maxVersions: 50,
     enableMaxVersions: true,
     maxDays: 30,
     enableMaxDays: false,
-    useRelativeTime: true,
     enableDeduplication: true,
-    showNotifications: true,
+    showNotifications: false,
     excludedFolders: [],
     enableCompression: true,
     enableIncrementalStorage: true,
-    versionsPerPage: 20,
     rebuildBaseInterval: 10,
     enableStatusBarDiff: true,
     deleteHistoryOnDelete: false, 
 };
 
-type ViewMode = 'current' | 'global';
+export type ViewMode = 'current' | 'global';
 
 // =======================================================================
 // ==================== 主插件类 (VersionControlPlugin) ===================
 // =======================================================================
 export default class VersionControlPlugin extends Plugin {
     settings: VersionControlSettings;
-    lastModifiedTime: Map<string, number> = new Map();
     debouncedSaves: Map<string, Function> = new Map();
     statusBarItem: HTMLElement;
     
     versionCache: SimpleLRU<string, VersionFile> = new SimpleLRU(50);
     contentCache: SimpleLRU<string, string> = new SimpleLRU(50); 
     globalHistoryCache: GlobalHistoryItem[] | null = null;
+    
+    snapshotMetaMap: Map<string, { latest: VersionData; prev?: VersionData; totalVersions: number }> = new Map();
+    isSnapshotMetaLoaded = false;
     
     activeFileLastSaveTime: number | null = null;
     activeFileSaveLabel = '';
@@ -177,8 +186,11 @@ export default class VersionControlPlugin extends Plugin {
         this.registerEvent(
             this.app.vault.on('modify', async (file) => {
                 if (this.isRestoring) return;
-                if (file instanceof TFile && !this.isExcluded(file.path) && this.settings.autoSave) {
-                    this.handleFileModify(file);
+                if (file instanceof TFile && !this.isExcluded(file.path)) {
+                    if (this.settings.autoSave) {
+                        this.handleFileModify(file);
+                    }
+                    await this.updateGlobalCacheOnModify(file);
                 }
             })
         );
@@ -212,9 +224,14 @@ export default class VersionControlPlugin extends Plugin {
         this.versionCache.clear();
         this.contentCache.clear();
         this.globalHistoryCache = null;
+        this.snapshotMetaMap.clear();
+        this.isSnapshotMetaLoaded = false;
     }
 
-    clearGlobalCache() { this.globalHistoryCache = null; }
+    clearGlobalCache() { 
+        this.globalHistoryCache = null; 
+    }
+
     async yieldToMain() { return new Promise(resolve => setTimeout(resolve, 0)); }
 
     async compressText(text: string): Promise<ArrayBuffer> {
@@ -280,7 +297,9 @@ export default class VersionControlPlugin extends Plugin {
         return normalizePath(`${this.settings.versionFolder}/${subFolder}/${safeName}_${hash}.json`);
     }
 
-    normalizeText(text: string): string { return (!text) ? "" : text.replace(/\r\n/g, "\n").replace(/\r/g, "\n"); }
+    normalizeText(text: string): string { 
+        return text ? text.replace(/\r\n?/g, "\n") : ""; 
+    }
 
     async handleFolderRename(folder: TFolder, oldFolderPath: string) {
         const files = this.app.vault.getMarkdownFiles();
@@ -312,8 +331,12 @@ export default class VersionControlPlugin extends Plugin {
                     
                     this.versionCache.delete(oldPath);
                     this.contentCache.deletePrefix(oldPath + "::");
-                    this.lastModifiedTime.delete(oldPath);
-                    this.lastModifiedTime.set(file.path, versionFile.lastModified);
+
+                    const meta = this.snapshotMetaMap.get(oldPath);
+                    if (meta) {
+                        this.snapshotMetaMap.delete(oldPath);
+                        this.snapshotMetaMap.set(file.path, meta);
+                    }
 
                     this.clearGlobalCache();
                     this.refreshVersionHistoryView();
@@ -333,16 +356,23 @@ export default class VersionControlPlugin extends Plugin {
                 await adapter.remove(versionPath);
                 this.versionCache.delete(filePath);
                 this.contentCache.deletePrefix(filePath + "::");
-                this.lastModifiedTime.delete(filePath);
                 this.debouncedSaves.delete(filePath);
+                this.snapshotMetaMap.delete(filePath);
                 this.clearGlobalCache();
                 this.refreshVersionHistoryView();
             }
         });
     }
 
-    async loadSettings() { this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData()); }
-    async saveSettings() { await this.saveData(this.settings); this.debouncedUpdateStatusBar(); }
+    async loadSettings() { 
+        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData()); 
+    }
+
+    async saveSettings() { 
+        await this.saveData(this.settings); 
+        this.debouncedSaves.clear();
+        this.debouncedUpdateStatusBar(); 
+    }
 
     getSaveTypeLabel(message: string): string { 
         if (message.includes('[Auto Save]')) return '自动保存';
@@ -368,10 +398,8 @@ export default class VersionControlPlugin extends Plugin {
             const last = versions[0]!;
             this.activeFileLastSaveTime = last.timestamp;
             this.activeFileSaveLabel = this.getSaveTypeLabel(last.message);
-            this.lastModifiedTime.set(file.path, this.activeFileLastSaveTime);
             this.renderStatusBarTime();
         } else {
-            this.lastModifiedTime.delete(file.path);
             this.activeFileLastSaveTime = null;
             this.statusBarItem.setText('');
         }
@@ -420,10 +448,11 @@ export default class VersionControlPlugin extends Plugin {
         if (this.isExcluded(file.path)) return;
         let debouncer = this.debouncedSaves.get(file.path);
         if (!debouncer) {
+            const delayMinutes = Math.max(0.1, Number(this.settings.autoSaveDelayOnModify) || 3);
             debouncer = debounce(async (f: TFile) => { 
                 if (this.isUnloaded) return;
                 await this.createVersion(f, '[Auto Save]', false); 
-            }, this.settings.autoSaveDelayOnModify * 1000, true);
+            }, delayMinutes * 60 * 1000, true);
             this.debouncedSaves.set(file.path, debouncer);
         }
         debouncer(file);
@@ -438,7 +467,7 @@ export default class VersionControlPlugin extends Plugin {
         if (!file) { new Notice('没有打开的文件'); return; }
         const debouncer = this.debouncedSaves.get(file.path);
         if (debouncer) this.debouncedSaves.delete(file.path);
-        await this.createVersion(file, '[Manual Save]', true, [], true);
+        await this.createVersion(file, '[Manual Save]', false, [], true);
     }
 
     async createVersion(file: TFile, message: string, showNotification = false, tags: string[] = [], isManual = false) {
@@ -465,13 +494,16 @@ export default class VersionControlPlugin extends Plugin {
                         latest.tags = tags.length > 0 ? tags : latest.tags;
                         await this.saveVersionFile(file.path, versionFile);
                         this.versionCache.set(file.path, versionFile);
+                        this.snapshotMetaMap.set(file.path, {
+                            latest,
+                            prev: versionFile.versions[1],
+                            totalVersions: versionFile.versions.length
+                        });
                         this.clearGlobalCache(); 
                         this.refreshVersionHistoryView();
                         this.debouncedUpdateStatusBar();
-                        if (showNotification && this.settings.showNotifications) new Notice(`✨ 已将自动保存转换为手动快照`);
                         return;
                     }
-                    if (showNotification && this.settings.showNotifications) new Notice('ℹ️ 内容无变动，跳过版本创建');
                     return;
                 }
             }
@@ -494,7 +526,7 @@ export default class VersionControlPlugin extends Plugin {
                     if (test !== false && this.normalizeText(test) === prevContent) {
                         prev.diff = patch;
                         prev.baseVersionId = id; 
-                        prev.size = patch.length;
+                        prev.size = prevContent.length;
                         delete prev.content; 
                     }
                 }
@@ -514,22 +546,51 @@ export default class VersionControlPlugin extends Plugin {
             }
 
             this.buildVersionIndex(versionFile);
+            this.repairVersionSizes(versionFile);
             await this.yieldToMain(); 
             await this.saveVersionFile(file.path, versionFile);
             
             this.versionCache.set(file.path, versionFile);
             this.contentCache.set(`${file.path}::${newVersion.id}`, content);
 
-            // 清理缓存触发全局无感实时同步
+            this.snapshotMetaMap.set(file.path, {
+                latest: newVersion,
+                prev: versionFile.versions[1],
+                totalVersions: versionFile.versions.length
+            });
+
             this.clearGlobalCache(); 
             this.refreshVersionHistoryView();
-            this.lastModifiedTime.set(file.path, timestamp);
             this.debouncedUpdateStatusBar();
-            
-            if (showNotification && this.settings.showNotifications) new Notice(`✨ 快照保存成功`);
         } catch (error) {
             console.error('保存版本失败:', getErrorMessage(error));
             if (showNotification) new Notice('❌ 保存版本失败');
+        }
+    }
+
+    async updateGlobalCacheOnModify(file: TFile) {
+        if (!this.globalHistoryCache) return;
+        let currentChars = file.stat.size;
+        try {
+            const text = await this.app.vault.cachedRead(file);
+            currentChars = text.length;
+        } catch {}
+
+        const idx = this.globalHistoryCache.findIndex(item => item.filePath === file.path);
+        if (idx !== -1) {
+            const item = this.globalHistoryCache[idx]!;
+            const snapshotChars = item.snapshotChars ?? item.version.size ?? 0;
+            const workspaceDiff = currentChars - snapshotChars;
+
+            item.hasUnsavedChanges = true;
+            item.diffMode = 'workspace';
+            item.currentChars = currentChars;
+            item.charDiff = workspaceDiff;
+
+            if (idx > 0) {
+                this.globalHistoryCache.splice(idx, 1);
+                this.globalHistoryCache.unshift(item);
+            }
         }
     }
 
@@ -537,6 +598,38 @@ export default class VersionControlPlugin extends Plugin {
         const index = new Map<string, number>(); 
         versionFile.versions.forEach((v, idx) => { index.set(v.id, idx); }); 
         versionFile.versionIndex = index; 
+    }
+
+    repairVersionSizes(vf: VersionFile) {
+        if (!vf || !vf.versions || vf.versions.length === 0) return;
+
+        let currentKnownText = vf.versions[0]?.content ?? null;
+        if (currentKnownText) {
+            vf.versions[0]!.size = currentKnownText.length;
+        }
+
+        for (let i = 1; i < vf.versions.length; i++) {
+            const v = vf.versions[i]!;
+
+            if (v.content !== undefined && v.content !== null) {
+                currentKnownText = v.content;
+                v.size = v.content.length;
+                continue;
+            }
+
+            if (currentKnownText !== null && v.diff) {
+                try {
+                    const restored = Diff.applyPatch(currentKnownText, v.diff);
+                    if (restored !== false) {
+                        currentKnownText = restored;
+                        v.size = restored.length;
+                        continue;
+                    }
+                } catch {}
+            }
+
+            currentKnownText = null;
+        }
     }
     
     resolveContentFromList(versions: VersionData[], versionId: string): string { 
@@ -566,6 +659,157 @@ export default class VersionControlPlugin extends Plugin {
             } else throw new Error("版本数据不完整");
         }
         throw new Error("依赖链断裂");
+    }
+
+    async deleteSingleVersion(filePath: string, versionId: string): Promise<boolean> {
+        let success = false;
+        await this.withLock(filePath, async () => {
+            try {
+                const vf = await this.loadVersionFile(filePath);
+                const targetIdx = vf.versions.findIndex(v => v.id === versionId);
+                if (targetIdx === -1) return;
+
+                const dependent = vf.versions.find(v => v.baseVersionId === versionId);
+                if (dependent) {
+                    try {
+                        const full = this.resolveContentFromList(vf.versions, dependent.id);
+                        dependent.content = full;
+                        dependent.diff = undefined;
+                        dependent.baseVersionId = undefined;
+                        dependent.size = full.length;
+                    } catch {
+                        new Notice('❌ 无法删除：解除依赖链失败');
+                        return;
+                    }
+                }
+
+                vf.versions.splice(targetIdx, 1);
+                vf.lastModified = Date.now();
+                this.buildVersionIndex(vf);
+                this.repairVersionSizes(vf);
+                await this.saveVersionFile(filePath, vf);
+
+                this.versionCache.set(filePath, vf);
+                this.contentCache.delete(`${filePath}::${versionId}`);
+
+                if (vf.versions.length > 0) {
+                    this.snapshotMetaMap.set(filePath, {
+                        latest: vf.versions[0]!,
+                        prev: vf.versions[1],
+                        totalVersions: vf.versions.length
+                    });
+                } else {
+                    this.snapshotMetaMap.delete(filePath);
+                }
+
+                this.clearGlobalCache();
+                success = true;
+                new Notice('🗑️ 快照已彻底删除');
+            } catch (e) {
+                console.error(e);
+            }
+        });
+        return success;
+    }
+
+    async getStorageStats(): Promise<{
+        totalFiles: number;
+        totalSnapshots: number;
+        actualDiskBytes: number;
+        rawEquivalentBytes: number;
+        savedPercent: number;
+    }> {
+        const folder = this.settings.versionFolder;
+        const adapter = this.app.vault.adapter;
+        let totalFiles = 0;
+        let totalSnapshots = 0;
+        let actualDiskBytes = 0;
+        let rawEquivalentBytes = 0;
+
+        if (await adapter.exists(folder)) {
+            const files = await this.getJSONFilesRecursively(folder);
+            totalFiles = files.length;
+            for (const file of files) {
+                try {
+                    const stat = await adapter.stat(file);
+                    if (stat) actualDiskBytes += stat.size;
+                    const raw = await this.readCompressedOrRaw(file);
+                    if (raw) {
+                        const vf = JSON.parse(raw) as VersionFile;
+                        if (vf && Array.isArray(vf.versions)) {
+                            totalSnapshots += vf.versions.length;
+                            for (const v of vf.versions) {
+                                rawEquivalentBytes += (v.size || 0);
+                            }
+                        }
+                    }
+                } catch {}
+            }
+        }
+
+        const savedPercent = rawEquivalentBytes > 0 
+            ? Math.max(0, Math.round((1 - (actualDiskBytes / rawEquivalentBytes)) * 100))
+            : 0;
+
+        return { totalFiles, totalSnapshots, actualDiskBytes, rawEquivalentBytes, savedPercent };
+    }
+
+    async performStoragePurge(keepDays = 30, minKeepPerFile = 5): Promise<{ purgedCount: number; savedBytes: number }> {
+        const folder = this.settings.versionFolder;
+        const adapter = this.app.vault.adapter;
+        let purgedCount = 0;
+        const beforeDisk = (await this.getStorageStats()).actualDiskBytes;
+
+        if (await adapter.exists(folder)) {
+            const files = await this.getJSONFilesRecursively(folder);
+            const cutoff = Date.now() - (keepDays * 24 * 60 * 60 * 1000);
+
+            for (const file of files) {
+                try {
+                    const raw = await this.readCompressedOrRaw(file);
+                    if (!raw) continue;
+                    const vf = JSON.parse(raw) as VersionFile;
+                    if (!vf || !Array.isArray(vf.versions)) continue;
+
+                    const originalTotal = vf.versions.length;
+                    const starred = vf.versions.filter(v => v.starred);
+                    const nonStarred = vf.versions.filter(v => !v.starred);
+
+                    const keepNonStarred = nonStarred.filter((v, idx) => idx < minKeepPerFile || v.timestamp >= cutoff);
+                    const keepIds = new Set([...starred, ...keepNonStarred].map(v => v.id));
+
+                    if (keepIds.size < originalTotal) {
+                        const proposed = vf.versions.filter(v => keepIds.has(v.id));
+                        for (let i = proposed.length - 1; i >= 0; i--) {
+                            const v = proposed[i]!;
+                            if (v.diff && v.baseVersionId && !keepIds.has(v.baseVersionId)) {
+                                try {
+                                    const full = this.resolveContentFromList(vf.versions, v.id);
+                                    v.content = full;
+                                    v.diff = undefined;
+                                    v.baseVersionId = undefined;
+                                    v.size = full.length;
+                                } catch {}
+                            }
+                        }
+                        vf.versions = proposed;
+                        vf.lastModified = Date.now();
+                        this.buildVersionIndex(vf);
+                        this.repairVersionSizes(vf);
+                        await this.saveVersionFile(vf.filePath, vf);
+                        purgedCount += (originalTotal - vf.versions.length);
+                    }
+                } catch {}
+            }
+        }
+
+        const afterDisk = (await this.getStorageStats()).actualDiskBytes;
+        this.clearGlobalCache();
+        this.snapshotMetaMap.clear();
+        this.isSnapshotMetaLoaded = false;
+        this.refreshVersionHistoryView();
+
+        return { purgedCount, savedBytes: Math.max(0, beforeDisk - afterDisk) };
     }
 
     async cleanupVersionsInMemory(versionFile: VersionFile): Promise<number> {
@@ -605,7 +849,8 @@ export default class VersionControlPlugin extends Plugin {
     }
 
     async loadVersionFile(filePath: string): Promise<VersionFile> {
-        if (this.versionCache.get(filePath)) return this.versionCache.get(filePath)!;
+        const cached = this.versionCache.get(filePath);
+        if (cached) return cached;
 
         const adapter = this.app.vault.adapter;
         const path = this.getVersionFilePath(filePath); 
@@ -618,6 +863,7 @@ export default class VersionControlPlugin extends Plugin {
                     finalVersionFile = JSON.parse(loaded) as VersionFile;
                     if (finalVersionFile && Array.isArray(finalVersionFile.versions)) {
                         finalVersionFile.versions.sort((a, b) => b.timestamp - a.timestamp);
+                        this.repairVersionSizes(finalVersionFile);
                     }
                 }
             } catch (e) { console.error("无法解析版本文件:", e); }
@@ -776,7 +1022,7 @@ export default class VersionControlPlugin extends Plugin {
             await this.yieldToMain();
         } 
         notice.hide(); 
-        new IntegrityReportModal(this.app, this, report).open(); 
+        new IntegrityReportModal(this.app, report).open(); 
     }
 
     countWords(str: string): number {
@@ -786,7 +1032,6 @@ export default class VersionControlPlugin extends Plugin {
         return cjk + western;
     }
 
-    // --- 高性能动态相对时间计算 (逐秒精准递增) ---
     getRelativeTime(timestamp: number): string { 
         const now = Date.now();
         const diff = Math.max(0, now - timestamp);
@@ -799,48 +1044,103 @@ export default class VersionControlPlugin extends Plugin {
         return moment(timestamp).format('MM-DD');
     }
 
-    // --- 全库时间线：按真实最近修改时间倒序排列 ---
     async getGlobalHistory(limit = 100): Promise<GlobalHistoryItem[]> {
         if (this.globalHistoryCache) return this.globalHistoryCache.slice(0, limit);
 
         const folder = this.settings.versionFolder;
         const adapter = this.app.vault.adapter;
 
-        const snapshotMap = new Map<string, VersionData>();
-        if (await adapter.exists(folder)) {
+        if (!this.isSnapshotMetaLoaded && await adapter.exists(folder)) {
             const files = await this.getJSONFilesRecursively(folder);
-            for (const file of files) {
-                try {
-                    const raw = await this.readCompressedOrRaw(file);
-                    if (!raw) continue;
-                    const vf = JSON.parse(raw) as VersionFile;
-                    if (!vf || !Array.isArray(vf.versions) || vf.versions.length === 0) continue;
-                    if (!vf.filePath) continue;
+            
+            const chunkSize = 10;
+            for (let i = 0; i < files.length; i += chunkSize) {
+                const chunk = files.slice(i, i + chunkSize);
+                await Promise.all(chunk.map(async (file) => {
+                    try {
+                        const raw = await this.readCompressedOrRaw(file);
+                        if (!raw) return;
+                        const vf = JSON.parse(raw) as VersionFile;
+                        if (!vf || !Array.isArray(vf.versions) || vf.versions.length === 0 || !vf.filePath) return;
 
-                    vf.versions.sort((a, b) => b.timestamp - a.timestamp);
-                    snapshotMap.set(vf.filePath, vf.versions[0]!);
-                } catch {}
+                        vf.versions.sort((a, b) => b.timestamp - a.timestamp);
+                        const latest = vf.versions[0]!;
+                        const prev = vf.versions[1];
+
+                        if (latest.content) latest.size = latest.content.length;
+                        if (prev) {
+                            if (prev.content) {
+                                prev.size = prev.content.length;
+                            } else if (prev.diff && latest.content) {
+                                try {
+                                    const restored = Diff.applyPatch(latest.content, prev.diff);
+                                    if (restored !== false) prev.size = restored.length;
+                                } catch {}
+                            }
+                        }
+                        this.snapshotMetaMap.set(vf.filePath, { 
+                            latest, 
+                            prev, 
+                            totalVersions: vf.versions.length 
+                        });
+                    } catch {}
+                }));
                 await this.yieldToMain();
             }
+            this.isSnapshotMetaLoaded = true;
         }
 
         const entries: GlobalHistoryItem[] = [];
         const seenPaths = new Set<string>();
-
         const allVaultFiles = this.app.vault.getMarkdownFiles().filter(f => !this.isExcluded(f.path));
 
-        for (const file of allVaultFiles) {
+        for (let i = 0; i < allVaultFiles.length; i++) {
+            const file = allVaultFiles[i]!;
             seenPaths.add(file.path);
-            const latestSnapshot = snapshotMap.get(file.path);
+            const snaps = this.snapshotMetaMap.get(file.path);
 
-            if (latestSnapshot) {
-                const hasUnsaved = file.stat.mtime > (latestSnapshot.timestamp + 2000);
+            if (snaps) {
+                const latest = snaps.latest;
+                const prev = snaps.prev;
+                const snapshotChars = latest.size;
+                const prevSnapshotChars = prev ? prev.size : undefined;
+
+                const isModified = file.stat.mtime > (latest.timestamp + 2000);
+                let currentChars = snapshotChars;
+                let hasUnsaved = isModified;
+
+                if (isModified) {
+                    try {
+                        const curText = await this.app.vault.cachedRead(file);
+                        currentChars = curText.length;
+                        hasUnsaved = (currentChars !== snapshotChars);
+                    } catch {}
+                }
+
+                let charDiff = 0;
+                let diffMode: 'workspace' | 'snapshot' = 'snapshot';
+
+                if (hasUnsaved) {
+                    diffMode = 'workspace';
+                    charDiff = currentChars - snapshotChars;
+                } else {
+                    diffMode = 'snapshot';
+                    charDiff = prevSnapshotChars !== undefined ? (snapshotChars - prevSnapshotChars) : 0;
+                }
+
                 entries.push({
-                    version: latestSnapshot,
+                    version: latest,
+                    prevVersion: prev,
                     filePath: file.path,
                     file: file,
                     hasUnsavedChanges: hasUnsaved,
-                    isUnversioned: false
+                    isUnversioned: false,
+                    currentChars,
+                    snapshotChars,
+                    prevSnapshotChars,
+                    charDiff,
+                    diffMode,
+                    totalVersions: snaps.totalVersions
                 });
             } else {
                 entries.push({
@@ -854,19 +1154,30 @@ export default class VersionControlPlugin extends Plugin {
                     filePath: file.path,
                     file: file,
                     hasUnsavedChanges: true,
-                    isUnversioned: true
+                    isUnversioned: true,
+                    currentChars: file.stat.size,
+                    snapshotChars: 0,
+                    charDiff: file.stat.size,
+                    diffMode: 'unversioned',
+                    totalVersions: 0
                 });
             }
         }
 
-        for (const [filePath, snap] of snapshotMap.entries()) {
+        for (const [filePath, snaps] of this.snapshotMetaMap.entries()) {
             if (!seenPaths.has(filePath)) {
                 entries.push({
-                    version: snap,
+                    version: snaps.latest,
+                    prevVersion: snaps.prev,
                     filePath: filePath,
                     file: null,
                     hasUnsavedChanges: false,
-                    isUnversioned: false
+                    isUnversioned: false,
+                    currentChars: 0,
+                    snapshotChars: snaps.latest.size,
+                    charDiff: 0,
+                    diffMode: 'snapshot',
+                    totalVersions: snaps.totalVersions
                 });
             }
         }
@@ -881,69 +1192,17 @@ export default class VersionControlPlugin extends Plugin {
         return entries.slice(0, limit);
     }
 
-    async updateVersionTags(filePath: string, versionId: string, tags: string[]) {
-        await this.withLock(filePath, async () => {
-            try {
-                const vf = await this.loadVersionFile(filePath);
-                const idx = vf.versionIndex?.get(versionId);
-                if (idx !== undefined) {
-                    vf.versions[idx]!.tags = tags.length > 0 ? tags : undefined;
-                    await this.saveVersionFile(filePath, vf);
-                    this.versionCache.set(filePath, vf);
-                    this.clearGlobalCache(); 
-                    this.refreshVersionHistoryView();
-                }
-            } catch {}
-        });
-    }
-
-    async updateVersionNote(filePath: string, versionId: string, note: string) {
-        await this.withLock(filePath, async () => {
-            try {
-                const vf = await this.loadVersionFile(filePath);
-                const idx = vf.versionIndex?.get(versionId);
-                if (idx !== undefined) {
-                    vf.versions[idx]!.note = note.trim() || undefined;
-                    await this.saveVersionFile(filePath, vf);
-                    this.versionCache.set(filePath, vf);
-                    this.clearGlobalCache(); 
-                    this.refreshVersionHistoryView();
-                }
-            } catch {}
-        });
-    }
-
     async toggleVersionStar(filePath: string, versionId: string) {
         await this.withLock(filePath, async () => {
             try {
                 const vf = await this.loadVersionFile(filePath);
                 const idx = vf.versionIndex?.get(versionId);
                 if (idx !== undefined) {
-                    const next = !vf.versions[idx]!.starred;
-                    vf.versions[idx]!.starred = next;
+                    vf.versions[idx]!.starred = !vf.versions[idx]!.starred;
                     await this.saveVersionFile(filePath, vf);
                     this.versionCache.set(filePath, vf);
                     this.clearGlobalCache(); 
                 }
-            } catch {}
-        });
-    }
-
-    async deleteVersion(filePath: string, versionId: string) {
-        await this.withLock(filePath, async () => {
-            try {
-                const vf = await this.loadVersionFile(filePath);
-                if (vf.versions.some(v => v.baseVersionId === versionId)) { 
-                    new Notice('❌ 无法删除此版本，它被后续增量版本所依赖'); 
-                    return; 
-                }
-                vf.versions = vf.versions.filter(v => v.id !== versionId);
-                vf.lastModified = Date.now();
-                this.buildVersionIndex(vf);
-                await this.saveVersionFile(filePath, vf);
-                this.versionCache.set(filePath, vf);
-                this.clearGlobalCache(); 
-                this.refreshVersionHistoryView();
             } catch {}
         });
     }
@@ -978,757 +1237,5 @@ export default class VersionControlPlugin extends Plugin {
         leaves.forEach(leaf => { 
             if (leaf.view instanceof VersionHistoryView) leaf.view.refresh(); 
         }); 
-    }
-}
-
-// =======================================================================
-// ==================== 现代代码审查模态框 (字符级高亮+无删除线) ==========
-// =======================================================================
-class DiffModal extends Modal {
-    plugin: VersionControlPlugin;
-    file: TFile;
-    versionId: string;
-    secondVersionId: string;
-    ignoreWhitespace = true;
-    showLineNumbers = true;
-    leftContent = '';
-    rightContent = '';
-    
-    private diffElements: HTMLElement[] = [];
-    private currentDiffIdx = 0;
-    private totalDiffCount = 0;
-    
-    private metricsBar: HTMLElement;
-    private textDiffContainer: HTMLElement;
-    private allVersions: VersionData[] = [];
-    private statsBadge: HTMLElement;
-    private prevBtn: HTMLButtonElement;
-    private nextBtn: HTMLButtonElement;
-
-    constructor(app: App, plugin: VersionControlPlugin, file: TFile, versionId: string, secondVersionId = 'current') {
-        super(app);
-        this.plugin = plugin;
-        this.file = file;
-        this.versionId = versionId;
-        this.secondVersionId = secondVersionId;
-    }
-
-    async onOpen() {
-        const { contentEl } = this; 
-        contentEl.addClass('diff-modal', 'vc-raycast-modal');
-
-        this.allVersions = await this.plugin.getAllVersions(this.file.path);
-
-        const header = contentEl.createEl('div', { cls: 'vc-diff-header' });
-        const titleArea = header.createEl('div', { cls: 'vc-diff-title-area' });
-        const iconSpan = titleArea.createEl('span', { cls: 'vc-diff-type-icon' });
-        setIcon(iconSpan, 'git-commit');
-        titleArea.createEl('span', { text: this.file.basename, cls: 'vc-diff-filename' });
-        titleArea.createEl('span', { text: this.file.path, cls: 'vc-diff-filepath' });
-
-        const selectorBar = contentEl.createEl('div', { cls: 'vc-diff-version-bar' });
-        
-        const leftBtn = selectorBar.createEl('button', { cls: 'vc-diff-version-capsule is-left-history' });
-        this.updateChipText(leftBtn, this.versionId, '左侧历史');
-        leftBtn.addEventListener('click', (e: MouseEvent) => this.showVersionMenu(e, 'left'));
-
-        const swapBtn = selectorBar.createEl('button', { cls: 'vc-diff-swap-btn', attr: { 'aria-label': '调换两侧对比版本' } });
-        setIcon(swapBtn, 'arrow-right-left');
-        swapBtn.addEventListener('click', async () => {
-            [this.versionId, this.secondVersionId] = [this.secondVersionId, this.versionId];
-            await this.updateDiffView();
-        });
-
-        const rightBtn = selectorBar.createEl('button', { cls: 'vc-diff-version-capsule is-right-latest' });
-        this.updateChipText(rightBtn, this.secondVersionId, '右侧最新');
-        rightBtn.addEventListener('click', (e: MouseEvent) => this.showVersionMenu(e, 'right'));
-
-        this.metricsBar = contentEl.createEl('div', { cls: 'vc-diff-metrics-bar' });
-
-        const toolbar = contentEl.createEl('div', { cls: 'vc-diff-toolbar' });
-        
-        const navPill = toolbar.createEl('div', { cls: 'vc-diff-nav-pill' });
-        this.prevBtn = navPill.createEl('button', { cls: 'vc-diff-nav-arrow', attr: { 'aria-label': '上一个差异' } });
-        setIcon(this.prevBtn, 'chevron-up');
-        this.prevBtn.addEventListener('click', () => this.navigateDiff(-1));
-
-        this.statsBadge = navPill.createEl('span', { text: '0 / 0', cls: 'vc-diff-nav-counter' });
-
-        this.nextBtn = navPill.createEl('button', { cls: 'vc-diff-nav-arrow', attr: { 'aria-label': '下一个差异' } });
-        setIcon(this.nextBtn, 'chevron-down');
-        this.nextBtn.addEventListener('click', () => this.navigateDiff(1));
-
-        const togglesGroup = toolbar.createEl('div', { cls: 'vc-diff-toggles' });
-
-        const saveSnapshotBtn = togglesGroup.createEl('button', { 
-            cls: 'vc-toggle-chip vc-btn-save-snapshot',
-            attr: { 'aria-label': '保存当前工作区为新快照' }
-        });
-        const saveIcon = saveSnapshotBtn.createEl('span', { cls: 'vc-chip-icon' });
-        setIcon(saveIcon, 'bookmark-plus');
-        saveSnapshotBtn.createEl('span', { text: '保存快照' });
-
-        saveSnapshotBtn.addEventListener('click', async () => {
-            saveSnapshotBtn.disabled = true;
-            saveSnapshotBtn.setText('保存中...');
-            try {
-                await this.plugin.createVersion(this.file, '[Manual Save]', true, [], true);
-                this.allVersions = await this.plugin.getAllVersions(this.file.path);
-                await this.updateDiffView();
-            } finally {
-                saveSnapshotBtn.disabled = false;
-                saveSnapshotBtn.empty();
-                const icon = saveSnapshotBtn.createEl('span', { cls: 'vc-chip-icon' });
-                setIcon(icon, 'bookmark-plus');
-                saveSnapshotBtn.createEl('span', { text: '保存快照' });
-            }
-        });
-
-        const numToggle = togglesGroup.createEl('button', { 
-            text: this.showLineNumbers ? '# 行号' : '# 无行号',
-            cls: `vc-toggle-chip ${this.showLineNumbers ? 'is-active' : ''}`
-        });
-        numToggle.addEventListener('click', () => {
-            this.showLineNumbers = !this.showLineNumbers;
-            numToggle.setText(this.showLineNumbers ? '# 行号' : '# 无行号');
-            numToggle.toggleClass('is-active', this.showLineNumbers);
-            this.renderDiff();
-        });
-
-        const wsToggle = togglesGroup.createEl('button', { 
-            text: this.ignoreWhitespace ? '忽略空白' : '严格对比',
-            cls: `vc-toggle-chip ${this.ignoreWhitespace ? 'is-active' : ''}`
-        });
-        wsToggle.addEventListener('click', () => {
-            this.ignoreWhitespace = !this.ignoreWhitespace;
-            wsToggle.setText(this.ignoreWhitespace ? '忽略空白' : '严格对比');
-            wsToggle.toggleClass('is-active', this.ignoreWhitespace);
-            this.renderDiff();
-        });
-
-        this.textDiffContainer = contentEl.createEl('div', { cls: 'vc-diff-viewport' });
-        await this.updateDiffView();
-    }
-
-    updateChipText(btn: HTMLButtonElement, versionId: string, rolePrefix: string) {
-        btn.empty();
-        const iconSpan = btn.createEl('span', { cls: 'vc-capsule-icon' });
-        if (versionId === 'current') {
-            setIcon(iconSpan, 'file-edit');
-            btn.createEl('span', { text: `${rolePrefix} · 当前工作区` });
-        } else {
-            setIcon(iconSpan, 'history');
-            const v = this.allVersions.find(item => item.id === versionId);
-            btn.createEl('span', { text: v ? `${rolePrefix} · ${this.plugin.formatTime(v.timestamp)}` : '历史快照' });
-        }
-    }
-
-    showVersionMenu(event: MouseEvent, side: 'left' | 'right') {
-        const menu = new Menu();
-        menu.addItem(i => i.setTitle('📄 当前工作区内容 (最新)').setIcon('file-edit').onClick(() => {
-            if (side === 'left') this.versionId = 'current'; else this.secondVersionId = 'current';
-            this.updateDiffView();
-        }));
-        this.allVersions.forEach((v: VersionData, idx: number) => {
-            const isLatestTag = idx === 0 ? ' [最新]' : '';
-            menu.addItem(i => i.setTitle(`🕒 ${this.plugin.formatTime(v.timestamp)} · ${this.plugin.getSaveTypeLabel(v.message)}${isLatestTag}`).setIcon('history').onClick(() => {
-                if (side === 'left') this.versionId = v.id; else this.secondVersionId = v.id;
-                this.updateDiffView();
-            }));
-        });
-        menu.showAtMouseEvent(event);
-    }
-
-    private renderMetricsBar() {
-        if (!this.metricsBar) return;
-        this.metricsBar.empty();
-
-        const leftLines = this.leftContent ? this.leftContent.split('\n').length : 0;
-        const rightLines = this.rightContent ? this.rightContent.split('\n').length : 0;
-        const diffLines = rightLines - leftLines;
-
-        const leftWords = this.plugin.countWords(this.leftContent);
-        const rightWords = this.plugin.countWords(this.rightContent);
-        const diffWords = rightWords - leftWords;
-
-        const leftChars = this.leftContent.length;
-        const rightChars = this.rightContent.length;
-        const diffChars = rightChars - leftChars;
-
-        const formatDelta = (delta: number) => delta > 0 ? `+${delta.toLocaleString()}` : (delta < 0 ? `${delta.toLocaleString()}` : '+0');
-        const getDeltaClass = (delta: number) => delta > 0 ? 'is-plus' : (delta < 0 ? 'is-minus' : 'is-zero');
-
-        const buildMetricItem = (title: string, iconName: string, leftVal: number, rightVal: number, delta: number) => {
-            const item = this.metricsBar.createEl('div', { cls: 'vc-metric-chip' });
-            
-            const titleWrap = item.createEl('div', { cls: 'vc-metric-header' });
-            const labelGroup = titleWrap.createEl('div', { cls: 'vc-metric-label-group' });
-            const icon = labelGroup.createEl('span', { cls: 'vc-metric-icon' });
-            setIcon(icon, iconName);
-            labelGroup.createEl('span', { text: title, cls: 'vc-metric-title' });
-
-            titleWrap.createEl('span', { text: formatDelta(delta), cls: `vc-metric-delta ${getDeltaClass(delta)}` });
-
-            const dataWrap = item.createEl('div', { cls: 'vc-metric-body' });
-            dataWrap.createEl('span', { text: leftVal.toLocaleString(), cls: 'vc-metric-old', attr: { title: '历史快照' } });
-            dataWrap.createEl('span', { text: '➔', cls: 'vc-metric-arrow' });
-            dataWrap.createEl('span', { text: rightVal.toLocaleString(), cls: 'vc-metric-new', attr: { title: '当前工作区' } });
-        };
-
-        buildMetricItem('行数', 'rows', leftLines, rightLines, diffLines);
-        buildMetricItem('词数', 'file-text', leftWords, rightWords, diffWords);
-        buildMetricItem('字符数', 'type', leftChars, rightChars, diffChars);
-    }
-
-    async updateDiffView() {
-        const chips = this.contentEl.querySelectorAll('.vc-diff-version-capsule') as NodeListOf<HTMLButtonElement>;
-        if (chips[0]) this.updateChipText(chips[0], this.versionId, '左侧历史');
-        if (chips[1]) this.updateChipText(chips[1], this.secondVersionId, '右侧最新');
-
-        this.leftContent = this.versionId === 'current' 
-            ? await this.app.vault.read(this.file) 
-            : await this.plugin.getVersionContent(this.file.path, this.versionId);
-
-        this.rightContent = this.secondVersionId === 'current' 
-            ? await this.app.vault.read(this.file) 
-            : await this.plugin.getVersionContent(this.file.path, this.secondVersionId);
-
-        this.renderMetricsBar();
-        this.renderDiff();
-    }
-
-    navigateDiff(step: number) {
-        if (this.totalDiffCount === 0) return;
-        this.currentDiffIdx = (this.currentDiffIdx + step + this.totalDiffCount) % this.totalDiffCount;
-        
-        this.diffElements.forEach(el => el.removeClass('is-active-diff-row'));
-        const target = this.diffElements[this.currentDiffIdx];
-        if (target) {
-            target.addClass('is-active-diff-row');
-            target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
-        this.updateNavStats();
-    }
-
-    updateNavStats() {
-        if (this.totalDiffCount === 0) {
-            this.statsBadge.setText('无变动');
-            this.prevBtn.disabled = true;
-            this.nextBtn.disabled = true;
-        } else {
-            this.statsBadge.setText(`${this.currentDiffIdx + 1} / ${this.totalDiffCount}`);
-            this.prevBtn.disabled = false;
-            this.nextBtn.disabled = false;
-        }
-    }
-
-    renderDiff() {
-        this.textDiffContainer.empty();
-        this.diffElements = [];
-        this.currentDiffIdx = 0;
-
-        if (this.leftContent === this.rightContent) {
-            this.totalDiffCount = 0;
-            this.updateNavStats();
-
-            const emptyCard = this.textDiffContainer.createEl('div', { cls: 'vc-empty-hero' });
-            const iconBox = emptyCard.createEl('div', { cls: 'vc-empty-hero-icon' });
-            setIcon(iconBox, 'check-circle-2');
-            
-            emptyCard.createEl('h4', { text: '两处内容完全一致' });
-            emptyCard.createEl('p', { text: '历史版本与当前工作区完全相同。' });
-
-            const switchBtn = emptyCard.createEl('button', { text: '选择其他快照版本', cls: 'mod-cta' });
-            switchBtn.addEventListener('click', (e: MouseEvent) => this.showVersionMenu(e, 'left'));
-            return;
-        }
-
-        let oldLineNum = 1;
-        let newLineNum = 1;
-
-        const rawLineDiff = Diff.diffLines(this.leftContent, this.rightContent, { ignoreWhitespace: this.ignoreWhitespace });
-        const frag = document.createDocumentFragment();
-
-        for (let i = 0; i < rawLineDiff.length; i++) {
-            const part = rawLineDiff[i]!;
-            const nextPart = rawLineDiff[i + 1];
-
-            // 智能识别修改行：使用 Diff.diffChars 精确到每一个字符 (彻底解决如 111 ➔ 11 误判为整词删除的问题)
-            if (part.removed && nextPart && nextPart.added) {
-                const oldLines = part.value.replace(/\n$/, '').split('\n');
-                const newLines = nextPart.value.replace(/\n$/, '').split('\n');
-                const maxLen = Math.max(oldLines.length, newLines.length);
-
-                for (let k = 0; k < maxLen; k++) {
-                    const lLine = oldLines[k];
-                    const rLine = newLines[k];
-
-                    if (lLine !== undefined && rLine !== undefined) {
-                        const curOld = oldLineNum++;
-                        const curNew = newLineNum++;
-                        // 🌟 核心升级：行内采用纯字符级（Char-level）高精度对比
-                        const charDiff = Diff.diffChars(lLine, rLine);
-
-                        const lineEl = document.createElement('div');
-                        lineEl.className = 'vc-diff-line vc-diff-line-modified';
-
-                        if (this.showLineNumbers) {
-                            this.buildGutter(lineEl, curOld, curNew);
-                        }
-
-                        lineEl.createEl('span', { cls: 'vc-diff-sign', text: '~' });
-                        
-                        const textSpan = lineEl.createEl('span', { cls: 'vc-diff-code' });
-                        charDiff.forEach((cp: Diff.Change) => {
-                            if (cp.added) {
-                                textSpan.createEl('span', { cls: 'vc-word-badge-added', text: cp.value });
-                            } else if (cp.removed) {
-                                textSpan.createEl('span', { cls: 'vc-word-badge-removed', text: cp.value });
-                            } else {
-                                textSpan.appendText(cp.value);
-                            }
-                        });
-                        this.diffElements.push(lineEl);
-                        frag.appendChild(lineEl);
-                    } else if (lLine !== undefined) {
-                        frag.appendChild(this.buildLineDOM('-', lLine, 'removed', oldLineNum++, null));
-                    } else if (rLine !== undefined) {
-                        frag.appendChild(this.buildLineDOM('+', rLine, 'added', null, newLineNum++));
-                    }
-                }
-                i++;
-            } else if (part.added) {
-                part.value.replace(/\n$/, '').split('\n').forEach((l: string) => {
-                    frag.appendChild(this.buildLineDOM('+', l, 'added', null, newLineNum++));
-                });
-            } else if (part.removed) {
-                part.value.replace(/\n$/, '').split('\n').forEach((l: string) => {
-                    frag.appendChild(this.buildLineDOM('-', l, 'removed', oldLineNum++, null));
-                });
-            } else {
-                part.value.replace(/\n$/, '').split('\n').forEach((l: string) => {
-                    frag.appendChild(this.buildLineDOM(' ', l, 'context', oldLineNum++, newLineNum++));
-                });
-            }
-        }
-
-        this.textDiffContainer.appendChild(frag);
-        this.totalDiffCount = this.diffElements.length;
-        this.updateNavStats();
-        
-        if (this.totalDiffCount > 0) {
-            setTimeout(() => this.navigateDiff(0), 100);
-        }
-    }
-
-    private buildGutter(container: HTMLElement, oldNum: number | null, newNum: number | null) {
-        const gutter = container.createEl('div', { cls: 'vc-diff-gutter' });
-        gutter.createEl('span', { cls: 'vc-gutter-num vc-gutter-old', text: oldNum !== null ? String(oldNum) : '' });
-        gutter.createEl('span', { cls: 'vc-gutter-num vc-gutter-new', text: newNum !== null ? String(newNum) : '' });
-    }
-
-    private buildLineDOM(marker: string, text: string, type: 'added' | 'removed' | 'context', oldNum: number | null, newNum: number | null): HTMLElement {
-        const lineEl = document.createElement('div');
-        lineEl.className = `vc-diff-line vc-diff-line-${type}`;
-
-        if (this.showLineNumbers) {
-            this.buildGutter(lineEl, oldNum, newNum);
-        }
-
-        lineEl.createEl('span', { cls: 'vc-diff-sign', text: marker });
-        lineEl.createEl('span', { cls: 'vc-diff-code', text });
-        if (type !== 'context') this.diffElements.push(lineEl);
-        return lineEl;
-    }
-
-    onClose() { this.contentEl.empty(); }
-}
-
-// =======================================================================
-// ================= 现代化时间轴视图 (精准逐秒跳动版) ====================
-// =======================================================================
-class VersionHistoryView extends ItemView {
-    plugin: VersionControlPlugin;
-    currentFile: TFile | null = null;
-    searchQuery = '';
-    globalSearchQuery = ''; 
-    currentViewMode: ViewMode = 'current';
-
-    private debouncedAutoRefresh: () => void;
-
-    constructor(leaf: WorkspaceLeaf, plugin: VersionControlPlugin) {
-        super(leaf);
-        this.plugin = plugin;
-        this.debouncedAutoRefresh = debounce(() => {
-            this.plugin.clearGlobalCache();
-            this.refresh();
-        }, 300, true);
-    }
-
-    getViewType(): string { return 'version-history'; }
-    getDisplayText(): string { return '版本历史'; }
-    getIcon(): string { return 'history'; }
-
-    async onOpen() {
-        this.registerEvent(
-            this.app.workspace.on('active-leaf-change', () => {
-                if (this.currentViewMode === 'current') {
-                    const active = this.app.workspace.getActiveFile();
-                    if (active && (!this.currentFile || this.currentFile.path !== active.path)) {
-                        this.refresh();
-                    } else if (!active && this.currentFile) {
-                        this.currentFile = null; 
-                        this.refresh();
-                    }
-                }
-            })
-        );
-
-        this.registerEvent(
-            this.app.vault.on('modify', (file) => {
-                if (file instanceof TFile && !this.plugin.isExcluded(file.path)) {
-                    this.debouncedAutoRefresh();
-                }
-            })
-        );
-        this.registerEvent(this.app.vault.on('rename', () => this.debouncedAutoRefresh()));
-        this.registerEvent(this.app.vault.on('delete', () => this.debouncedAutoRefresh()));
-
-        await this.refresh();
-    }
-
-    updateRelativeTimes() {
-        const timeEls = this.contentEl.querySelectorAll('.vc-rel-time');
-        timeEls.forEach((el: Element) => {
-            const tsStr = (el as HTMLElement).dataset.timestamp;
-            if (tsStr) {
-                const ts = parseInt(tsStr, 10);
-                if (!isNaN(ts) && ts > 0) {
-                    el.textContent = `(${this.plugin.getRelativeTime(ts)})`;
-                }
-            }
-        });
-    }
-
-    async refresh() {
-        const container = this.contentEl;
-        container.empty();
-        const buffer = container.createDiv({ cls: 'vc-root-shell' });
-
-        const headerBar = buffer.createEl('div', { cls: 'vc-segmented-nav' });
-        const tabs: { id: ViewMode, label: string, icon: string }[] = [
-            { id: 'current', label: '当前笔记', icon: 'file-text' },
-            { id: 'global', label: '全库时间线', icon: 'git-branch' }
-        ];
-
-        tabs.forEach(tab => {
-            const btn = headerBar.createEl('button', { 
-                cls: `vc-nav-tab ${this.currentViewMode === tab.id ? 'is-active' : ''}` 
-            });
-            const icon = btn.createEl('span', { cls: 'vc-nav-icon' });
-            setIcon(icon, tab.icon);
-            btn.createEl('span', { text: tab.label });
-            
-            btn.addEventListener('click', async () => { 
-                this.currentViewMode = tab.id; 
-                this.plugin.clearGlobalCache();
-                await this.refresh(); 
-            });
-        });
-
-        const contentArea = buffer.createEl('div', { cls: 'vc-timeline-container' });
-        if (this.currentViewMode === 'current') await this.renderCurrentFileHistory(contentArea);
-        else await this.renderGlobalHistory(contentArea);
-    }
-
-    async renderCurrentFileHistory(container: HTMLElement) {
-        const file = this.app.workspace.getActiveFile();
-        this.currentFile = file;
-        if (!file) { 
-            const empty = container.createEl('div', { cls: 'vc-timeline-empty' });
-            const icon = empty.createEl('div', { cls: 'vc-timeline-empty-icon' });
-            setIcon(icon, 'file-x');
-            empty.createEl('h4', { text: '未聚焦文件' });
-            empty.createEl('p', { text: '在工作区打开任意笔记即可浏览其修改脉络。' });
-            return; 
-        }
-
-        const actionHeader = container.createEl('div', { cls: 'vc-timeline-search-bar' });
-        const searchBox = actionHeader.createEl('div', { cls: 'vc-search-capsule' });
-        const searchIcon = searchBox.createEl('span', { cls: 'vc-search-icon' });
-        setIcon(searchIcon, 'search');
-        
-        const searchInput = searchBox.createEl('input', { type: 'text', placeholder: '过滤历史版本...' });
-        searchInput.value = this.searchQuery;
-        searchInput.addEventListener('input', (e: Event) => { 
-            this.searchQuery = (e.target as HTMLInputElement).value; 
-            this.refresh(); 
-        });
-
-        const snapBtn = actionHeader.createEl('button', { cls: 'vc-btn-record', attr: { 'aria-label': '立即保存快照' } });
-        setIcon(snapBtn, 'bookmark-plus');
-        snapBtn.createEl('span', { text: '保存快照' });
-        snapBtn.addEventListener('click', () => this.plugin.createManualVersion());
-
-        const versionFile = await this.plugin.loadVersionFile(file.path);
-        let versions = versionFile.versions;
-        if (versions.length === 0) { 
-            const empty = container.createEl('div', { cls: 'vc-timeline-empty' });
-            const icon = empty.createEl('div', { cls: 'vc-timeline-empty-icon' });
-            setIcon(icon, 'history');
-            empty.createEl('h4', { text: '尚无快照记录' });
-            empty.createEl('p', { text: '编辑笔记或点击上方按钮打下第一个版本快照。' });
-            return; 
-        }
-
-        if (this.searchQuery) {
-            const q = this.searchQuery.toLowerCase();
-            versions = versions.filter((v: VersionData) => v.message.toLowerCase().includes(q) || (v.tags && v.tags.some(t => t.toLowerCase().includes(q))));
-        }
-
-        const timeline = container.createEl('div', { cls: 'vc-linear-timeline' });
-
-        versions.forEach((v: VersionData, index: number) => {
-            const isManual = !v.message.includes('[Auto Save]');
-            const item = timeline.createEl('div', { cls: `vc-timeline-entry ${v.starred ? 'is-starred' : ''}` });
-            
-            const rail = item.createEl('div', { cls: 'vc-timeline-rail' });
-            rail.createEl('div', { cls: `vc-timeline-node ${isManual ? 'is-manual' : ''} ${v.starred ? 'is-star' : ''}` });
-            if (index !== versions.length - 1) {
-                rail.createEl('div', { cls: 'vc-timeline-line' });
-            }
-
-            const body = item.createEl('div', { cls: 'vc-timeline-card' });
-            
-            const top = body.createEl('div', { cls: 'vc-timeline-top' });
-            const badgeGroup = top.createEl('div', { cls: 'vc-badge-group' });
-
-            const typeBadge = badgeGroup.createEl('span', { 
-                cls: `vc-tag-badge ${isManual ? 'badge-manual' : 'badge-auto'}` 
-            });
-            typeBadge.setText(this.plugin.getSaveTypeLabel(v.message));
-
-            if (v.tags) {
-                v.tags.forEach((t: string) => {
-                    badgeGroup.createEl('span', { cls: 'vc-tag-custom', text: t });
-                });
-            }
-
-            const timeWrap = top.createEl('div', { cls: 'vc-timeline-time-box' });
-            timeWrap.createEl('span', { text: this.plugin.formatTime(v.timestamp), cls: 'vc-abs-time' });
-            timeWrap.createEl('span', { 
-                text: `(${this.plugin.getRelativeTime(v.timestamp)})`, 
-                cls: 'vc-rel-time',
-                attr: { 'data-timestamp': String(v.timestamp) } 
-            });
-
-            const actions = body.createEl('div', { cls: 'vc-timeline-actions' });
-            
-            const starBtn = actions.createEl('button', { 
-                cls: `vc-timeline-icon-btn ${v.starred ? 'is-starred' : ''}`, 
-                attr: { 'aria-label': v.starred ? '取消收藏' : '标记为重要' } 
-            });
-            setIcon(starBtn, 'star');
-            starBtn.addEventListener('click', async (e: MouseEvent) => {
-                e.stopPropagation();
-                await this.plugin.toggleVersionStar(file.path, v.id);
-                this.refresh();
-            });
-
-            const diffBtn = actions.createEl('button', { cls: 'vc-timeline-icon-btn', attr: { 'aria-label': '对比版本改动' } });
-            setIcon(diffBtn, 'git-compare');
-            diffBtn.addEventListener('click', () => new DiffModal(this.app, this.plugin, file, v.id).open());
-
-            const restoreBtn = actions.createEl('button', { cls: 'vc-timeline-icon-btn', attr: { 'aria-label': '恢复至此版本' } });
-            setIcon(restoreBtn, 'undo-2');
-            restoreBtn.addEventListener('click', () => {
-                new ConfirmModal(this.app, '确认回退版本', '将使用该快照覆盖当前内容（当前最新状态会自动打下备份）。', async () => {
-                    await this.plugin.restoreVersion(file, v.id);
-                }).open();
-            });
-        });
-    }
-
-    async renderGlobalHistory(container: HTMLElement) {
-        const actionHeader = container.createEl('div', { cls: 'vc-timeline-search-bar' });
-        const searchBox = actionHeader.createEl('div', { cls: 'vc-search-capsule' });
-        const searchIcon = searchBox.createEl('span', { cls: 'vc-search-icon' });
-        setIcon(searchIcon, 'search');
-
-        const searchInput = searchBox.createEl('input', { type: 'text', placeholder: '搜索笔记或路径...' });
-        searchInput.value = this.globalSearchQuery;
-        searchInput.addEventListener('input', (e: Event) => {
-            this.globalSearchQuery = (e.target as HTMLInputElement).value;
-            this.refresh();
-        });
-
-        let history: GlobalHistoryItem[] = await this.plugin.getGlobalHistory(100);
-        if (this.globalSearchQuery) {
-            const q = this.globalSearchQuery.toLowerCase();
-            history = history.filter((item: GlobalHistoryItem) => item.filePath.toLowerCase().includes(q));
-        }
-
-        const timeline = container.createEl('div', { cls: 'vc-linear-timeline' });
-
-        history.forEach(({ version, filePath, file, hasUnsavedChanges, isUnversioned }: GlobalHistoryItem, index: number) => {
-            const item = timeline.createEl('div', { cls: `vc-timeline-entry ${hasUnsavedChanges ? 'is-modified-active' : ''}` });
-            
-            const rail = item.createEl('div', { cls: 'vc-timeline-rail' });
-            rail.createEl('div', { cls: `vc-timeline-node ${isUnversioned ? 'is-unversioned' : (hasUnsavedChanges ? 'is-unsaved' : '')}` });
-            if (index !== history.length - 1) rail.createEl('div', { cls: 'vc-timeline-line' });
-
-            const body = item.createEl('div', { cls: 'vc-timeline-card' });
-            
-            const top = body.createEl('div', { cls: 'vc-timeline-top' });
-            
-            const titleRow = top.createEl('div', { cls: 'vc-timeline-title-row' });
-            const link = titleRow.createEl('a', { text: filePath, cls: 'vc-timeline-link' });
-            link.addEventListener('click', () => { if (file) this.app.workspace.getLeaf(false).openFile(file); });
-
-            if (isUnversioned) {
-                titleRow.createEl('span', { text: '● 待生成快照', cls: 'vc-status-pill is-unversioned' });
-            } else if (hasUnsavedChanges) {
-                titleRow.createEl('span', { text: '● 有新改动', cls: 'vc-status-pill is-unsaved' });
-            }
-
-            const timeCol = top.createEl('div', { cls: 'vc-global-time-col' });
-
-            if (file && file.stat && file.stat.mtime) {
-                const mtime = file.stat.mtime;
-                const mtimeRow = timeCol.createEl('div', { cls: 'vc-meta-time-row' });
-                const label = mtimeRow.createEl('span', { cls: `vc-meta-badge is-mtime ${hasUnsavedChanges ? 'is-highlight' : ''}` });
-                const icon = label.createEl('span', { cls: 'vc-badge-icon' });
-                setIcon(icon, 'pen-line');
-                label.createEl('span', { text: '编辑' });
-
-                mtimeRow.createEl('span', { text: this.plugin.formatTime(mtime), cls: 'vc-meta-time-abs' });
-                mtimeRow.createEl('span', { 
-                    text: `(${this.plugin.getRelativeTime(mtime)})`, 
-                    cls: 'vc-rel-time',
-                    attr: { 'data-timestamp': String(mtime) } 
-                });
-            }
-
-            const snapRow = timeCol.createEl('div', { cls: 'vc-meta-time-row' });
-            const snapLabel = snapRow.createEl('span', { cls: 'vc-meta-badge is-snap' });
-            const snapIcon = snapLabel.createEl('span', { cls: 'vc-badge-icon' });
-            setIcon(snapIcon, 'bookmark');
-            snapLabel.createEl('span', { text: '快照' });
-
-            if (isUnversioned) {
-                snapRow.createEl('span', { text: '尚未保存快照', cls: 'vc-meta-time-abs is-empty-text' });
-            } else {
-                snapRow.createEl('span', { text: this.plugin.formatTime(version.timestamp), cls: 'vc-meta-time-abs' });
-                snapRow.createEl('span', { 
-                    text: `(${this.plugin.getRelativeTime(version.timestamp)})`, 
-                    cls: 'vc-rel-time',
-                    attr: { 'data-timestamp': String(version.timestamp) } 
-                });
-            }
-
-            const actions = body.createEl('div', { cls: 'vc-timeline-actions' });
-
-            if (file) {
-                if (isUnversioned) {
-                    const saveBtn = actions.createEl('button', { cls: 'vc-timeline-icon-btn is-accent', attr: { 'aria-label': '为此笔记保存首份快照' } });
-                    setIcon(saveBtn, 'bookmark-plus');
-                    saveBtn.addEventListener('click', async () => {
-                        await this.plugin.createVersion(file, '[Manual Save]', true, [], true);
-                        this.refresh();
-                    });
-                } else {
-                    const diffBtn = actions.createEl('button', { cls: 'vc-timeline-icon-btn', attr: { 'aria-label': '对比版本' } });
-                    setIcon(diffBtn, 'git-compare');
-                    diffBtn.addEventListener('click', () => new DiffModal(this.app, this.plugin, file, version.id).open());
-                }
-            }
-        });
-    }
-}
-
-// =======================================================================
-// ============================= 辅助模态框 ==============================
-// =======================================================================
-class ConfirmModal extends Modal {
-    constructor(app: App, private title: string, private message: string, private onConfirm: () => void) { super(app); }
-    onOpen() {
-        const { contentEl } = this;
-        contentEl.addClass('vc-confirm-dialog');
-        contentEl.createEl('h3', { text: this.title });
-        contentEl.createEl('p', { text: this.message });
-        const box = contentEl.createEl('div', { cls: 'vc-dialog-actions' });
-        const cancel = box.createEl('button', { text: '放弃' });
-        cancel.addEventListener('click', () => this.close());
-        const ok = box.createEl('button', { text: '确认覆盖', cls: 'mod-warning' });
-        ok.addEventListener('click', () => { this.close(); this.onConfirm(); });
-    }
-    onClose() { this.contentEl.empty(); }
-}
-
-class IntegrityReportModal extends Modal {
-    constructor(app: App, private plugin: VersionControlPlugin, private report: { filePath: string; errors: string[] }[]) { super(app); }
-    onOpen() {
-        const { contentEl } = this;
-        contentEl.addClass('vc-raycast-modal');
-        contentEl.createEl('h3', { text: '🛡️ 完整性检查诊断报告' });
-        if (this.report.length === 0) {
-            contentEl.createEl('p', { text: '✅ 所有版本快照完好无损，哈希一致。' });
-            return;
-        }
-        contentEl.createEl('p', { text: `⚠️ 发现 ${this.report.length} 个文件存在异常：`, attr: { style: 'color: var(--text-warning);' } });
-        const list = contentEl.createEl('div', { cls: 'vc-report-box' });
-        this.report.forEach((item: { filePath: string; errors: string[] }) => {
-            const row = list.createEl('div', { cls: 'vc-report-row' });
-            row.createEl('strong', { text: item.filePath });
-            const ul = row.createEl('ul');
-            item.errors.forEach((e: string) => ul.createEl('li', { text: e }));
-        });
-    }
-    onClose() { this.contentEl.empty(); }
-}
-
-// =======================================================================
-// ========================== 现代化设置面板 ==============================
-// =======================================================================
-class VersionControlSettingTab extends PluginSettingTab {
-    constructor(app: App, private plugin: VersionControlPlugin) { super(app, plugin); }
-    display(): void {
-        const { containerEl } = this;
-        containerEl.empty();
-        containerEl.addClass('vc-settings-tab');
-        
-        containerEl.createEl('h2', { text: '版本控制设置' });
-
-        new Setting(containerEl)
-            .setName('修改自动保存')
-            .setDesc('停止输入后自动生成版本历史快照')
-            .addToggle(t => t.setValue(this.plugin.settings.autoSave).onChange(async (v: boolean) => {
-                this.plugin.settings.autoSave = v;
-                await this.plugin.saveSettings();
-            }));
-
-        new Setting(containerEl)
-            .setName('保存延迟时间')
-            .setDesc('停止键入等待多少秒后触发快照')
-            .addSlider(s => s.setLimits(10, 300, 10).setValue(this.plugin.settings.autoSaveDelayOnModify).setDynamicTooltip().onChange(async (v: number) => {
-                this.plugin.settings.autoSaveDelayOnModify = v;
-                await this.plugin.saveSettings();
-            }));
-
-        new Setting(containerEl)
-            .setName('原生流压缩 (gzip)')
-            .setDesc('采用浏览器标准 Web Stream gzip 压缩，大幅减少磁盘占用')
-            .addToggle(t => t.setValue(this.plugin.settings.enableCompression).onChange(async (v: boolean) => {
-                this.plugin.settings.enableCompression = v;
-                await this.plugin.saveSettings();
-            }));
-
-        new Setting(containerEl)
-            .setName('增量补丁存储')
-            .setDesc('仅记录差异增量，防止全量副本膨胀')
-            .addToggle(t => t.setValue(this.plugin.settings.enableIncrementalStorage).onChange(async (v: boolean) => {
-                this.plugin.settings.enableIncrementalStorage = v;
-                await this.plugin.saveSettings();
-            }));
     }
 }
