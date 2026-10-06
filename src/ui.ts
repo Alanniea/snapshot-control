@@ -453,6 +453,8 @@ export class VersionHistoryView extends ItemView {
     searchFullText = false;
     currentViewMode: ViewMode = 'current';
 
+    private globalDisplayLimit = 25;
+
     private debouncedAutoRefresh: () => void;
     private debouncedSearch: () => void;
 
@@ -461,7 +463,7 @@ export class VersionHistoryView extends ItemView {
         this.plugin = plugin;
         this.debouncedAutoRefresh = debounce(() => {
             this.refresh();
-        }, 300, true);
+        }, 500, true);
 
         this.debouncedSearch = debounce(() => {
             this.refresh();
@@ -507,7 +509,10 @@ export class VersionHistoryView extends ItemView {
             if (tsStr) {
                 const ts = parseInt(tsStr, 10);
                 if (!isNaN(ts) && ts > 0) {
-                    el.textContent = `(${this.plugin.getRelativeTime(ts)})`;
+                    const newText = `(${this.plugin.getRelativeTime(ts)})`;
+                    if (el.textContent !== newText) {
+                        el.textContent = newText;
+                    }
                 }
             }
         });
@@ -535,6 +540,7 @@ export class VersionHistoryView extends ItemView {
             btn.addEventListener('click', async () => { 
                 if (this.currentViewMode === tab.id) return;
                 this.currentViewMode = tab.id; 
+                this.globalDisplayLimit = 25;
                 await this.refresh(); 
             });
         });
@@ -818,9 +824,10 @@ export class VersionHistoryView extends ItemView {
             history = history.filter((item: GlobalHistoryItem) => item.filePath.toLowerCase().includes(q));
         }
 
+        const visibleList = history.slice(0, this.globalDisplayLimit);
         const timeline = timelineArea.createEl('div', { cls: 'vc-linear-timeline' });
 
-        history.forEach(({ version, prevVersion, filePath, file, hasUnsavedChanges, isUnversioned, currentChars, snapshotChars, prevSnapshotChars, charDiff, diffMode, totalVersions }: GlobalHistoryItem, index: number) => {
+        visibleList.forEach(({ version, prevVersion, filePath, file, hasUnsavedChanges, isUnversioned, currentChars, snapshotChars, prevSnapshotChars, charDiff, diffMode, totalVersions }: GlobalHistoryItem, index: number) => {
             const isManual = !version.message.includes('[Auto Save]');
             const saveType = this.plugin.getSaveTypeLabel(version.message);
 
@@ -828,7 +835,7 @@ export class VersionHistoryView extends ItemView {
             
             const rail = item.createEl('div', { cls: 'vc-timeline-rail' });
             rail.createEl('div', { cls: `vc-timeline-node ${isUnversioned ? 'is-unversioned' : (hasUnsavedChanges ? 'is-unsaved' : (isManual ? 'is-manual' : ''))}` });
-            if (index !== history.length - 1) rail.createEl('div', { cls: 'vc-timeline-line' });
+            if (index !== visibleList.length - 1) rail.createEl('div', { cls: 'vc-timeline-line' });
 
             const body = item.createEl('div', { cls: 'vc-timeline-card' });
             const top = body.createEl('div', { cls: 'vc-timeline-top' });
@@ -951,6 +958,18 @@ export class VersionHistoryView extends ItemView {
                 }
             }
         });
+
+        if (history.length > this.globalDisplayLimit) {
+            const moreContainer = timelineArea.createEl('div', { cls: 'vc-load-more-container' });
+            const moreBtn = moreContainer.createEl('button', { 
+                text: `加载更多笔记 (还有 ${history.length - this.globalDisplayLimit} 篇)...`,
+                cls: 'vc-load-more-btn'
+            });
+            moreBtn.addEventListener('click', () => {
+                this.globalDisplayLimit += 25;
+                this.refresh();
+            });
+        }
     }
 }
 

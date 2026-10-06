@@ -1,3 +1,4 @@
+
 import { 
     Plugin, TFile, TFolder, debounce, moment, normalizePath, DataAdapter, Notice 
 } from 'obsidian';
@@ -207,6 +208,7 @@ export default class VersionControlPlugin extends Plugin {
         await this.ensureVersionFolder();
         await this.cleanupTempFiles();
 
+        // 🌟 降频为 30 秒执行一次时间刷新，彻底消除滑动中的每秒 Layout 重排掉帧
         this.registerInterval(
             window.setInterval(() => { 
                 this.renderStatusBarTime();
@@ -214,7 +216,7 @@ export default class VersionControlPlugin extends Plugin {
                 leaves.forEach(leaf => { 
                     if (leaf.view instanceof VersionHistoryView) leaf.view.updateRelativeTimes(); 
                 });
-            }, 1000) as unknown as number
+            }, 30000) as unknown as number
         );
     }
 

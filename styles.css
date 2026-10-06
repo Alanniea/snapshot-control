@@ -442,7 +442,6 @@
     padding-right: 2px;
 }
 
-/* 🌟 全新搜索条：宽度完全舒展，专注沉浸 */
 .vc-timeline-search-bar {
     display: flex;
     align-items: center;
@@ -483,7 +482,6 @@
     flex-shrink: 0;
 }
 
-/* 🌟 内嵌式微型【搜正文】修饰符胶囊 */
 .vc-search-inner-toggle {
     background: transparent;
     border: 1px solid transparent;
@@ -510,7 +508,6 @@
     font-weight: 700;
 }
 
-/* 🌟 一键清空 ✕ 按钮 */
 .vc-search-clear-btn {
     background: transparent;
     border: none;
@@ -533,7 +530,6 @@
     color: var(--text-normal);
 }
 
-/* 搜索结果数量提示条 */
 .vc-search-result-meta {
     font-size: 11px;
     color: var(--text-faint);
@@ -624,7 +620,7 @@
     z-index: 1;
 }
 
-/* 卡片主体 */
+/* 🌟 卡片主体：开启浏览器独立渲染上下文隔离，滑动不再触发全屏重排 */
 .vc-timeline-card {
     flex: 1;
     min-width: 0;
@@ -635,16 +631,20 @@
     border: 1px solid var(--vc-border-subtle);
     border-radius: var(--vc-radius-md);
     padding: 8px 8px;
-    transition: var(--vc-trans-smooth);
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
     box-sizing: border-box;
     overflow: hidden;
+    contain: content;
 }
-.vc-timeline-card:hover {
-    border-color: var(--interactive-accent);
-    background: var(--background-primary);
-    transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+
+/* 触屏移动端取消 translateY 引起的触摸卡顿 */
+@media (hover: hover) {
+    .vc-timeline-card:hover {
+        border-color: var(--interactive-accent);
+        background: var(--background-primary);
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+    }
 }
 
 .vc-timeline-top {
@@ -964,6 +964,28 @@
 .vc-timeline-icon-btn.vc-btn-danger:hover {
     color: var(--text-danger);
     background: rgba(248, 81, 73, 0.15);
+}
+
+/* 底部加载更多按钮 */
+.vc-load-more-container {
+    display: flex;
+    justify-content: center;
+    padding: 16px 0 24px 0;
+}
+.vc-load-more-btn {
+    background: var(--background-secondary);
+    border: 1px solid var(--vc-border-subtle);
+    border-radius: var(--vc-radius-pill);
+    padding: 6px 16px;
+    font-size: 11px;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: var(--vc-trans-smooth);
+}
+.vc-load-more-btn:hover {
+    background: var(--background-modifier-hover);
+    color: var(--text-normal);
+    border-color: var(--interactive-accent);
 }
 
 /* 全库时间线加载态 */
