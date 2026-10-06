@@ -502,10 +502,11 @@ export class VersionHistoryView extends ItemView {
         await this.refresh();
     }
 
+    // 🌟 1 秒原生高精度脏检查更新相对时间：文本未变绝不重绘，秒级递增
     updateRelativeTimes() {
         const timeEls = this.contentEl.querySelectorAll('.vc-rel-time');
         timeEls.forEach((el: Element) => {
-            const tsStr = (el as HTMLElement).dataset.timestamp;
+            const tsStr = el.getAttribute('data-timestamp');
             if (tsStr) {
                 const ts = parseInt(tsStr, 10);
                 if (!isNaN(ts) && ts > 0) {
@@ -519,6 +520,10 @@ export class VersionHistoryView extends ItemView {
     }
 
     async refresh() {
+        // 🌟 记忆当前滚动条位置，避免整页重绘时位置突变
+        const scrollBox = this.contentEl.querySelector('.vc-timeline-container');
+        const prevScrollTop = scrollBox ? scrollBox.scrollTop : 0;
+
         const container = this.contentEl;
         container.empty();
         const buffer = container.createDiv({ cls: 'vc-root-shell' });
@@ -548,6 +553,11 @@ export class VersionHistoryView extends ItemView {
         const contentArea = buffer.createEl('div', { cls: 'vc-timeline-container' });
         if (this.currentViewMode === 'current') await this.renderCurrentFileHistory(contentArea);
         else await this.renderGlobalHistory(contentArea);
+
+        // 🌟 恢复滚动条位置
+        if (prevScrollTop > 0) {
+            contentArea.scrollTop = prevScrollTop;
+        }
     }
 
     async renderCurrentFileHistory(container: HTMLElement) {
@@ -709,6 +719,7 @@ export class VersionHistoryView extends ItemView {
 
             const actions = body.createEl('div', { cls: 'vc-timeline-actions' });
             
+            // 1. 标星按钮
             const starBtn = actions.createEl('button', { 
                 cls: `vc-timeline-icon-btn ${v.starred ? 'is-starred' : ''}`, 
                 attr: { 'aria-label': v.starred ? '取消收藏' : '标记为重要' } 
@@ -720,6 +731,7 @@ export class VersionHistoryView extends ItemView {
                 this.refresh();
             });
 
+            // 2. 对比上一版本按钮
             const prevDiffBtn = actions.createEl('button', { 
                 cls: 'vc-timeline-icon-btn', 
                 attr: { 'aria-label': nextVersion ? '对比上一版本 (查看此快照改动)' : '首个初始版本，无上一版本' } 
@@ -733,6 +745,7 @@ export class VersionHistoryView extends ItemView {
                 prevDiffBtn.disabled = true;
             }
 
+            // 3. 对比当前工作区按钮
             const currentDiffBtn = actions.createEl('button', { 
                 cls: 'vc-timeline-icon-btn', 
                 attr: { 'aria-label': '对比当前工作区 (最新状态)' } 
@@ -742,6 +755,7 @@ export class VersionHistoryView extends ItemView {
                 new DiffModal(this.app, this.plugin, file, v.id, 'current').open();
             });
 
+            // 4. 回退/恢复按钮
             const restoreBtn = actions.createEl('button', { cls: 'vc-timeline-icon-btn', attr: { 'aria-label': '恢复至此版本' } });
             setIcon(restoreBtn, 'undo-2');
             restoreBtn.addEventListener('click', () => {
@@ -750,6 +764,7 @@ export class VersionHistoryView extends ItemView {
                 }).open();
             });
 
+            // 5. 彻底删除单条快照按钮
             const delBtn = actions.createEl('button', { 
                 cls: 'vc-timeline-icon-btn vc-btn-danger', 
                 attr: { 'aria-label': '彻底删除此版本快照' } 
@@ -763,6 +778,145 @@ export class VersionHistoryView extends ItemView {
                 }).open();
             });
         });
+    }
+
+    // 🌟 单卡片工厂方法：支持原地无感追加，绝不触动滚动条
+    private buildGlobalHistoryCard(
+        { version, prevVersion, filePath, file, hasUnsavedChanges, isUnversioned, currentChars, snapshotChars, prevSnapshotChars, charDiff, diffMode, totalVersions }: GlobalHistoryItem,
+        isLast: boolean
+    ): HTMLElement {
+        const isManual = !version.message.includes('[Auto Save]');
+        const saveType = this.plugin.getSaveTypeLabel(version.message);
+
+        const item = document.createElement('div');
+        item.className = 'vc-timeline-entry';
+        
+        const rail = item.createEl('div', { cls: 'vc-timeline-rail' });
+        rail.createEl('div', { cls: `vc-timeline-node ${isUnversioned ? 'is-unversioned' : (hasUnsavedChanges ? 'is-unsaved' : (isManual ? 'is-manual' : ''))}` });
+        if (!isLast) rail.createEl('div', { cls: 'vc-timeline-line' });
+
+        const body = item.createEl('div', { cls: 'vc-timeline-card' });
+        const top = body.createEl('div', { cls: 'vc-timeline-top' });
+        
+        const titleRow = top.createEl('div', { cls: 'vc-timeline-title-row' });
+        const link = titleRow.createEl('a', { text: filePath, cls: 'vc-timeline-link' });
+        link.addEventListener('click', () => { if (file) this.app.workspace.getLeaf(false).openFile(file); });
+
+        const badgesWrap = titleRow.createEl('div', { cls: 'vc-status-badges-wrap' });
+
+        if (diffMode === 'unversioned') {
+            badgesWrap.createEl('span', { text: '● 待生成快照', cls: 'vc-status-pill is-unversioned' });
+            badgesWrap.createEl('span', { 
+                text: `${currentChars?.toLocaleString()} 字符`, 
+                cls: 'vc-diff-chars-badge is-total',
+                attr: { title: '当前笔记总字符数' }
+            });
+        } else if (diffMode === 'workspace') {
+            badgesWrap.createEl('span', { text: '● 工作区改动', cls: 'vc-status-pill is-unsaved' });
+            const deltaClass = charDiff > 0 ? 'is-plus' : (charDiff < 0 ? 'is-minus' : 'is-zero');
+            const sign = charDiff > 0 ? '+' : '';
+            badgesWrap.createEl('span', { 
+                text: `${sign}${charDiff.toLocaleString()} 字符`, 
+                cls: `vc-diff-chars-badge ${deltaClass}`,
+                attr: { title: `工作区相比最新快照：${sign}${charDiff} 字符 (工作区: ${currentChars?.toLocaleString()} / 快照: ${snapshotChars?.toLocaleString()})` }
+            });
+        } else {
+            const typeBadge = badgesWrap.createEl('span', { 
+                cls: `vc-tag-badge ${isManual ? 'badge-manual' : 'badge-auto'}` 
+            });
+            typeBadge.setText(saveType);
+
+            if (prevSnapshotChars !== undefined) {
+                const deltaClass = charDiff > 0 ? 'is-plus' : (charDiff < 0 ? 'is-minus' : 'is-zero');
+                const sign = charDiff > 0 ? '+' : '';
+                badgesWrap.createEl('span', { 
+                    text: `${sign}${charDiff.toLocaleString()} 字符`, 
+                    cls: `vc-diff-chars-badge ${deltaClass}`,
+                    attr: { title: `最新快照相比上一版本：${sign}${charDiff} 字符 (最新: ${snapshotChars?.toLocaleString()} / 上版: ${prevSnapshotChars.toLocaleString()})` }
+                });
+            } else {
+                badgesWrap.createEl('span', { 
+                    text: `初始 ${snapshotChars?.toLocaleString()} 字符`, 
+                    cls: 'vc-diff-chars-badge is-zero',
+                    attr: { title: '初始首版快照' }
+                });
+            }
+        }
+
+        if (totalVersions !== undefined && totalVersions > 0) {
+            badgesWrap.createEl('span', {
+                text: `${totalVersions} 个版本`,
+                cls: 'vc-version-count-badge',
+                attr: { title: `该笔记已累计保存 ${totalVersions} 个版本快照` }
+            });
+        }
+
+        const timeCol = top.createEl('div', { cls: 'vc-global-time-col' });
+
+        if (file && file.stat && file.stat.mtime) {
+            const mtime = file.stat.mtime;
+            const mtimeRow = timeCol.createEl('div', { cls: 'vc-meta-time-row' });
+            const label = mtimeRow.createEl('span', { cls: `vc-meta-badge is-mtime ${hasUnsavedChanges ? 'is-highlight' : ''}` });
+            const icon = label.createEl('span', { cls: 'vc-badge-icon' });
+            setIcon(icon, 'pen-line');
+            label.createEl('span', { text: '编辑' });
+
+            const timeContainer = mtimeRow.createEl('div', { cls: 'vc-meta-time-cluster' });
+            timeContainer.createEl('span', { text: this.plugin.formatTime(mtime), cls: 'vc-meta-time-abs' });
+            timeContainer.createEl('span', { 
+                text: `(${this.plugin.getRelativeTime(mtime)})`, 
+                cls: 'vc-rel-time',
+                attr: { 'data-timestamp': String(mtime) } 
+            });
+        }
+
+        const snapRow = timeCol.createEl('div', { cls: 'vc-meta-time-row' });
+        const snapLabel = snapRow.createEl('span', { cls: 'vc-meta-badge is-snap' });
+        const snapIcon = snapLabel.createEl('span', { cls: 'vc-badge-icon' });
+        setIcon(snapIcon, 'bookmark');
+        snapLabel.createEl('span', { text: '快照' });
+
+        const snapTimeContainer = snapRow.createEl('div', { cls: 'vc-meta-time-cluster' });
+        if (isUnversioned) {
+            snapTimeContainer.createEl('span', { text: '尚未保存快照', cls: 'vc-meta-time-abs is-empty-text' });
+        } else {
+            snapTimeContainer.createEl('span', { text: this.plugin.formatTime(version.timestamp), cls: 'vc-meta-time-abs' });
+            snapTimeContainer.createEl('span', { 
+                text: `(${this.plugin.getRelativeTime(version.timestamp)})`, 
+                cls: 'vc-rel-time',
+                attr: { 'data-timestamp': String(version.timestamp) } 
+            });
+        }
+
+        const actions = body.createEl('div', { cls: 'vc-timeline-actions' });
+
+        if (file) {
+            const cardSnapBtn = actions.createEl('button', { 
+                cls: `vc-timeline-icon-btn ${hasUnsavedChanges ? 'is-accent' : ''}`, 
+                attr: { 'aria-label': hasUnsavedChanges ? '立即为此笔记保存改动快照' : '为此笔记创建新快照' } 
+            });
+            setIcon(cardSnapBtn, 'bookmark-plus');
+            cardSnapBtn.addEventListener('click', async (e: MouseEvent) => {
+                e.stopPropagation();
+                await this.plugin.createVersion(file, '[Manual Save]', false, [], true);
+                this.plugin.clearGlobalCache();
+                await this.refresh();
+            });
+
+            if (!isUnversioned) {
+                if (prevVersion) {
+                    const prevDiffBtn = actions.createEl('button', { cls: 'vc-timeline-icon-btn', attr: { 'aria-label': '对比上一版本 (查看最新快照改动)' } });
+                    setIcon(prevDiffBtn, 'git-commit');
+                    prevDiffBtn.addEventListener('click', () => new DiffModal(this.app, this.plugin, file, prevVersion.id, version.id).open());
+                }
+
+                const diffBtn = actions.createEl('button', { cls: 'vc-timeline-icon-btn', attr: { 'aria-label': '对比当前工作区' } });
+                setIcon(diffBtn, 'git-compare');
+                diffBtn.addEventListener('click', () => new DiffModal(this.app, this.plugin, file, version.id, 'current').open());
+            }
+        }
+
+        return item;
     }
 
     async renderGlobalHistory(container: HTMLElement) {
@@ -824,150 +978,42 @@ export class VersionHistoryView extends ItemView {
             history = history.filter((item: GlobalHistoryItem) => item.filePath.toLowerCase().includes(q));
         }
 
-        const visibleList = history.slice(0, this.globalDisplayLimit);
+        // 🌟 流式安全追加机制：初次渲染 25 条
+        let renderedCount = 0;
+        const batchSize = 25;
         const timeline = timelineArea.createEl('div', { cls: 'vc-linear-timeline' });
 
-        visibleList.forEach(({ version, prevVersion, filePath, file, hasUnsavedChanges, isUnversioned, currentChars, snapshotChars, prevSnapshotChars, charDiff, diffMode, totalVersions }: GlobalHistoryItem, index: number) => {
-            const isManual = !version.message.includes('[Auto Save]');
-            const saveType = this.plugin.getSaveTypeLabel(version.message);
+        const appendBatch = (count: number) => {
+            const targetItems = history.slice(renderedCount, renderedCount + count);
+            const frag = document.createDocumentFragment();
+            targetItems.forEach((item, idx) => {
+                const isOverallLast = (renderedCount + idx) === (history.length - 1);
+                frag.appendChild(this.buildGlobalHistoryCard(item, isOverallLast));
+            });
+            timeline.appendChild(frag);
+            renderedCount += targetItems.length;
+        };
 
-            const item = timeline.createEl('div', { cls: 'vc-timeline-entry' });
-            
-            const rail = item.createEl('div', { cls: 'vc-timeline-rail' });
-            rail.createEl('div', { cls: `vc-timeline-node ${isUnversioned ? 'is-unversioned' : (hasUnsavedChanges ? 'is-unsaved' : (isManual ? 'is-manual' : ''))}` });
-            if (index !== visibleList.length - 1) rail.createEl('div', { cls: 'vc-timeline-line' });
+        // 初始填充前 25 条
+        appendBatch(batchSize);
 
-            const body = item.createEl('div', { cls: 'vc-timeline-card' });
-            const top = body.createEl('div', { cls: 'vc-timeline-top' });
-            
-            const titleRow = top.createEl('div', { cls: 'vc-timeline-title-row' });
-            const link = titleRow.createEl('a', { text: filePath, cls: 'vc-timeline-link' });
-            link.addEventListener('click', () => { if (file) this.app.workspace.getLeaf(false).openFile(file); });
-
-            const badgesWrap = titleRow.createEl('div', { cls: 'vc-status-badges-wrap' });
-
-            if (diffMode === 'unversioned') {
-                badgesWrap.createEl('span', { text: '● 待生成快照', cls: 'vc-status-pill is-unversioned' });
-                badgesWrap.createEl('span', { 
-                    text: `${currentChars?.toLocaleString()} 字符`, 
-                    cls: 'vc-diff-chars-badge is-total',
-                    attr: { title: '当前笔记总字符数' }
-                });
-            } else if (diffMode === 'workspace') {
-                badgesWrap.createEl('span', { text: '● 工作区改动', cls: 'vc-status-pill is-unsaved' });
-                const deltaClass = charDiff > 0 ? 'is-plus' : (charDiff < 0 ? 'is-minus' : 'is-zero');
-                const sign = charDiff > 0 ? '+' : '';
-                badgesWrap.createEl('span', { 
-                    text: `${sign}${charDiff.toLocaleString()} 字符`, 
-                    cls: `vc-diff-chars-badge ${deltaClass}`,
-                    attr: { title: `工作区相比最新快照：${sign}${charDiff} 字符 (工作区: ${currentChars?.toLocaleString()} / 快照: ${snapshotChars?.toLocaleString()})` }
-                });
-            } else {
-                const typeBadge = badgesWrap.createEl('span', { 
-                    cls: `vc-tag-badge ${isManual ? 'badge-manual' : 'badge-auto'}` 
-                });
-                typeBadge.setText(saveType);
-
-                if (prevSnapshotChars !== undefined) {
-                    const deltaClass = charDiff > 0 ? 'is-plus' : (charDiff < 0 ? 'is-minus' : 'is-zero');
-                    const sign = charDiff > 0 ? '+' : '';
-                    badgesWrap.createEl('span', { 
-                        text: `${sign}${charDiff.toLocaleString()} 字符`, 
-                        cls: `vc-diff-chars-badge ${deltaClass}`,
-                        attr: { title: `最新快照相比上一版本：${sign}${charDiff} 字符 (最新: ${snapshotChars?.toLocaleString()} / 上版: ${prevSnapshotChars.toLocaleString()})` }
-                    });
-                } else {
-                    badgesWrap.createEl('span', { 
-                        text: `初始 ${snapshotChars?.toLocaleString()} 字符`, 
-                        cls: 'vc-diff-chars-badge is-zero',
-                        attr: { title: '初始首版快照' }
-                    });
-                }
-            }
-
-            if (totalVersions !== undefined && totalVersions > 0) {
-                badgesWrap.createEl('span', {
-                    text: `${totalVersions} 个版本`,
-                    cls: 'vc-version-count-badge',
-                    attr: { title: `该笔记已累计保存 ${totalVersions} 个版本快照` }
-                });
-            }
-
-            const timeCol = top.createEl('div', { cls: 'vc-global-time-col' });
-
-            if (file && file.stat && file.stat.mtime) {
-                const mtime = file.stat.mtime;
-                const mtimeRow = timeCol.createEl('div', { cls: 'vc-meta-time-row' });
-                const label = mtimeRow.createEl('span', { cls: `vc-meta-badge is-mtime ${hasUnsavedChanges ? 'is-highlight' : ''}` });
-                const icon = label.createEl('span', { cls: 'vc-badge-icon' });
-                setIcon(icon, 'pen-line');
-                label.createEl('span', { text: '编辑' });
-
-                const timeContainer = mtimeRow.createEl('div', { cls: 'vc-meta-time-cluster' });
-                timeContainer.createEl('span', { text: this.plugin.formatTime(mtime), cls: 'vc-meta-time-abs' });
-                timeContainer.createEl('span', { 
-                    text: `(${this.plugin.getRelativeTime(mtime)})`, 
-                    cls: 'vc-rel-time',
-                    attr: { 'data-timestamp': String(mtime) } 
-                });
-            }
-
-            const snapRow = timeCol.createEl('div', { cls: 'vc-meta-time-row' });
-            const snapLabel = snapRow.createEl('span', { cls: 'vc-meta-badge is-snap' });
-            const snapIcon = snapLabel.createEl('span', { cls: 'vc-badge-icon' });
-            setIcon(snapIcon, 'bookmark');
-            snapLabel.createEl('span', { text: '快照' });
-
-            const snapTimeContainer = snapRow.createEl('div', { cls: 'vc-meta-time-cluster' });
-            if (isUnversioned) {
-                snapTimeContainer.createEl('span', { text: '尚未保存快照', cls: 'vc-meta-time-abs is-empty-text' });
-            } else {
-                snapTimeContainer.createEl('span', { text: this.plugin.formatTime(version.timestamp), cls: 'vc-meta-time-abs' });
-                snapTimeContainer.createEl('span', { 
-                    text: `(${this.plugin.getRelativeTime(version.timestamp)})`, 
-                    cls: 'vc-rel-time',
-                    attr: { 'data-timestamp': String(version.timestamp) } 
-                });
-            }
-
-            const actions = body.createEl('div', { cls: 'vc-timeline-actions' });
-
-            if (file) {
-                const cardSnapBtn = actions.createEl('button', { 
-                    cls: `vc-timeline-icon-btn ${hasUnsavedChanges ? 'is-accent' : ''}`, 
-                    attr: { 'aria-label': hasUnsavedChanges ? '立即为此笔记保存改动快照' : '为此笔记创建新快照' } 
-                });
-                setIcon(cardSnapBtn, 'bookmark-plus');
-                cardSnapBtn.addEventListener('click', async (e: MouseEvent) => {
-                    e.stopPropagation();
-                    await this.plugin.createVersion(file, '[Manual Save]', false, [], true);
-                    this.plugin.clearGlobalCache();
-                    await this.refresh();
-                });
-
-                if (!isUnversioned) {
-                    if (prevVersion) {
-                        const prevDiffBtn = actions.createEl('button', { cls: 'vc-timeline-icon-btn', attr: { 'aria-label': '对比上一版本 (查看最新快照改动)' } });
-                        setIcon(prevDiffBtn, 'git-commit');
-                        prevDiffBtn.addEventListener('click', () => new DiffModal(this.app, this.plugin, file, prevVersion.id, version.id).open());
-                    }
-
-                    const diffBtn = actions.createEl('button', { cls: 'vc-timeline-icon-btn', attr: { 'aria-label': '对比当前工作区' } });
-                    setIcon(diffBtn, 'git-compare');
-                    diffBtn.addEventListener('click', () => new DiffModal(this.app, this.plugin, file, version.id, 'current').open());
-                }
-            }
-        });
-
-        if (history.length > this.globalDisplayLimit) {
+        // 🌟 原地追加，绝对不刷新视图，滚动条纹丝不动！
+        if (history.length > renderedCount) {
             const moreContainer = timelineArea.createEl('div', { cls: 'vc-load-more-container' });
             const moreBtn = moreContainer.createEl('button', { 
-                text: `加载更多笔记 (还有 ${history.length - this.globalDisplayLimit} 篇)...`,
+                text: `加载更多笔记 (还有 ${history.length - renderedCount} 篇)...`,
                 cls: 'vc-load-more-btn'
             });
-            moreBtn.addEventListener('click', () => {
-                this.globalDisplayLimit += 25;
-                this.refresh();
+            moreBtn.addEventListener('click', (e: MouseEvent) => {
+                e.stopPropagation();
+                appendBatch(batchSize);
+
+                const remaining = history.length - renderedCount;
+                if (remaining > 0) {
+                    moreBtn.setText(`加载更多笔记 (还有 ${remaining} 篇)...`);
+                } else {
+                    moreContainer.remove();
+                }
             });
         }
     }
