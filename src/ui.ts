@@ -1,4 +1,3 @@
-
 import { 
     App, Modal, ItemView, WorkspaceLeaf, Menu, TFile, Notice, 
     Setting, PluginSettingTab, setIcon, debounce 
@@ -502,7 +501,6 @@ export class VersionHistoryView extends ItemView {
         await this.refresh();
     }
 
-    // 🌟 1 秒原生高精度脏检查更新相对时间：文本未变绝不重绘，秒级递增
     updateRelativeTimes() {
         const timeEls = this.contentEl.querySelectorAll('.vc-rel-time');
         timeEls.forEach((el: Element) => {
@@ -520,7 +518,6 @@ export class VersionHistoryView extends ItemView {
     }
 
     async refresh() {
-        // 🌟 记忆当前滚动条位置，避免整页重绘时位置突变
         const scrollBox = this.contentEl.querySelector('.vc-timeline-container');
         const prevScrollTop = scrollBox ? scrollBox.scrollTop : 0;
 
@@ -554,7 +551,6 @@ export class VersionHistoryView extends ItemView {
         if (this.currentViewMode === 'current') await this.renderCurrentFileHistory(contentArea);
         else await this.renderGlobalHistory(contentArea);
 
-        // 🌟 恢复滚动条位置
         if (prevScrollTop > 0) {
             contentArea.scrollTop = prevScrollTop;
         }
@@ -719,7 +715,6 @@ export class VersionHistoryView extends ItemView {
 
             const actions = body.createEl('div', { cls: 'vc-timeline-actions' });
             
-            // 1. 标星按钮
             const starBtn = actions.createEl('button', { 
                 cls: `vc-timeline-icon-btn ${v.starred ? 'is-starred' : ''}`, 
                 attr: { 'aria-label': v.starred ? '取消收藏' : '标记为重要' } 
@@ -731,7 +726,6 @@ export class VersionHistoryView extends ItemView {
                 this.refresh();
             });
 
-            // 2. 对比上一版本按钮
             const prevDiffBtn = actions.createEl('button', { 
                 cls: 'vc-timeline-icon-btn', 
                 attr: { 'aria-label': nextVersion ? '对比上一版本 (查看此快照改动)' : '首个初始版本，无上一版本' } 
@@ -745,7 +739,6 @@ export class VersionHistoryView extends ItemView {
                 prevDiffBtn.disabled = true;
             }
 
-            // 3. 对比当前工作区按钮
             const currentDiffBtn = actions.createEl('button', { 
                 cls: 'vc-timeline-icon-btn', 
                 attr: { 'aria-label': '对比当前工作区 (最新状态)' } 
@@ -755,7 +748,6 @@ export class VersionHistoryView extends ItemView {
                 new DiffModal(this.app, this.plugin, file, v.id, 'current').open();
             });
 
-            // 4. 回退/恢复按钮
             const restoreBtn = actions.createEl('button', { cls: 'vc-timeline-icon-btn', attr: { 'aria-label': '恢复至此版本' } });
             setIcon(restoreBtn, 'undo-2');
             restoreBtn.addEventListener('click', () => {
@@ -764,7 +756,6 @@ export class VersionHistoryView extends ItemView {
                 }).open();
             });
 
-            // 5. 彻底删除单条快照按钮
             const delBtn = actions.createEl('button', { 
                 cls: 'vc-timeline-icon-btn vc-btn-danger', 
                 attr: { 'aria-label': '彻底删除此版本快照' } 
@@ -780,13 +771,13 @@ export class VersionHistoryView extends ItemView {
         });
     }
 
-    // 🌟 单卡片工厂方法：支持原地无感追加，绝不触动滚动条
     private buildGlobalHistoryCard(
         { version, prevVersion, filePath, file, hasUnsavedChanges, isUnversioned, currentChars, snapshotChars, prevSnapshotChars, charDiff, diffMode, totalVersions }: GlobalHistoryItem,
         isLast: boolean
     ): HTMLElement {
-        const isManual = !version.message.includes('[Auto Save]');
-        const saveType = this.plugin.getSaveTypeLabel(version.message);
+        const message = version?.message || '自动保存';
+        const isManual = !message.includes('[Auto Save]');
+        const saveType = this.plugin.getSaveTypeLabel(message);
 
         const item = document.createElement('div');
         item.className = 'vc-timeline-entry';
@@ -807,18 +798,18 @@ export class VersionHistoryView extends ItemView {
         if (diffMode === 'unversioned') {
             badgesWrap.createEl('span', { text: '● 待生成快照', cls: 'vc-status-pill is-unversioned' });
             badgesWrap.createEl('span', { 
-                text: `${currentChars?.toLocaleString()} 字符`, 
+                text: `${currentChars?.toLocaleString() ?? 0} 字符`, 
                 cls: 'vc-diff-chars-badge is-total',
                 attr: { title: '当前笔记总字符数' }
             });
         } else if (diffMode === 'workspace') {
             badgesWrap.createEl('span', { text: '● 工作区改动', cls: 'vc-status-pill is-unsaved' });
-            const deltaClass = charDiff > 0 ? 'is-plus' : (charDiff < 0 ? 'is-minus' : 'is-zero');
-            const sign = charDiff > 0 ? '+' : '';
+            const deltaClass = (charDiff ?? 0) > 0 ? 'is-plus' : ((charDiff ?? 0) < 0 ? 'is-minus' : 'is-zero');
+            const sign = (charDiff ?? 0) > 0 ? '+' : '';
             badgesWrap.createEl('span', { 
-                text: `${sign}${charDiff.toLocaleString()} 字符`, 
+                text: `${sign}${(charDiff ?? 0).toLocaleString()} 字符`, 
                 cls: `vc-diff-chars-badge ${deltaClass}`,
-                attr: { title: `工作区相比最新快照：${sign}${charDiff} 字符 (工作区: ${currentChars?.toLocaleString()} / 快照: ${snapshotChars?.toLocaleString()})` }
+                attr: { title: `工作区相比最新快照：${sign}${charDiff} 字符` }
             });
         } else {
             const typeBadge = badgesWrap.createEl('span', { 
@@ -827,16 +818,16 @@ export class VersionHistoryView extends ItemView {
             typeBadge.setText(saveType);
 
             if (prevSnapshotChars !== undefined) {
-                const deltaClass = charDiff > 0 ? 'is-plus' : (charDiff < 0 ? 'is-minus' : 'is-zero');
-                const sign = charDiff > 0 ? '+' : '';
+                const deltaClass = (charDiff ?? 0) > 0 ? 'is-plus' : ((charDiff ?? 0) < 0 ? 'is-minus' : 'is-zero');
+                const sign = (charDiff ?? 0) > 0 ? '+' : '';
                 badgesWrap.createEl('span', { 
-                    text: `${sign}${charDiff.toLocaleString()} 字符`, 
+                    text: `${sign}${(charDiff ?? 0).toLocaleString()} 字符`, 
                     cls: `vc-diff-chars-badge ${deltaClass}`,
-                    attr: { title: `最新快照相比上一版本：${sign}${charDiff} 字符 (最新: ${snapshotChars?.toLocaleString()} / 上版: ${prevSnapshotChars.toLocaleString()})` }
+                    attr: { title: `最新快照相比上一版本：${sign}${charDiff} 字符` }
                 });
             } else {
                 badgesWrap.createEl('span', { 
-                    text: `初始 ${snapshotChars?.toLocaleString()} 字符`, 
+                    text: `初始 ${(snapshotChars ?? 0).toLocaleString()} 字符`, 
                     cls: 'vc-diff-chars-badge is-zero',
                     attr: { title: '初始首版快照' }
                 });
@@ -877,7 +868,7 @@ export class VersionHistoryView extends ItemView {
         snapLabel.createEl('span', { text: '快照' });
 
         const snapTimeContainer = snapRow.createEl('div', { cls: 'vc-meta-time-cluster' });
-        if (isUnversioned) {
+        if (isUnversioned || !version?.timestamp) {
             snapTimeContainer.createEl('span', { text: '尚未保存快照', cls: 'vc-meta-time-abs is-empty-text' });
         } else {
             snapTimeContainer.createEl('span', { text: this.plugin.formatTime(version.timestamp), cls: 'vc-meta-time-abs' });
@@ -903,8 +894,8 @@ export class VersionHistoryView extends ItemView {
                 await this.refresh();
             });
 
-            if (!isUnversioned) {
-                if (prevVersion) {
+            if (!isUnversioned && version?.id) {
+                if (prevVersion?.id) {
                     const prevDiffBtn = actions.createEl('button', { cls: 'vc-timeline-icon-btn', attr: { 'aria-label': '对比上一版本 (查看最新快照改动)' } });
                     setIcon(prevDiffBtn, 'git-commit');
                     prevDiffBtn.addEventListener('click', () => new DiffModal(this.app, this.plugin, file, prevVersion.id, version.id).open());
@@ -970,15 +961,29 @@ export class VersionHistoryView extends ItemView {
             loadingEl.createEl('span', { text: '正在加载全库时间线...' });
         }
 
-        let history: GlobalHistoryItem[] = await this.plugin.getGlobalHistory(100);
-        if (loadingEl) loadingEl.remove();
+        let history: GlobalHistoryItem[] = [];
+        try {
+            history = await this.plugin.getGlobalHistory(100);
+        } catch (e) {
+            console.error('获取全库时间线失败:', e);
+        } finally {
+            if (loadingEl) loadingEl.remove();
+        }
 
         if (this.globalSearchQuery) {
             const q = this.globalSearchQuery.toLowerCase();
             history = history.filter((item: GlobalHistoryItem) => item.filePath.toLowerCase().includes(q));
         }
 
-        // 🌟 流式安全追加机制：初次渲染 25 条
+        if (history.length === 0) {
+            const empty = timelineArea.createEl('div', { cls: 'vc-timeline-empty' });
+            const icon = empty.createEl('div', { cls: 'vc-timeline-empty-icon' });
+            setIcon(icon, 'history');
+            empty.createEl('h4', { text: '暂无笔记快照' });
+            empty.createEl('p', { text: '打开任意笔记并点击右上角「保存快照」即可开始版本控制。' });
+            return;
+        }
+
         let renderedCount = 0;
         const batchSize = 25;
         const timeline = timelineArea.createEl('div', { cls: 'vc-linear-timeline' });
@@ -987,17 +992,19 @@ export class VersionHistoryView extends ItemView {
             const targetItems = history.slice(renderedCount, renderedCount + count);
             const frag = document.createDocumentFragment();
             targetItems.forEach((item, idx) => {
-                const isOverallLast = (renderedCount + idx) === (history.length - 1);
-                frag.appendChild(this.buildGlobalHistoryCard(item, isOverallLast));
+                try {
+                    const isOverallLast = (renderedCount + idx) === (history.length - 1);
+                    frag.appendChild(this.buildGlobalHistoryCard(item, isOverallLast));
+                } catch (err) {
+                    console.error('渲染单张卡片异常:', item.filePath, err);
+                }
             });
             timeline.appendChild(frag);
             renderedCount += targetItems.length;
         };
 
-        // 初始填充前 25 条
         appendBatch(batchSize);
 
-        // 🌟 原地追加，绝对不刷新视图，滚动条纹丝不动！
         if (history.length > renderedCount) {
             const moreContainer = timelineArea.createEl('div', { cls: 'vc-load-more-container' });
             const moreBtn = moreContainer.createEl('button', { 

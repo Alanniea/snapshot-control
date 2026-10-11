@@ -1,4 +1,3 @@
-
 import { 
     Plugin, TFile, TFolder, debounce, moment, normalizePath, DataAdapter, Notice 
 } from 'obsidian';
@@ -153,6 +152,8 @@ export default class VersionControlPlugin extends Plugin {
     
     snapshotMetaMap: Map<string, { latest: VersionData; prev?: VersionData; totalVersions: number }> = new Map();
     isSnapshotMetaLoaded = false;
+    private loadingIndexPromise: Promise<void> | null = null; // 🌟 并发单例锁
+    private debouncedSaveGlobalIndex: () => void;
     
     activeFileLastSaveTime: number | null = null;
     activeFileSaveLabel = '';
@@ -166,6 +167,8 @@ export default class VersionControlPlugin extends Plugin {
     async onload() {
         this.isUnloaded = false;
         await this.loadSettings();
+
+        this.debouncedSaveGlobalIndex = debounce(() => this.persistGlobalIndex(), 1500, true);
 
         this.statusBarItem = this.addStatusBarItem();
         this.debouncedUpdateStatusBar = debounce(() => this.updateStatusBar(), 300, true);
@@ -208,7 +211,6 @@ export default class VersionControlPlugin extends Plugin {
         await this.ensureVersionFolder();
         await this.cleanupTempFiles();
 
-        // 🌟 1 秒高精度滴答更新（秒级递增），配合 25 条轻量分页与脏检查，零开销零卡顿
         this.registerInterval(
             window.setInterval(() => { 
                 this.renderStatusBarTime();
@@ -228,6 +230,7 @@ export default class VersionControlPlugin extends Plugin {
         this.globalHistoryCache = null;
         this.snapshotMetaMap.clear();
         this.isSnapshotMetaLoaded = false;
+        this.loadingIndexPromise = null;
     }
 
     clearGlobalCache() { 
@@ -338,6 +341,7 @@ export default class VersionControlPlugin extends Plugin {
                     if (meta) {
                         this.snapshotMetaMap.delete(oldPath);
                         this.snapshotMetaMap.set(file.path, meta);
+                        this.debouncedSaveGlobalIndex();
                     }
 
                     this.clearGlobalCache();
@@ -360,6 +364,7 @@ export default class VersionControlPlugin extends Plugin {
                 this.contentCache.deletePrefix(filePath + "::");
                 this.debouncedSaves.delete(filePath);
                 this.snapshotMetaMap.delete(filePath);
+                this.debouncedSaveGlobalIndex();
                 this.clearGlobalCache();
                 this.refreshVersionHistoryView();
             }
@@ -377,6 +382,7 @@ export default class VersionControlPlugin extends Plugin {
     }
 
     getSaveTypeLabel(message: string): string { 
+        if (!message) return '自动保存';
         if (message.includes('[Auto Save]')) return '自动保存';
         if (message.includes('[Before Restore]')) return '恢复前备份';
         return '手动快照';
@@ -501,6 +507,7 @@ export default class VersionControlPlugin extends Plugin {
                             prev: versionFile.versions[1],
                             totalVersions: versionFile.versions.length
                         });
+                        this.debouncedSaveGlobalIndex();
                         this.clearGlobalCache(); 
                         this.refreshVersionHistoryView();
                         this.debouncedUpdateStatusBar();
@@ -560,6 +567,7 @@ export default class VersionControlPlugin extends Plugin {
                 prev: versionFile.versions[1],
                 totalVersions: versionFile.versions.length
             });
+            this.debouncedSaveGlobalIndex();
 
             this.clearGlobalCache(); 
             this.refreshVersionHistoryView();
@@ -581,7 +589,7 @@ export default class VersionControlPlugin extends Plugin {
         const idx = this.globalHistoryCache.findIndex(item => item.filePath === file.path);
         if (idx !== -1) {
             const item = this.globalHistoryCache[idx]!;
-            const snapshotChars = item.snapshotChars ?? item.version.size ?? 0;
+            const snapshotChars = item.snapshotChars ?? item.version?.size ?? 0;
             const workspaceDiff = currentChars - snapshotChars;
 
             item.hasUnsavedChanges = true;
@@ -704,6 +712,7 @@ export default class VersionControlPlugin extends Plugin {
                     this.snapshotMetaMap.delete(filePath);
                 }
 
+                this.debouncedSaveGlobalIndex();
                 this.clearGlobalCache();
                 success = true;
                 new Notice('🗑️ 快照已彻底删除');
@@ -809,6 +818,7 @@ export default class VersionControlPlugin extends Plugin {
         this.clearGlobalCache();
         this.snapshotMetaMap.clear();
         this.isSnapshotMetaLoaded = false;
+        await this.loadOrBuildGlobalIndex();
         this.refreshVersionHistoryView();
 
         return { purgedCount, savedBytes: Math.max(0, beforeDisk - afterDisk) };
@@ -979,14 +989,28 @@ export default class VersionControlPlugin extends Plugin {
         const adapter = this.app.vault.adapter;
         const result: string[] = [];
         const queue: string[] = [folder];
+        const visited = new Set<string>(); // 🌟 严防移动端循环路径死锁
+
         while (queue.length > 0) {
             const cur = queue.shift()!;
+            if (visited.has(cur)) continue;
+            visited.add(cur);
+
             if (!(await adapter.exists(cur))) continue;
-            const list = await adapter.list(cur);
-            for (const f of list.files) {
-                if (f.endsWith('.json') && !f.endsWith('global-index.json')) result.push(f);
-            }
-            for (const p of list.folders) queue.push(p);
+            try {
+                const list = await adapter.list(cur);
+                for (const f of list.files) {
+                    if (f.endsWith('.json') && !f.endsWith('global-index.json')) {
+                        result.push(f);
+                    }
+                }
+                for (const p of list.folders) {
+                    const baseName = p.split('/').pop() || '';
+                    if (baseName !== '.' && baseName !== '..' && !visited.has(p)) {
+                        queue.push(p);
+                    }
+                }
+            } catch {}
         }
         return result;
     }
@@ -1046,152 +1070,230 @@ export default class VersionControlPlugin extends Plugin {
         return moment(timestamp).format('MM-DD');
     }
 
+    private getGlobalIndexPath(): string {
+        return normalizePath(`${this.settings.versionFolder}/global-index.json`);
+    }
+
+    private async persistGlobalIndex() {
+        const adapter = this.app.vault.adapter;
+        const indexPath = this.getGlobalIndexPath();
+        try {
+            const serialized: Record<string, any> = {};
+            for (const [k, v] of this.snapshotMetaMap.entries()) {
+                if (v && v.latest) serialized[k] = v;
+            }
+            await this.safeWrite(adapter, indexPath, JSON.stringify(serialized), false);
+        } catch {}
+    }
+
+    // 🌟 单例异步锁：彻底消除启动与切换时的并发竞争卡死
+    async loadOrBuildGlobalIndex(): Promise<void> {
+        if (this.isSnapshotMetaLoaded && this.snapshotMetaMap.size > 0) return;
+        if (this.loadingIndexPromise) return this.loadingIndexPromise;
+
+        this.loadingIndexPromise = (async () => {
+            const adapter = this.app.vault.adapter;
+            const indexPath = this.getGlobalIndexPath();
+
+            // 1. 尝试秒读持久化索引
+            if (await adapter.exists(indexPath)) {
+                try {
+                    const text = await adapter.read(indexPath);
+                    if (text && text.trim().startsWith('{')) {
+                        const obj = JSON.parse(text);
+                        this.snapshotMetaMap.clear();
+                        for (const [k, v] of Object.entries(obj)) {
+                            if (v && (v as any).latest) {
+                                this.snapshotMetaMap.set(k, v as any);
+                            }
+                        }
+                        if (this.snapshotMetaMap.size > 0) {
+                            this.isSnapshotMetaLoaded = true;
+                            return;
+                        }
+                    }
+                } catch {}
+            }
+
+            // 2. 索引损坏或不存在时，后台轻量构建一次
+            const folder = this.settings.versionFolder;
+            if (await adapter.exists(folder)) {
+                const files = await this.getJSONFilesRecursively(folder);
+                const chunkSize = 10;
+                for (let i = 0; i < files.length; i += chunkSize) {
+                    const chunk = files.slice(i, i + chunkSize);
+                    await Promise.all(chunk.map(async (file) => {
+                        try {
+                            const raw = await this.readCompressedOrRaw(file);
+                            if (!raw) return;
+                            const vf = JSON.parse(raw) as VersionFile;
+                            if (!vf || !Array.isArray(vf.versions) || vf.versions.length === 0 || !vf.filePath) return;
+
+                            vf.versions.sort((a, b) => b.timestamp - a.timestamp);
+                            const latest = vf.versions[0]!;
+                            const prev = vf.versions[1];
+
+                            if (latest.content) latest.size = latest.content.length;
+                            if (prev) {
+                                if (prev.content) {
+                                    prev.size = prev.content.length;
+                                } else if (prev.diff && latest.content) {
+                                    try {
+                                        const restored = Diff.applyPatch(latest.content, prev.diff);
+                                        if (restored !== false) prev.size = restored.length;
+                                    } catch {}
+                                }
+                            }
+                            this.snapshotMetaMap.set(vf.filePath, { 
+                                latest, 
+                                prev, 
+                                totalVersions: vf.versions.length 
+                            });
+                        } catch {}
+                    }));
+                    await this.yieldToMain();
+                }
+                this.isSnapshotMetaLoaded = true;
+                this.persistGlobalIndex();
+            }
+        })();
+
+        try {
+            await this.loadingIndexPromise;
+        } finally {
+            this.loadingIndexPromise = null;
+        }
+    }
+
+    // 🌟 全字段防御型检索计算，坚决不发生未捕获异常
     async getGlobalHistory(limit = 100): Promise<GlobalHistoryItem[]> {
         if (this.globalHistoryCache) return this.globalHistoryCache.slice(0, limit);
 
-        const folder = this.settings.versionFolder;
-        const adapter = this.app.vault.adapter;
+        await this.loadOrBuildGlobalIndex();
 
-        if (!this.isSnapshotMetaLoaded && await adapter.exists(folder)) {
-            const files = await this.getJSONFilesRecursively(folder);
-            
-            const chunkSize = 10;
-            for (let i = 0; i < files.length; i += chunkSize) {
-                const chunk = files.slice(i, i + chunkSize);
-                await Promise.all(chunk.map(async (file) => {
-                    try {
-                        const raw = await this.readCompressedOrRaw(file);
-                        if (!raw) return;
-                        const vf = JSON.parse(raw) as VersionFile;
-                        if (!vf || !Array.isArray(vf.versions) || vf.versions.length === 0 || !vf.filePath) return;
-
-                        vf.versions.sort((a, b) => b.timestamp - a.timestamp);
-                        const latest = vf.versions[0]!;
-                        const prev = vf.versions[1];
-
-                        if (latest.content) latest.size = latest.content.length;
-                        if (prev) {
-                            if (prev.content) {
-                                prev.size = prev.content.length;
-                            } else if (prev.diff && latest.content) {
-                                try {
-                                    const restored = Diff.applyPatch(latest.content, prev.diff);
-                                    if (restored !== false) prev.size = restored.length;
-                                } catch {}
-                            }
-                        }
-                        this.snapshotMetaMap.set(vf.filePath, { 
-                            latest, 
-                            prev, 
-                            totalVersions: vf.versions.length 
-                        });
-                    } catch {}
-                }));
-                await this.yieldToMain();
-            }
-            this.isSnapshotMetaLoaded = true;
-        }
-
-        const entries: GlobalHistoryItem[] = [];
-        const seenPaths = new Set<string>();
         const allVaultFiles = this.app.vault.getMarkdownFiles().filter(f => !this.isExcluded(f.path));
+        const seenPaths = new Set<string>();
+
+        type Candidate = { file: TFile | null; filePath: string; latestTime: number };
+        const candidates: Candidate[] = [];
 
         for (let i = 0; i < allVaultFiles.length; i++) {
-            const file = allVaultFiles[i]!;
-            seenPaths.add(file.path);
-            const snaps = this.snapshotMetaMap.get(file.path);
-
-            if (snaps) {
-                const latest = snaps.latest;
-                const prev = snaps.prev;
-                const snapshotChars = latest.size;
-                const prevSnapshotChars = prev ? prev.size : undefined;
-
-                const isModified = file.stat.mtime > (latest.timestamp + 2000);
-                let currentChars = snapshotChars;
-                let hasUnsaved = isModified;
-
-                if (isModified) {
-                    try {
-                        const curText = await this.app.vault.cachedRead(file);
-                        currentChars = curText.length;
-                        hasUnsaved = (currentChars !== snapshotChars);
-                    } catch {}
-                }
-
-                let charDiff = 0;
-                let diffMode: 'workspace' | 'snapshot' = 'snapshot';
-
-                if (hasUnsaved) {
-                    diffMode = 'workspace';
-                    charDiff = currentChars - snapshotChars;
-                } else {
-                    diffMode = 'snapshot';
-                    charDiff = prevSnapshotChars !== undefined ? (snapshotChars - prevSnapshotChars) : 0;
-                }
-
-                entries.push({
-                    version: latest,
-                    prevVersion: prev,
-                    filePath: file.path,
-                    file: file,
-                    hasUnsavedChanges: hasUnsaved,
-                    isUnversioned: false,
-                    currentChars,
-                    snapshotChars,
-                    prevSnapshotChars,
-                    charDiff,
-                    diffMode,
-                    totalVersions: snaps.totalVersions
-                });
-            } else {
-                entries.push({
-                    version: {
-                        id: 'unversioned',
-                        timestamp: file.stat.mtime,
-                        message: '未保存快照',
-                        size: file.stat.size,
-                        hash: ''
-                    },
-                    filePath: file.path,
-                    file: file,
-                    hasUnsavedChanges: true,
-                    isUnversioned: true,
-                    currentChars: file.stat.size,
-                    snapshotChars: 0,
-                    charDiff: file.stat.size,
-                    diffMode: 'unversioned',
-                    totalVersions: 0
-                });
-            }
+            const f = allVaultFiles[i]!;
+            seenPaths.add(f.path);
+            const snaps = this.snapshotMetaMap.get(f.path);
+            const snapTime = snaps?.latest?.timestamp ?? 0;
+            candidates.push({
+                file: f,
+                filePath: f.path,
+                latestTime: Math.max(f.stat?.mtime ?? 0, snapTime)
+            });
         }
 
         for (const [filePath, snaps] of this.snapshotMetaMap.entries()) {
-            if (!seenPaths.has(filePath)) {
-                entries.push({
-                    version: snaps.latest,
-                    prevVersion: snaps.prev,
-                    filePath: filePath,
+            if (!seenPaths.has(filePath) && snaps?.latest) {
+                candidates.push({
                     file: null,
-                    hasUnsavedChanges: false,
-                    isUnversioned: false,
-                    currentChars: 0,
-                    snapshotChars: snaps.latest.size,
-                    charDiff: 0,
-                    diffMode: 'snapshot',
-                    totalVersions: snaps.totalVersions
+                    filePath: filePath,
+                    latestTime: snaps.latest.timestamp ?? 0
                 });
             }
         }
 
-        entries.sort((a, b) => {
-            const timeA = a.file ? a.file.stat.mtime : a.version.timestamp;
-            const timeB = b.file ? b.file.stat.mtime : b.version.timestamp;
-            return timeB - timeA;
-        });
+        candidates.sort((a, b) => b.latestTime - a.latestTime);
+
+        const topSlice = candidates.slice(0, limit);
+        const entries: GlobalHistoryItem[] = [];
+
+        for (let i = 0; i < topSlice.length; i++) {
+            const item = topSlice[i]!;
+            const file = item.file;
+            const snaps = this.snapshotMetaMap.get(item.filePath);
+
+            try {
+                if (file) {
+                    if (snaps && snaps.latest) {
+                        const latest = snaps.latest;
+                        const prev = snaps.prev;
+                        const snapshotChars = latest.size ?? 0;
+                        const prevSnapshotChars = prev ? prev.size : undefined;
+
+                        const isModified = (file.stat?.mtime ?? 0) > ((latest.timestamp ?? 0) + 2000);
+                        let currentChars = snapshotChars;
+                        let hasUnsaved = isModified;
+
+                        if (isModified) {
+                            try {
+                                const curText = await this.app.vault.cachedRead(file);
+                                currentChars = curText.length;
+                                hasUnsaved = (currentChars !== snapshotChars);
+                            } catch {}
+                        }
+
+                        let charDiff = 0;
+                        let diffMode: 'workspace' | 'snapshot' = 'snapshot';
+
+                        if (hasUnsaved) {
+                            diffMode = 'workspace';
+                            charDiff = currentChars - snapshotChars;
+                        } else {
+                            diffMode = 'snapshot';
+                            charDiff = prevSnapshotChars !== undefined ? (snapshotChars - prevSnapshotChars) : 0;
+                        }
+
+                        entries.push({
+                            version: latest,
+                            prevVersion: prev,
+                            filePath: file.path,
+                            file: file,
+                            hasUnsavedChanges: hasUnsaved,
+                            isUnversioned: false,
+                            currentChars,
+                            snapshotChars,
+                            prevSnapshotChars,
+                            charDiff,
+                            diffMode,
+                            totalVersions: snaps.totalVersions ?? 1
+                        });
+                    } else {
+                        entries.push({
+                            version: {
+                                id: 'unversioned',
+                                timestamp: file.stat?.mtime ?? Date.now(),
+                                message: '未保存快照',
+                                size: file.stat?.size ?? 0,
+                                hash: ''
+                            },
+                            filePath: file.path,
+                            file: file,
+                            hasUnsavedChanges: true,
+                            isUnversioned: true,
+                            currentChars: file.stat?.size ?? 0,
+                            snapshotChars: 0,
+                            charDiff: file.stat?.size ?? 0,
+                            diffMode: 'unversioned',
+                            totalVersions: 0
+                        });
+                    }
+                } else if (snaps && snaps.latest) {
+                    entries.push({
+                        version: snaps.latest,
+                        prevVersion: snaps.prev,
+                        filePath: item.filePath,
+                        file: null,
+                        hasUnsavedChanges: false,
+                        isUnversioned: false,
+                        currentChars: 0,
+                        snapshotChars: snaps.latest.size ?? 0,
+                        charDiff: 0,
+                        diffMode: 'snapshot',
+                        totalVersions: snaps.totalVersions ?? 1
+                    });
+                }
+            } catch {}
+        }
 
         this.globalHistoryCache = entries;
-        return entries.slice(0, limit);
+        return entries;
     }
 
     async toggleVersionStar(filePath: string, versionId: string) {
