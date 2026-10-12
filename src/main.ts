@@ -152,7 +152,7 @@ export default class VersionControlPlugin extends Plugin {
     
     snapshotMetaMap: Map<string, { latest: VersionData; prev?: VersionData; totalVersions: number }> = new Map();
     isSnapshotMetaLoaded = false;
-    private loadingIndexPromise: Promise<void> | null = null; // 🌟 并发单例锁
+    private loadingIndexPromise: Promise<void> | null = null;
     private debouncedSaveGlobalIndex: () => void;
     
     activeFileLastSaveTime: number | null = null;
@@ -210,6 +210,8 @@ export default class VersionControlPlugin extends Plugin {
 
         await this.ensureVersionFolder();
         await this.cleanupTempFiles();
+
+        this.loadOrBuildGlobalIndex().catch(() => {});
 
         this.registerInterval(
             window.setInterval(() => { 
@@ -597,6 +599,7 @@ export default class VersionControlPlugin extends Plugin {
             item.currentChars = currentChars;
             item.charDiff = workspaceDiff;
 
+            // 当文件刚被修改时，立即将其置顶（最符合直觉的修改时间倒序）
             if (idx > 0) {
                 this.globalHistoryCache.splice(idx, 1);
                 this.globalHistoryCache.unshift(item);
@@ -989,7 +992,7 @@ export default class VersionControlPlugin extends Plugin {
         const adapter = this.app.vault.adapter;
         const result: string[] = [];
         const queue: string[] = [folder];
-        const visited = new Set<string>(); // 🌟 严防移动端循环路径死锁
+        const visited = new Set<string>();
 
         while (queue.length > 0) {
             const cur = queue.shift()!;
@@ -1086,7 +1089,6 @@ export default class VersionControlPlugin extends Plugin {
         } catch {}
     }
 
-    // 🌟 单例异步锁：彻底消除启动与切换时的并发竞争卡死
     async loadOrBuildGlobalIndex(): Promise<void> {
         if (this.isSnapshotMetaLoaded && this.snapshotMetaMap.size > 0) return;
         if (this.loadingIndexPromise) return this.loadingIndexPromise;
@@ -1095,7 +1097,6 @@ export default class VersionControlPlugin extends Plugin {
             const adapter = this.app.vault.adapter;
             const indexPath = this.getGlobalIndexPath();
 
-            // 1. 尝试秒读持久化索引
             if (await adapter.exists(indexPath)) {
                 try {
                     const text = await adapter.read(indexPath);
@@ -1115,7 +1116,6 @@ export default class VersionControlPlugin extends Plugin {
                 } catch {}
             }
 
-            // 2. 索引损坏或不存在时，后台轻量构建一次
             const folder = this.settings.versionFolder;
             if (await adapter.exists(folder)) {
                 const files = await this.getJSONFilesRecursively(folder);
@@ -1165,7 +1165,9 @@ export default class VersionControlPlugin extends Plugin {
         }
     }
 
-    // 🌟 全字段防御型检索计算，坚决不发生未捕获异常
+    // =======================================================================
+    // 🌟 核心修复：全库时间线严格按【笔记真实修改时间 (mtime)】倒序排列！
+    // =======================================================================
     async getGlobalHistory(limit = 100): Promise<GlobalHistoryItem[]> {
         if (this.globalHistoryCache) return this.globalHistoryCache.slice(0, limit);
 
@@ -1177,15 +1179,15 @@ export default class VersionControlPlugin extends Plugin {
         type Candidate = { file: TFile | null; filePath: string; latestTime: number };
         const candidates: Candidate[] = [];
 
+        // 🌟 严格以笔记正文的实际编辑修改时间 (mtime) 参与排序，消灭延迟自动快照插队导致的乱序！
         for (let i = 0; i < allVaultFiles.length; i++) {
             const f = allVaultFiles[i]!;
             seenPaths.add(f.path);
             const snaps = this.snapshotMetaMap.get(f.path);
-            const snapTime = snaps?.latest?.timestamp ?? 0;
             candidates.push({
                 file: f,
                 filePath: f.path,
-                latestTime: Math.max(f.stat?.mtime ?? 0, snapTime)
+                latestTime: f.stat?.mtime ?? (snaps?.latest?.timestamp ?? 0)
             });
         }
 
@@ -1199,6 +1201,7 @@ export default class VersionControlPlugin extends Plugin {
             }
         }
 
+        // 严格倒序：刚刚改过的（如 4分钟前）永远排在更早改过的（如 11分钟前）前面！
         candidates.sort((a, b) => b.latestTime - a.latestTime);
 
         const topSlice = candidates.slice(0, limit);
