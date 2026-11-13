@@ -599,7 +599,6 @@ export default class VersionControlPlugin extends Plugin {
             item.currentChars = currentChars;
             item.charDiff = workspaceDiff;
 
-            // 当文件刚被修改时，立即将其置顶（最符合直觉的修改时间倒序）
             if (idx > 0) {
                 this.globalHistoryCache.splice(idx, 1);
                 this.globalHistoryCache.unshift(item);
@@ -726,6 +725,32 @@ export default class VersionControlPlugin extends Plugin {
         return success;
     }
 
+    // 🌟 核心新增：从快照中一键复活已删除的笔记文件（支持自动重建多级目录）
+    async resurrectDeletedFile(filePath: string, versionId: string): Promise<TFile | null> {
+        try {
+            const content = await this.getVersionContent(filePath, versionId);
+            // 确保所有父级文件夹都存在
+            const parts = filePath.split('/');
+            if (parts.length > 1) {
+                let currentPath = '';
+                for (let i = 0; i < parts.length - 1; i++) {
+                    currentPath = currentPath ? `${currentPath}/${parts[i]}` : parts[i]!;
+                    if (!(await this.app.vault.adapter.exists(currentPath))) {
+                        await this.app.vault.createFolder(currentPath);
+                    }
+                }
+            }
+            const created = await this.app.vault.create(filePath, content);
+            this.clearGlobalCache();
+            this.refreshVersionHistoryView();
+            new Notice(`♻️ 已成功复活笔记: ${created.basename}`);
+            return created;
+        } catch (err) {
+            new Notice(`❌ 复活失败: ${getErrorMessage(err)}`);
+            return null;
+        }
+    }
+
     async getStorageStats(): Promise<{
         totalFiles: number;
         totalSnapshots: number;
@@ -818,12 +843,7 @@ export default class VersionControlPlugin extends Plugin {
         }
 
         const afterDisk = (await this.getStorageStats()).actualDiskBytes;
-        this.clearGlobalCache();
-        this.snapshotMetaMap.clear();
-        this.isSnapshotMetaLoaded = false;
-        await this.loadOrBuildGlobalIndex();
-        this.refreshVersionHistoryView();
-
+        await this.rebuildGlobalIndex();
         return { purgedCount, savedBytes: Math.max(0, beforeDisk - afterDisk) };
     }
 
@@ -879,6 +899,21 @@ export default class VersionControlPlugin extends Plugin {
                     if (finalVersionFile && Array.isArray(finalVersionFile.versions)) {
                         finalVersionFile.versions.sort((a, b) => b.timestamp - a.timestamp);
                         this.repairVersionSizes(finalVersionFile);
+
+                        // 🌟 多端同步自愈：如果磁盘文件里有比索引更新或更多的数据，自动修正同步索引
+                        if (finalVersionFile.versions.length > 0) {
+                            const latestDisk = finalVersionFile.versions[0]!;
+                            const existingMeta = this.snapshotMetaMap.get(filePath);
+                            if (!existingMeta || existingMeta.latest?.id !== latestDisk.id || existingMeta.totalVersions !== finalVersionFile.versions.length) {
+                                this.snapshotMetaMap.set(filePath, {
+                                    latest: latestDisk,
+                                    prev: finalVersionFile.versions[1],
+                                    totalVersions: finalVersionFile.versions.length
+                                });
+                                this.debouncedSaveGlobalIndex();
+                                this.clearGlobalCache();
+                            }
+                        }
                     }
                 }
             } catch (e) { console.error("无法解析版本文件:", e); }
@@ -1089,6 +1124,21 @@ export default class VersionControlPlugin extends Plugin {
         } catch {}
     }
 
+    // 🌟 新增：一键强制重建全库索引（用于多端同步对齐）
+    async rebuildGlobalIndex(): Promise<void> {
+        const adapter = this.app.vault.adapter;
+        const indexPath = this.getGlobalIndexPath();
+        if (await adapter.exists(indexPath)) {
+            try { await adapter.remove(indexPath); } catch {}
+        }
+        this.snapshotMetaMap.clear();
+        this.versionCache.clear();
+        this.isSnapshotMetaLoaded = false;
+        this.clearGlobalCache();
+        await this.loadOrBuildGlobalIndex();
+        this.refreshVersionHistoryView();
+    }
+
     async loadOrBuildGlobalIndex(): Promise<void> {
         if (this.isSnapshotMetaLoaded && this.snapshotMetaMap.size > 0) return;
         if (this.loadingIndexPromise) return this.loadingIndexPromise;
@@ -1165,11 +1215,10 @@ export default class VersionControlPlugin extends Plugin {
         }
     }
 
-    // =======================================================================
-    // 🌟 核心修复：全库时间线严格按【笔记真实修改时间 (mtime)】倒序排列！
-    // =======================================================================
-    async getGlobalHistory(limit = 100): Promise<GlobalHistoryItem[]> {
-        if (this.globalHistoryCache) return this.globalHistoryCache.slice(0, limit);
+    // 🌟 核心升级：支持穿透全库的 searchQuery 过滤，确保第 500 篇老笔记也能搜到！
+    async getGlobalHistory(limit = 100, searchQuery = ''): Promise<GlobalHistoryItem[]> {
+        const q = searchQuery.trim().toLowerCase();
+        if (!q && this.globalHistoryCache) return this.globalHistoryCache.slice(0, limit);
 
         await this.loadOrBuildGlobalIndex();
 
@@ -1179,10 +1228,10 @@ export default class VersionControlPlugin extends Plugin {
         type Candidate = { file: TFile | null; filePath: string; latestTime: number };
         const candidates: Candidate[] = [];
 
-        // 🌟 严格以笔记正文的实际编辑修改时间 (mtime) 参与排序，消灭延迟自动快照插队导致的乱序！
         for (let i = 0; i < allVaultFiles.length; i++) {
             const f = allVaultFiles[i]!;
             seenPaths.add(f.path);
+            if (q && !f.path.toLowerCase().includes(q)) continue; // 先搜全库再截断！
             const snaps = this.snapshotMetaMap.get(f.path);
             candidates.push({
                 file: f,
@@ -1193,6 +1242,7 @@ export default class VersionControlPlugin extends Plugin {
 
         for (const [filePath, snaps] of this.snapshotMetaMap.entries()) {
             if (!seenPaths.has(filePath) && snaps?.latest) {
+                if (q && !filePath.toLowerCase().includes(q)) continue;
                 candidates.push({
                     file: null,
                     filePath: filePath,
@@ -1201,7 +1251,6 @@ export default class VersionControlPlugin extends Plugin {
             }
         }
 
-        // 严格倒序：刚刚改过的（如 4分钟前）永远排在更早改过的（如 11分钟前）前面！
         candidates.sort((a, b) => b.latestTime - a.latestTime);
 
         const topSlice = candidates.slice(0, limit);
@@ -1295,7 +1344,7 @@ export default class VersionControlPlugin extends Plugin {
             } catch {}
         }
 
-        this.globalHistoryCache = entries;
+        if (!q) this.globalHistoryCache = entries;
         return entries;
     }
 
@@ -1337,6 +1386,10 @@ export default class VersionControlPlugin extends Plugin {
 
     formatTime(timestamp: number): string { 
         return moment(timestamp).format('YYYY-MM-DD HH:mm:ss'); 
+    }
+
+    formatCompactTime(timestamp: number): string {
+        return moment(timestamp).format('MM-DD HH:mm');
     }
 
     refreshVersionHistoryView() { 

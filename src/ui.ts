@@ -1,3 +1,4 @@
+
 import { 
     App, Modal, ItemView, WorkspaceLeaf, Menu, TFile, Notice, 
     Setting, PluginSettingTab, setIcon, debounce 
@@ -54,7 +55,7 @@ export class DiffModal extends Modal {
         const selectorBar = contentEl.createEl('div', { cls: 'vc-diff-version-bar' });
         
         const leftBtn = selectorBar.createEl('button', { cls: 'vc-diff-version-capsule is-left-history' });
-        this.updateChipText(leftBtn, this.versionId, '左侧基准');
+        this.updateChipText(leftBtn, this.versionId, '左侧');
         leftBtn.addEventListener('click', (e: MouseEvent) => this.showVersionMenu(e, 'left'));
 
         const swapBtn = selectorBar.createEl('button', { cls: 'vc-diff-swap-btn', attr: { 'aria-label': '调换两侧对比版本' } });
@@ -65,7 +66,7 @@ export class DiffModal extends Modal {
         });
 
         const rightBtn = selectorBar.createEl('button', { cls: 'vc-diff-version-capsule is-right-latest' });
-        this.updateChipText(rightBtn, this.secondVersionId, '右侧版本');
+        this.updateChipText(rightBtn, this.secondVersionId, '右侧');
         rightBtn.addEventListener('click', (e: MouseEvent) => this.showVersionMenu(e, 'right'));
 
         this.metricsBar = contentEl.createEl('div', { cls: 'vc-diff-metrics-bar' });
@@ -154,6 +155,10 @@ export class DiffModal extends Modal {
         this.leftContent = left;
         this.rightContent = right;
 
+        // 初次拿到 versions 后再刷新一次胶囊，确保显示精确日期
+        this.updateChipText(leftBtn, this.versionId, '左侧');
+        this.updateChipText(rightBtn, this.secondVersionId, '右侧');
+
         this.renderMetricsBar();
         this.renderDiff();
     }
@@ -164,16 +169,23 @@ export class DiffModal extends Modal {
             : await this.plugin.getVersionContent(this.file.path, verId);
     }
 
+    // 🌟 移动端精简时间戳格式化，彻底告别 "20:..." 截断！
     updateChipText(btn: HTMLButtonElement, versionId: string, rolePrefix: string) {
         btn.empty();
+        const isMobile = window.innerWidth <= 768;
         const iconSpan = btn.createEl('span', { cls: 'vc-capsule-icon' });
         if (versionId === 'current') {
             setIcon(iconSpan, 'file-edit');
-            btn.createEl('span', { text: `${rolePrefix} · 当前工作区` });
+            btn.createEl('span', { text: isMobile ? '当前工作区' : `${rolePrefix} · 当前工作区` });
         } else {
             setIcon(iconSpan, 'history');
             const v = this.allVersions.find(item => item.id === versionId);
-            btn.createEl('span', { text: v ? `${rolePrefix} · ${this.plugin.formatTime(v.timestamp)}` : '历史快照' });
+            if (v) {
+                const timeText = isMobile ? this.plugin.formatCompactTime(v.timestamp) : `${rolePrefix} · ${this.plugin.formatTime(v.timestamp)}`;
+                btn.createEl('span', { text: timeText });
+            } else {
+                btn.createEl('span', { text: '历史快照' });
+            }
         }
     }
 
@@ -236,8 +248,8 @@ export class DiffModal extends Modal {
 
     async updateDiffView() {
         const chips = this.contentEl.querySelectorAll('.vc-diff-version-capsule') as NodeListOf<HTMLButtonElement>;
-        if (chips[0]) this.updateChipText(chips[0], this.versionId, '左侧基准');
-        if (chips[1]) this.updateChipText(chips[1], this.secondVersionId, '右侧版本');
+        if (chips[0]) this.updateChipText(chips[0], this.versionId, '左侧');
+        if (chips[1]) this.updateChipText(chips[1], this.secondVersionId, '右侧');
 
         const [left, right] = await Promise.all([
             this.fetchContent(this.versionId),
@@ -442,6 +454,65 @@ export class DiffModal extends Modal {
 }
 
 // =======================================================================
+// ================= 已删除笔记在线预览与一键复活模态框 ====================
+// =======================================================================
+export class DeletedNoteModal extends Modal {
+    constructor(
+        app: App,
+        private plugin: VersionControlPlugin,
+        private filePath: string,
+        private version: VersionData
+    ) {
+        super(app);
+    }
+
+    async onOpen() {
+        const { contentEl } = this;
+        contentEl.addClass('diff-modal', 'vc-raycast-modal');
+
+        const header = contentEl.createEl('div', { cls: 'vc-diff-header' });
+        const titleArea = header.createEl('div', { cls: 'vc-diff-title-area' });
+        const iconSpan = titleArea.createEl('span', { cls: 'vc-diff-type-icon' });
+        setIcon(iconSpan, 'trash-2');
+        titleArea.createEl('span', { text: '已删除笔记快照预览', cls: 'vc-diff-filename' });
+        titleArea.createEl('span', { text: this.filePath, cls: 'vc-diff-filepath' });
+
+        const metaBar = contentEl.createEl('div', { cls: 'vc-deleted-meta-bar' });
+        metaBar.createEl('span', { text: `🕒 快照时间: ${this.plugin.formatTime(this.version.timestamp)}` });
+        metaBar.createEl('span', { text: `📝 字符数: ${(this.version.size ?? 0).toLocaleString()}` });
+
+        const resurrectBtn = metaBar.createEl('button', {
+            text: '♻️ 立即按原路径复活笔记',
+            cls: 'mod-cta'
+        });
+        resurrectBtn.addEventListener('click', async () => {
+            resurrectBtn.disabled = true;
+            resurrectBtn.setText('正在复活...');
+            const created = await this.plugin.resurrectDeletedFile(this.filePath, this.version.id);
+            if (created) {
+                this.close();
+                await this.app.workspace.getLeaf(false).openFile(created);
+            } else {
+                resurrectBtn.disabled = false;
+                resurrectBtn.setText('♻️ 立即按原路径复活笔记');
+            }
+        });
+
+        const previewBox = contentEl.createEl('div', { cls: 'vc-deleted-preview-body' });
+        previewBox.setText('正在读取历史正文...');
+
+        try {
+            const text = await this.plugin.getVersionContent(this.filePath, this.version.id);
+            previewBox.setText(text || '(空笔记)');
+        } catch {
+            previewBox.setText('❌ 无法解析历史正文内容');
+        }
+    }
+
+    onClose() { this.contentEl.empty(); }
+}
+
+// =======================================================================
 // ================= 现代化时间轴视图 (ItemView) =========================
 // =======================================================================
 export class VersionHistoryView extends ItemView {
@@ -452,21 +523,36 @@ export class VersionHistoryView extends ItemView {
     searchFullText = false;
     currentViewMode: ViewMode = 'current';
 
-    private globalDisplayLimit = 25;
+    private currentResultsBox: HTMLElement | null = null;
+    private globalResultsBox: HTMLElement | null = null;
 
     private debouncedAutoRefresh: () => void;
-    private debouncedSearch: () => void;
+    private debouncedSearchCurrent: () => void;
+    private debouncedSearchGlobal: () => void;
 
     constructor(leaf: WorkspaceLeaf, plugin: VersionControlPlugin) {
         super(leaf);
         this.plugin = plugin;
+
         this.debouncedAutoRefresh = debounce(() => {
+            // 如果正在搜索栏打字，不触发整页打断刷屏
+            const activeEl = document.activeElement;
+            if (activeEl && activeEl.closest('.vc-search-capsule')) return;
             this.refresh();
         }, 500, true);
 
-        this.debouncedSearch = debounce(() => {
-            this.refresh();
-        }, 250, false);
+        // 🌟 局部刷新搜索结果，彻底不破坏输入框与手机键盘焦点！
+        this.debouncedSearchCurrent = debounce(() => {
+            if (this.currentResultsBox && this.currentFile) {
+                this.renderCurrentResultsList(this.currentResultsBox, this.currentFile);
+            }
+        }, 220, false);
+
+        this.debouncedSearchGlobal = debounce(() => {
+            if (this.globalResultsBox) {
+                this.renderGlobalResultsList(this.globalResultsBox);
+            }
+        }, 220, false);
     }
 
     getViewType(): string { return 'version-history'; }
@@ -523,6 +609,9 @@ export class VersionHistoryView extends ItemView {
 
         const container = this.contentEl;
         container.empty();
+        this.currentResultsBox = null;
+        this.globalResultsBox = null;
+
         const buffer = container.createDiv({ cls: 'vc-root-shell' });
 
         const headerBar = buffer.createEl('div', { cls: 'vc-segmented-nav' });
@@ -542,7 +631,6 @@ export class VersionHistoryView extends ItemView {
             btn.addEventListener('click', async () => { 
                 if (this.currentViewMode === tab.id) return;
                 this.currentViewMode = tab.id; 
-                this.globalDisplayLimit = 25;
                 await this.refresh(); 
             });
         });
@@ -568,10 +656,6 @@ export class VersionHistoryView extends ItemView {
             return; 
         }
 
-        const versionFile = await this.plugin.loadVersionFile(file.path);
-        let versions = [...versionFile.versions];
-        const totalCount = versions.length;
-
         const actionHeader = container.createEl('div', { cls: 'vc-timeline-search-bar' });
         const searchBox = actionHeader.createEl('div', { cls: 'vc-search-capsule' });
         const searchIcon = searchBox.createEl('span', { cls: 'vc-search-icon' });
@@ -588,29 +672,35 @@ export class VersionHistoryView extends ItemView {
             attr: { 'aria-label': this.searchFullText ? '当前正在检索正文（点击切换为普通搜索）' : '点击开启时光机正文全文检索' }
         });
         innerToggle.createEl('span', { text: '📄 搜正文' });
+
+        const clearBtn = searchBox.createEl('button', { 
+            cls: 'vc-search-clear-btn', 
+            attr: { 'aria-label': '清空搜索' } 
+        });
+        clearBtn.setText('✕');
+        clearBtn.style.display = this.searchQuery ? 'flex' : 'none';
+
         innerToggle.addEventListener('click', (e: MouseEvent) => {
             e.stopPropagation();
             this.searchFullText = !this.searchFullText;
-            this.refresh();
+            innerToggle.toggleClass('is-active', this.searchFullText);
+            searchInput.placeholder = this.searchFullText ? '搜索正文内容...' : '搜索快照或标签...';
+            if (this.currentResultsBox) this.renderCurrentResultsList(this.currentResultsBox, file);
         });
 
-        if (this.searchQuery) {
-            const clearBtn = searchBox.createEl('button', { 
-                cls: 'vc-search-clear-btn', 
-                attr: { 'aria-label': '清空搜索' } 
-            });
-            clearBtn.setText('✕');
-            clearBtn.addEventListener('click', (e: MouseEvent) => {
-                e.stopPropagation();
-                this.searchQuery = '';
-                searchInput.value = '';
-                this.refresh();
-            });
-        }
+        clearBtn.addEventListener('click', (e: MouseEvent) => {
+            e.stopPropagation();
+            this.searchQuery = '';
+            searchInput.value = '';
+            clearBtn.style.display = 'none';
+            if (this.currentResultsBox) this.renderCurrentResultsList(this.currentResultsBox, file);
+            searchInput.focus();
+        });
 
         searchInput.addEventListener('input', (e: Event) => { 
-            this.searchQuery = (e.target as HTMLInputElement).value; 
-            this.debouncedSearch(); 
+            this.searchQuery = (e.target as HTMLInputElement).value;
+            clearBtn.style.display = this.searchQuery ? 'flex' : 'none';
+            this.debouncedSearchCurrent(); 
         });
 
         const snapBtn = actionHeader.createEl('button', { cls: 'vc-btn-record', attr: { 'aria-label': '立即保存快照' } });
@@ -618,8 +708,19 @@ export class VersionHistoryView extends ItemView {
         snapBtn.createEl('span', { text: '保存快照' });
         snapBtn.addEventListener('click', () => this.plugin.createManualVersion());
 
+        this.currentResultsBox = container.createEl('div', { cls: 'vc-results-container' });
+        await this.renderCurrentResultsList(this.currentResultsBox, file);
+    }
+
+    async renderCurrentResultsList(resultsContainer: HTMLElement, file: TFile) {
+        resultsContainer.empty();
+
+        const versionFile = await this.plugin.loadVersionFile(file.path);
+        let versions = [...versionFile.versions];
+        const totalCount = versions.length;
+
         if (totalCount === 0) { 
-            const empty = container.createEl('div', { cls: 'vc-timeline-empty' });
+            const empty = resultsContainer.createEl('div', { cls: 'vc-timeline-empty' });
             const icon = empty.createEl('div', { cls: 'vc-timeline-empty-icon' });
             setIcon(icon, 'history');
             empty.createEl('h4', { text: '尚无快照记录' });
@@ -650,11 +751,11 @@ export class VersionHistoryView extends ItemView {
                 versions = versions.filter((v: VersionData) => v.message.toLowerCase().includes(q) || (v.tags && v.tags.some(t => t.toLowerCase().includes(q))));
             }
 
-            const resultMeta = container.createEl('div', { cls: 'vc-search-result-meta' });
+            const resultMeta = resultsContainer.createEl('div', { cls: 'vc-search-result-meta' });
             resultMeta.setText(`找到 ${versions.length} / ${totalCount} 个版本`);
         }
 
-        const timeline = container.createEl('div', { cls: 'vc-linear-timeline' });
+        const timeline = resultsContainer.createEl('div', { cls: 'vc-linear-timeline' });
 
         versions.forEach((v: VersionData, index: number) => {
             const isManual = !v.message.includes('[Auto Save]');
@@ -775,6 +876,7 @@ export class VersionHistoryView extends ItemView {
         { version, prevVersion, filePath, file, hasUnsavedChanges, isUnversioned, currentChars, snapshotChars, prevSnapshotChars, charDiff, diffMode, totalVersions }: GlobalHistoryItem,
         isLast: boolean
     ): HTMLElement {
+        const isDeleted = !file;
         const message = version?.message || '自动保存';
         const isManual = !message.includes('[Auto Save]');
         const saveType = this.plugin.getSaveTypeLabel(message);
@@ -783,19 +885,35 @@ export class VersionHistoryView extends ItemView {
         item.className = 'vc-timeline-entry';
         
         const rail = item.createEl('div', { cls: 'vc-timeline-rail' });
-        rail.createEl('div', { cls: `vc-timeline-node ${isUnversioned ? 'is-unversioned' : (hasUnsavedChanges ? 'is-unsaved' : (isManual ? 'is-manual' : ''))}` });
+        rail.createEl('div', { 
+            cls: `vc-timeline-node ${isDeleted ? 'is-deleted' : (isUnversioned ? 'is-unversioned' : (hasUnsavedChanges ? 'is-unsaved' : (isManual ? 'is-manual' : '')))}` 
+        });
         if (!isLast) rail.createEl('div', { cls: 'vc-timeline-line' });
 
         const body = item.createEl('div', { cls: 'vc-timeline-card' });
         const top = body.createEl('div', { cls: 'vc-timeline-top' });
         
         const titleRow = top.createEl('div', { cls: 'vc-timeline-title-row' });
-        const link = titleRow.createEl('a', { text: filePath, cls: 'vc-timeline-link' });
-        link.addEventListener('click', () => { if (file) this.app.workspace.getLeaf(false).openFile(file); });
+        const link = titleRow.createEl('a', { text: filePath, cls: `vc-timeline-link ${isDeleted ? 'is-deleted-link' : ''}` });
+        link.addEventListener('click', () => { 
+            if (file) {
+                this.app.workspace.getLeaf(false).openFile(file);
+            } else if (version?.id) {
+                new DeletedNoteModal(this.app, this.plugin, filePath, version).open();
+            }
+        });
 
         const badgesWrap = titleRow.createEl('div', { cls: 'vc-status-badges-wrap' });
 
-        if (diffMode === 'unversioned') {
+        if (isDeleted) {
+            // 🌟 已删除笔记明确标注
+            badgesWrap.createEl('span', { text: '● 原文件已删除', cls: 'vc-status-pill is-deleted' });
+            badgesWrap.createEl('span', { 
+                text: `${(snapshotChars ?? 0).toLocaleString()} 字符`, 
+                cls: 'vc-diff-chars-badge is-zero',
+                attr: { title: '快照保存时的原笔记字数' }
+            });
+        } else if (diffMode === 'unversioned') {
             badgesWrap.createEl('span', { text: '● 待生成快照', cls: 'vc-status-pill is-unversioned' });
             badgesWrap.createEl('span', { 
                 text: `${currentChars?.toLocaleString() ?? 0} 字符`, 
@@ -905,6 +1023,30 @@ export class VersionHistoryView extends ItemView {
                 setIcon(diffBtn, 'git-compare');
                 diffBtn.addEventListener('click', () => new DiffModal(this.app, this.plugin, file, version.id, 'current').open());
             }
+        } else if (version?.id) {
+            // 🌟 针对已删除笔记的专属操作按钮：在线预览 & 一键复活！
+            const previewBtn = actions.createEl('button', { 
+                cls: 'vc-timeline-icon-btn', 
+                attr: { 'aria-label': '预览已删除笔记的快照内容' } 
+            });
+            setIcon(previewBtn, 'eye');
+            previewBtn.addEventListener('click', (e: MouseEvent) => {
+                e.stopPropagation();
+                new DeletedNoteModal(this.app, this.plugin, filePath, version).open();
+            });
+
+            const resurrectBtn = actions.createEl('button', { 
+                cls: 'vc-timeline-icon-btn is-accent', 
+                attr: { 'aria-label': '复活此已删除笔记' } 
+            });
+            setIcon(resurrectBtn, 'rotate-ccw');
+            resurrectBtn.addEventListener('click', (e: MouseEvent) => {
+                e.stopPropagation();
+                new ConfirmModal(this.app, '♻️ 复活已删除的笔记？', `将在原路径「${filePath}」使用最新快照重新创建恢复此笔记。`, async () => {
+                    const created = await this.plugin.resurrectDeletedFile(filePath, version.id);
+                    if (created) await this.app.workspace.getLeaf(false).openFile(created);
+                }).open();
+            });
         }
 
         return item;
@@ -916,26 +1058,47 @@ export class VersionHistoryView extends ItemView {
         const searchIcon = searchBox.createEl('span', { cls: 'vc-search-icon' });
         setIcon(searchIcon, 'search');
 
-        const searchInput = searchBox.createEl('input', { type: 'text', placeholder: '搜索笔记或路径...' });
+        const searchInput = searchBox.createEl('input', { type: 'text', placeholder: '搜索全库笔记或路径...' });
         searchInput.value = this.globalSearchQuery;
 
-        if (this.globalSearchQuery) {
-            const clearBtn = searchBox.createEl('button', { 
-                cls: 'vc-search-clear-btn', 
-                attr: { 'aria-label': '清空搜索' } 
-            });
-            clearBtn.setText('✕');
-            clearBtn.addEventListener('click', (e: MouseEvent) => {
-                e.stopPropagation();
-                this.globalSearchQuery = '';
-                searchInput.value = '';
-                this.refresh();
-            });
-        }
+        const clearBtn = searchBox.createEl('button', { 
+            cls: 'vc-search-clear-btn', 
+            attr: { 'aria-label': '清空搜索' } 
+        });
+        clearBtn.setText('✕');
+        clearBtn.style.display = this.globalSearchQuery ? 'flex' : 'none';
+
+        clearBtn.addEventListener('click', (e: MouseEvent) => {
+            e.stopPropagation();
+            this.globalSearchQuery = '';
+            searchInput.value = '';
+            clearBtn.style.display = 'none';
+            if (this.globalResultsBox) this.renderGlobalResultsList(this.globalResultsBox);
+            searchInput.focus();
+        });
 
         searchInput.addEventListener('input', (e: Event) => {
             this.globalSearchQuery = (e.target as HTMLInputElement).value;
-            this.debouncedSearch();
+            clearBtn.style.display = this.globalSearchQuery ? 'flex' : 'none';
+            this.debouncedSearchGlobal();
+        });
+
+        // 🌟 多端同步一键重建全局索引按钮
+        const syncBtn = actionHeader.createEl('button', { 
+            cls: 'vc-btn-sync-icon', 
+            attr: { 'aria-label': '重建全库快照索引（多端同步后可点击校准）' } 
+        });
+        setIcon(syncBtn, 'refresh-cw');
+        syncBtn.addEventListener('click', async () => {
+            syncBtn.addClass('is-spinning');
+            syncBtn.disabled = true;
+            try {
+                await this.plugin.rebuildGlobalIndex();
+                new Notice('✅ 全库快照索引已同步重建');
+            } finally {
+                syncBtn.removeClass('is-spinning');
+                syncBtn.disabled = false;
+            }
         });
 
         const snapBtn = actionHeader.createEl('button', { cls: 'vc-btn-record', attr: { 'aria-label': '为当前活动笔记保存快照' } });
@@ -952,7 +1115,12 @@ export class VersionHistoryView extends ItemView {
             await this.refresh();
         });
 
-        const timelineArea = container.createEl('div', { cls: 'vc-timeline-content-area' });
+        this.globalResultsBox = container.createEl('div', { cls: 'vc-timeline-content-area' });
+        await this.renderGlobalResultsList(this.globalResultsBox);
+    }
+
+    async renderGlobalResultsList(timelineArea: HTMLElement) {
+        timelineArea.empty();
         
         let loadingEl: HTMLElement | null = null;
         if (!this.plugin.globalHistoryCache && !this.plugin.isSnapshotMetaLoaded) {
@@ -963,7 +1131,8 @@ export class VersionHistoryView extends ItemView {
 
         let history: GlobalHistoryItem[] = [];
         try {
-            history = await this.plugin.getGlobalHistory(100);
+            // 🌟 将 globalSearchQuery 直接传给底层，实现穿透整个仓库的全量精准搜索！
+            history = await this.plugin.getGlobalHistory(100, this.globalSearchQuery);
         } catch (e) {
             console.error('获取全库时间线失败:', e);
         } finally {
@@ -971,16 +1140,16 @@ export class VersionHistoryView extends ItemView {
         }
 
         if (this.globalSearchQuery) {
-            const q = this.globalSearchQuery.toLowerCase();
-            history = history.filter((item: GlobalHistoryItem) => item.filePath.toLowerCase().includes(q));
+            const resultMeta = timelineArea.createEl('div', { cls: 'vc-search-result-meta' });
+            resultMeta.setText(`搜索到 ${history.length} 篇匹配笔记`);
         }
 
         if (history.length === 0) {
             const empty = timelineArea.createEl('div', { cls: 'vc-timeline-empty' });
             const icon = empty.createEl('div', { cls: 'vc-timeline-empty-icon' });
             setIcon(icon, 'history');
-            empty.createEl('h4', { text: '暂无笔记快照' });
-            empty.createEl('p', { text: '打开任意笔记并点击右上角「保存快照」即可开始版本控制。' });
+            empty.createEl('h4', { text: this.globalSearchQuery ? '未找到匹配笔记' : '暂无笔记快照' });
+            empty.createEl('p', { text: this.globalSearchQuery ? '请尝试更换关键词或清空搜索条件。' : '打开任意笔记并点击右上角「保存快照」即可开始版本控制。' });
             return;
         }
 
@@ -1039,7 +1208,7 @@ export class ConfirmModal extends Modal {
         const box = contentEl.createEl('div', { cls: 'vc-dialog-actions' });
         const cancel = box.createEl('button', { text: '放弃' });
         cancel.addEventListener('click', () => this.close());
-        const ok = box.createEl('button', { text: '确认覆盖', cls: 'mod-warning' });
+        const ok = box.createEl('button', { text: '确认执行', cls: 'mod-warning' });
         ok.addEventListener('click', () => { this.close(); this.onConfirm(); });
     }
     onClose() { this.contentEl.empty(); }
@@ -1104,6 +1273,8 @@ export class VersionControlSettingTab extends PluginSettingTab {
 
         const purgeRow = statsBox.createEl('div', { cls: 'vc-storage-actions' });
         const purgeBtn = purgeRow.createEl('button', { text: '🧹 一键安全瘦身', cls: 'mod-cta' });
+        const rebuildBtn = purgeRow.createEl('button', { text: '🔄 重建索引' });
+
         purgeRow.createEl('span', { 
             text: '保护机制：永久保留所有⭐标星收藏版本和每篇笔记最近 5 个快照，自动安全清理 30 天前的超期零散快照。',
             cls: 'vc-storage-tip'
@@ -1121,6 +1292,18 @@ export class VersionControlSettingTab extends PluginSettingTab {
                     purgeBtn.disabled = false;
                 }
             }).open();
+        });
+
+        rebuildBtn.addEventListener('click', async () => {
+            rebuildBtn.disabled = true;
+            rebuildBtn.setText('重建中...');
+            try {
+                await this.plugin.rebuildGlobalIndex();
+                new Notice('✅ 全库索引重建同步完成');
+                await this.display();
+            } finally {
+                rebuildBtn.disabled = false;
+            }
         });
 
         containerEl.createEl('h3', { text: '常规选项', cls: 'vc-settings-subhead' });

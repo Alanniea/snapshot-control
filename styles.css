@@ -77,14 +77,15 @@
 
 .vc-diff-version-capsule {
     flex: 1;
+    min-width: 0;
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 6px;
+    gap: 5px;
     background: var(--background-primary);
     border: 1px solid transparent;
     border-radius: var(--vc-radius-pill);
-    padding: 6px 10px;
+    padding: 6px 8px;
     font-size: 11px;
     font-weight: 500;
     color: var(--text-normal);
@@ -109,6 +110,7 @@
     display: flex;
     align-items: center;
     color: var(--text-muted);
+    flex-shrink: 0;
 }
 
 .vc-diff-swap-btn {
@@ -122,6 +124,7 @@
     justify-content: center;
     color: var(--text-muted);
     cursor: pointer;
+    flex-shrink: 0;
     transition: var(--vc-trans-smooth);
 }
 .vc-diff-swap-btn:hover {
@@ -214,12 +217,13 @@
 .vc-metric-arrow { color: var(--text-faint); font-size: 8.5px; }
 .vc-metric-new { color: var(--text-normal); font-weight: 600; }
 
-/* 差异视窗工具栏 */
+/* 🌟 差异视窗工具栏：允许弹性折行，绝对不裁切最右侧按钮 */
 .vc-diff-toolbar {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 6px;
+    flex-wrap: wrap;
 }
 .vc-diff-nav-pill {
     display: flex;
@@ -256,7 +260,7 @@
     font-variant-numeric: tabular-nums;
 }
 
-.vc-diff-toggles { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; }
+.vc-diff-toggles { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
 .vc-toggle-chip {
     background: var(--background-secondary);
     border: 1px solid var(--vc-border-subtle);
@@ -389,6 +393,35 @@
 .vc-empty-hero h4 { margin: 0 0 6px 0; font-size: 16px; }
 .vc-empty-hero p { margin: 0 0 16px 0; font-size: 13px; color: var(--text-muted); }
 
+/* 🌟 已删除笔记预览弹窗 */
+.vc-deleted-meta-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+    background: var(--background-secondary);
+    border: 1px solid var(--vc-border-subtle);
+    border-radius: var(--vc-radius-md);
+    padding: 8px 12px;
+    font-size: 11.5px;
+    color: var(--text-muted);
+}
+.vc-deleted-preview-body {
+    flex: 1;
+    overflow-y: auto;
+    background: var(--background-secondary-alt);
+    border: 1px solid var(--vc-border-subtle);
+    border-radius: var(--vc-radius-md);
+    padding: 12px 14px;
+    font-family: var(--font-monospace);
+    font-size: 12px;
+    line-height: 1.65;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text-normal);
+}
+
 /* ======================================================================= */
 /* =================== 3. 舒适宽敞的全新搜索交互区 ======================= */
 /* ======================================================================= */
@@ -445,7 +478,7 @@
 .vc-timeline-search-bar {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     margin-bottom: 10px;
     width: 100%;
 }
@@ -530,10 +563,35 @@
     color: var(--text-normal);
 }
 
+/* 🌟 同步重建索引图标按钮 */
+.vc-btn-sync-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border-radius: 50%;
+    background: var(--background-secondary);
+    border: 1px solid var(--vc-border-subtle);
+    color: var(--text-muted);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: var(--vc-trans-smooth);
+}
+.vc-btn-sync-icon:hover {
+    background: var(--background-modifier-hover);
+    color: var(--text-accent);
+    border-color: var(--interactive-accent);
+}
+.vc-btn-sync-icon.is-spinning svg {
+    animation: vc-rotate 0.8s linear infinite;
+}
+
 .vc-search-result-meta {
     font-size: 11px;
     color: var(--text-faint);
-    margin: -4px 0 8px 6px;
+    margin: 0 0 8px 6px;
     font-family: var(--font-monospace);
 }
 
@@ -610,6 +668,10 @@
     background: var(--text-accent);
     box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.3);
 }
+.vc-timeline-node.is-deleted {
+    background: var(--text-danger);
+    box-shadow: 0 0 0 2px rgba(248, 81, 73, 0.3);
+}
 
 .vc-timeline-line {
     position: absolute;
@@ -620,7 +682,7 @@
     z-index: 1;
 }
 
-/* 🌟 卡片主体：开启浏览器独立渲染上下文隔离，滑动不再触发全屏重排 */
+/* 卡片主体：独立渲染上下文隔离 */
 .vc-timeline-card {
     flex: 1;
     min-width: 0;
@@ -637,7 +699,6 @@
     contain: content;
 }
 
-/* 触屏移动端取消 translateY 引起的触摸卡顿 */
 @media (hover: hover) {
     .vc-timeline-card:hover {
         border-color: var(--interactive-accent);
@@ -714,6 +775,11 @@
     word-break: break-all;
 }
 .vc-timeline-link:hover { color: var(--text-accent); }
+.vc-timeline-link.is-deleted-link {
+    color: var(--text-muted);
+    text-decoration: line-through;
+    opacity: 0.85;
+}
 
 /* 状态药丸胶囊 */
 .vc-status-pill {
@@ -733,6 +799,11 @@
     background: rgba(0, 122, 255, 0.12);
     color: var(--text-accent);
     border: 1px solid rgba(0, 122, 255, 0.25);
+}
+.vc-status-pill.is-deleted {
+    background: rgba(248, 81, 73, 0.15);
+    color: var(--text-danger);
+    border: 1px solid rgba(248, 81, 73, 0.3);
 }
 .vc-status-pill.is-synced {
     background: var(--background-modifier-hover);
@@ -917,7 +988,7 @@
     flex-shrink: 0;
 }
 
-/* 操作图标栏（5 键精致紧凑适配） */
+/* 操作图标栏 */
 .vc-timeline-actions {
     display: flex;
     align-items: center;
@@ -1159,6 +1230,11 @@
         width: 98vw;
         height: 94vh;
         padding: 6px 8px;
+    }
+    /* 移动端对比模态框按钮自适应缩紧，绝不溢屏 */
+    .vc-toggle-chip {
+        padding: 3px 8px;
+        font-size: 10.5px;
     }
     .vc-diff-gutter {
         gap: 4px;
