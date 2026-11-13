@@ -95,6 +95,10 @@ export class DiffModal extends Modal {
         saveSnapshotBtn.createEl('span', { text: '保存快照' });
 
         saveSnapshotBtn.addEventListener('click', async () => {
+            if (!this.app.vault.getAbstractFileByPath(this.file.path)) {
+                new Notice('❌ 当前笔记文件已不存在');
+                return;
+            }
             saveSnapshotBtn.disabled = true;
             saveSnapshotBtn.setText('保存中...');
             try {
@@ -145,31 +149,40 @@ export class DiffModal extends Modal {
 
         this.textDiffContainer = contentEl.createEl('div', { cls: 'vc-diff-viewport' });
 
-        const [versions, left, right] = await Promise.all([
-            this.plugin.getAllVersions(this.file.path),
-            this.fetchContent(this.versionId),
-            this.fetchContent(this.secondVersionId)
-        ]);
+        // 🌟 容错并行读取，避免单个版本读取异常导致整个对比窗白屏
+        try {
+            const [versions, left, right] = await Promise.all([
+                this.plugin.getAllVersions(this.file.path),
+                this.fetchContent(this.versionId),
+                this.fetchContent(this.secondVersionId)
+            ]);
 
-        this.allVersions = versions;
-        this.leftContent = left;
-        this.rightContent = right;
+            this.allVersions = versions;
+            this.leftContent = left;
+            this.rightContent = right;
 
-        // 初次拿到 versions 后再刷新一次胶囊，确保显示精确日期
-        this.updateChipText(leftBtn, this.versionId, '左侧');
-        this.updateChipText(rightBtn, this.secondVersionId, '右侧');
+            this.updateChipText(leftBtn, this.versionId, '左侧');
+            this.updateChipText(rightBtn, this.secondVersionId, '右侧');
 
-        this.renderMetricsBar();
-        this.renderDiff();
+            this.renderMetricsBar();
+            this.renderDiff();
+        } catch (err) {
+            this.textDiffContainer.empty();
+            const errBox = this.textDiffContainer.createEl('div', { cls: 'vc-empty-hero' });
+            errBox.createEl('h4', { text: '无法加载版本内容' });
+            errBox.createEl('p', { text: '版本可能已被删除或损坏，请尝试选择其他版本。' });
+        }
     }
 
+    // 🌟 修复：统一通过 normalizeText 标准化 \r\n 换行符
     private async fetchContent(verId: string): Promise<string> {
-        return verId === 'current' 
-            ? await this.app.vault.read(this.file) 
-            : await this.plugin.getVersionContent(this.file.path, verId);
+        if (verId === 'current') {
+            const raw = await this.app.vault.read(this.file);
+            return this.plugin.normalizeText(raw);
+        }
+        return await this.plugin.getVersionContent(this.file.path, verId);
     }
 
-    // 🌟 移动端精简时间戳格式化，彻底告别 "20:..." 截断！
     updateChipText(btn: HTMLButtonElement, versionId: string, rolePrefix: string) {
         btn.empty();
         const isMobile = window.innerWidth <= 768;
@@ -251,16 +264,22 @@ export class DiffModal extends Modal {
         if (chips[0]) this.updateChipText(chips[0], this.versionId, '左侧');
         if (chips[1]) this.updateChipText(chips[1], this.secondVersionId, '右侧');
 
-        const [left, right] = await Promise.all([
-            this.fetchContent(this.versionId),
-            this.fetchContent(this.secondVersionId)
-        ]);
+        try {
+            const [left, right] = await Promise.all([
+                this.fetchContent(this.versionId),
+                this.fetchContent(this.secondVersionId)
+            ]);
 
-        this.leftContent = left;
-        this.rightContent = right;
+            this.leftContent = left;
+            this.rightContent = right;
 
-        this.renderMetricsBar();
-        this.renderDiff();
+            this.renderMetricsBar();
+            this.renderDiff();
+        } catch {
+            this.textDiffContainer.empty();
+            const errBox = this.textDiffContainer.createEl('div', { cls: 'vc-empty-hero' });
+            errBox.createEl('h4', { text: '版本读取失败' });
+        }
     }
 
     navigateDiff(step: number) {
@@ -288,12 +307,54 @@ export class DiffModal extends Modal {
         }
     }
 
+    // 🌟 算法优化：剥离相同前后缀再运行 diffChars，消灭万字长行卡死问题
+    private fastDiffChars(oldLine: string, newLine: string): Diff.Change[] {
+        let prefixLen = 0;
+        const minLen = Math.min(oldLine.length, newLine.length);
+        while (prefixLen < minLen && oldLine[prefixLen] === newLine[prefixLen]) {
+            prefixLen++;
+        }
+
+        let oldEnd = oldLine.length;
+        let newEnd = newLine.length;
+        while (oldEnd > prefixLen && newEnd > prefixLen && oldLine[oldEnd - 1] === newLine[newEnd - 1]) {
+            oldEnd--;
+            newEnd--;
+        }
+
+        const result: Diff.Change[] = [];
+        if (prefixLen > 0) {
+            result.push({ value: oldLine.slice(0, prefixLen), count: prefixLen, added: false, removed: false });
+        }
+
+        const midOld = oldLine.slice(prefixLen, oldEnd);
+        const midNew = newLine.slice(prefixLen, newEnd);
+        if (midOld.length > 0 || midNew.length > 0) {
+            // 极端长变动（单次修改超 4000 字）退化为单词级比对，保护移动端不卡死
+            const changes = (midOld.length + midNew.length > 4000)
+                ? Diff.diffWordsWithSpace(midOld, midNew)
+                : Diff.diffChars(midOld, midNew);
+            result.push(...changes);
+        }
+
+        if (oldEnd < oldLine.length) {
+            const suffix = oldLine.slice(oldEnd);
+            result.push({ value: suffix, count: suffix.length, added: false, removed: false });
+        }
+
+        return result;
+    }
+
     renderDiff() {
         this.textDiffContainer.empty();
         this.diffElements = [];
         this.currentDiffIdx = 0;
 
-        if (this.leftContent === this.rightContent) {
+        const rawLineDiff = Diff.diffLines(this.leftContent, this.rightContent, { ignoreWhitespace: this.ignoreWhitespace });
+        const hasAnyDiff = rawLineDiff.some(p => p.added || p.removed);
+
+        // 🌟 修复：即使开启忽略空白，在无实质性差异时也正确展现一致提示页，不再展示空白折叠条
+        if (this.leftContent === this.rightContent || !hasAnyDiff) {
             this.totalDiffCount = 0;
             this.updateNavStats();
 
@@ -302,7 +363,11 @@ export class DiffModal extends Modal {
             setIcon(iconBox, 'check-circle-2');
             
             emptyCard.createEl('h4', { text: '两处内容完全一致' });
-            emptyCard.createEl('p', { text: '对比的两个版本内容完全相同。' });
+            emptyCard.createEl('p', { 
+                text: (this.leftContent !== this.rightContent && this.ignoreWhitespace)
+                    ? '两版本仅存在空格/缩进差异（已在忽略空白模式下自动忽略）。'
+                    : '对比的两个版本内容完全相同。' 
+            });
 
             const switchBtn = emptyCard.createEl('button', { text: '选择其他版本对比', cls: 'mod-cta' });
             switchBtn.addEventListener('click', (e: MouseEvent) => this.showVersionMenu(e, 'left'));
@@ -311,8 +376,6 @@ export class DiffModal extends Modal {
 
         let oldLineNum = 1;
         let newLineNum = 1;
-
-        const rawLineDiff = Diff.diffLines(this.leftContent, this.rightContent, { ignoreWhitespace: this.ignoreWhitespace });
         const frag = document.createDocumentFragment();
 
         for (let i = 0; i < rawLineDiff.length; i++) {
@@ -331,7 +394,7 @@ export class DiffModal extends Modal {
                     if (lLine !== undefined && rLine !== undefined) {
                         const curOld = oldLineNum++;
                         const curNew = newLineNum++;
-                        const charDiff = Diff.diffChars(lLine, rLine);
+                        const charDiff = this.fastDiffChars(lLine, rLine);
 
                         const lineEl = document.createElement('div');
                         lineEl.className = 'vc-diff-line vc-diff-line-modified';
@@ -526,6 +589,10 @@ export class VersionHistoryView extends ItemView {
     private currentResultsBox: HTMLElement | null = null;
     private globalResultsBox: HTMLElement | null = null;
 
+    // 🌟 异步并发令牌，防止快速输入产生列表重渲染乱序
+    private currentRenderToken = 0;
+    private globalRenderToken = 0;
+
     private debouncedAutoRefresh: () => void;
     private debouncedSearchCurrent: () => void;
     private debouncedSearchGlobal: () => void;
@@ -535,21 +602,25 @@ export class VersionHistoryView extends ItemView {
         this.plugin = plugin;
 
         this.debouncedAutoRefresh = debounce(() => {
-            // 如果正在搜索栏打字，不触发整页打断刷屏
             const activeEl = document.activeElement;
             if (activeEl && activeEl.closest('.vc-search-capsule')) return;
-            this.refresh();
+            if (this.currentViewMode === 'current' && this.currentResultsBox?.isConnected && this.currentFile) {
+                this.renderCurrentResultsList(this.currentResultsBox, this.currentFile);
+            } else if (this.currentViewMode === 'global' && this.globalResultsBox?.isConnected) {
+                this.renderGlobalResultsList(this.globalResultsBox);
+            } else {
+                this.refresh();
+            }
         }, 500, true);
 
-        // 🌟 局部刷新搜索结果，彻底不破坏输入框与手机键盘焦点！
         this.debouncedSearchCurrent = debounce(() => {
-            if (this.currentResultsBox && this.currentFile) {
+            if (this.currentResultsBox?.isConnected && this.currentFile) {
                 this.renderCurrentResultsList(this.currentResultsBox, this.currentFile);
             }
         }, 220, false);
 
         this.debouncedSearchGlobal = debounce(() => {
-            if (this.globalResultsBox) {
+            if (this.globalResultsBox?.isConnected) {
                 this.renderGlobalResultsList(this.globalResultsBox);
             }
         }, 220, false);
@@ -713,13 +784,15 @@ export class VersionHistoryView extends ItemView {
     }
 
     async renderCurrentResultsList(resultsContainer: HTMLElement, file: TFile) {
-        resultsContainer.empty();
-
+        const myToken = ++this.currentRenderToken;
         const versionFile = await this.plugin.loadVersionFile(file.path);
-        let versions = [...versionFile.versions];
-        const totalCount = versions.length;
+        if (myToken !== this.currentRenderToken || !resultsContainer.isConnected) return;
+
+        const allVersions = [...versionFile.versions];
+        const totalCount = allVersions.length;
 
         if (totalCount === 0) { 
+            resultsContainer.empty();
             const empty = resultsContainer.createEl('div', { cls: 'vc-timeline-empty' });
             const icon = empty.createEl('div', { cls: 'vc-timeline-empty-icon' });
             setIcon(icon, 'history');
@@ -728,13 +801,19 @@ export class VersionHistoryView extends ItemView {
             return; 
         }
 
+        // 🌟 建立索引映射，保证即便搜索过滤后依然能找对真实的前驱上一版本
+        const idToRealIndex = new Map<string, number>();
+        allVersions.forEach((ver, idx) => idToRealIndex.set(ver.id, idx));
+
+        let filteredVersions = allVersions;
         const snippetMatchMap = new Map<string, string>();
 
         if (this.searchQuery) {
             const q = this.searchQuery.toLowerCase();
             if (this.searchFullText) {
                 const matched: VersionData[] = [];
-                for (const v of versions) {
+                for (const v of allVersions) {
+                    if (myToken !== this.currentRenderToken) return;
                     try {
                         const content = await this.plugin.getVersionContent(file.path, v.id, true);
                         const pos = content.toLowerCase().indexOf(q);
@@ -746,24 +825,29 @@ export class VersionHistoryView extends ItemView {
                         }
                     } catch {}
                 }
-                versions = matched;
+                filteredVersions = matched;
             } else {
-                versions = versions.filter((v: VersionData) => v.message.toLowerCase().includes(q) || (v.tags && v.tags.some(t => t.toLowerCase().includes(q))));
+                filteredVersions = allVersions.filter((v: VersionData) => v.message.toLowerCase().includes(q) || (v.tags && v.tags.some(t => t.toLowerCase().includes(q))));
             }
+        }
 
+        if (myToken !== this.currentRenderToken || !resultsContainer.isConnected) return;
+        resultsContainer.empty();
+
+        if (this.searchQuery) {
             const resultMeta = resultsContainer.createEl('div', { cls: 'vc-search-result-meta' });
-            resultMeta.setText(`找到 ${versions.length} / ${totalCount} 个版本`);
+            resultMeta.setText(`找到 ${filteredVersions.length} / ${totalCount} 个版本`);
         }
 
         const timeline = resultsContainer.createEl('div', { cls: 'vc-linear-timeline' });
 
-        versions.forEach((v: VersionData, index: number) => {
+        filteredVersions.forEach((v: VersionData, index: number) => {
             const isManual = !v.message.includes('[Auto Save]');
             const item = timeline.createEl('div', { cls: `vc-timeline-entry ${v.starred ? 'is-starred' : ''}` });
             
             const rail = item.createEl('div', { cls: 'vc-timeline-rail' });
             rail.createEl('div', { cls: `vc-timeline-node ${isManual ? 'is-manual' : ''} ${v.starred ? 'is-star' : ''}` });
-            if (index !== versions.length - 1) {
+            if (index !== filteredVersions.length - 1) {
                 rail.createEl('div', { cls: 'vc-timeline-line' });
             }
 
@@ -776,15 +860,18 @@ export class VersionHistoryView extends ItemView {
             });
             typeBadge.setText(this.plugin.getSaveTypeLabel(v.message));
 
-            const nextVersion = versions[index + 1];
-            if (nextVersion) {
-                const diff = v.size - nextVersion.size;
+            // 🌟 核心修复：通过 idToRealIndex 找回在完整历史中真正紧邻的上一版本！
+            const realIdx = idToRealIndex.get(v.id) ?? -1;
+            const realPrevVersion = realIdx !== -1 ? allVersions[realIdx + 1] : undefined;
+
+            if (realPrevVersion) {
+                const diff = v.size - realPrevVersion.size;
                 const deltaClass = diff > 0 ? 'is-plus' : (diff < 0 ? 'is-minus' : 'is-zero');
                 const sign = diff > 0 ? '+' : '';
                 badgeGroup.createEl('span', {
                     text: `${sign}${diff.toLocaleString()} 字符`,
                     cls: `vc-diff-chars-badge ${deltaClass}`,
-                    attr: { title: `较上一版本变动: ${sign}${diff} 字符 (当前: ${v.size.toLocaleString()} / 上版: ${nextVersion.size.toLocaleString()})` }
+                    attr: { title: `较上一版本变动: ${sign}${diff} 字符 (当前: ${v.size.toLocaleString()} / 上版: ${realPrevVersion.size.toLocaleString()})` }
                 });
             } else {
                 badgeGroup.createEl('span', {
@@ -824,17 +911,17 @@ export class VersionHistoryView extends ItemView {
             starBtn.addEventListener('click', async (e: MouseEvent) => {
                 e.stopPropagation();
                 await this.plugin.toggleVersionStar(file.path, v.id);
-                this.refresh();
+                this.renderCurrentResultsList(resultsContainer, file);
             });
 
             const prevDiffBtn = actions.createEl('button', { 
                 cls: 'vc-timeline-icon-btn', 
-                attr: { 'aria-label': nextVersion ? '对比上一版本 (查看此快照改动)' : '首个初始版本，无上一版本' } 
+                attr: { 'aria-label': realPrevVersion ? '对比上一版本 (查看此快照改动)' : '首个初始版本，无上一版本' } 
             });
             setIcon(prevDiffBtn, 'git-commit');
-            if (nextVersion) {
+            if (realPrevVersion) {
                 prevDiffBtn.addEventListener('click', () => {
-                    new DiffModal(this.app, this.plugin, file, nextVersion.id, v.id).open();
+                    new DiffModal(this.app, this.plugin, file, realPrevVersion.id, v.id).open();
                 });
             } else {
                 prevDiffBtn.disabled = true;
@@ -854,7 +941,7 @@ export class VersionHistoryView extends ItemView {
             restoreBtn.addEventListener('click', () => {
                 new ConfirmModal(this.app, '确认回退版本', '将使用该快照覆盖当前内容（当前最新状态会自动打下备份）。', async () => {
                     await this.plugin.restoreVersion(file, v.id);
-                }).open();
+                }, '确认覆盖').open();
             });
 
             const delBtn = actions.createEl('button', { 
@@ -866,8 +953,8 @@ export class VersionHistoryView extends ItemView {
                 e.stopPropagation();
                 new ConfirmModal(this.app, '彻底删除此快照？', `将永久销毁版本「${this.plugin.formatTime(v.timestamp)}」。底层将自动重组依赖链，不影响其他版本。`, async () => {
                     const ok = await this.plugin.deleteSingleVersion(file.path, v.id);
-                    if (ok) this.refresh();
-                }).open();
+                    if (ok) this.renderCurrentResultsList(resultsContainer, file);
+                }, '确认删除').open();
             });
         });
     }
@@ -906,7 +993,6 @@ export class VersionHistoryView extends ItemView {
         const badgesWrap = titleRow.createEl('div', { cls: 'vc-status-badges-wrap' });
 
         if (isDeleted) {
-            // 🌟 已删除笔记明确标注
             badgesWrap.createEl('span', { text: '● 原文件已删除', cls: 'vc-status-pill is-deleted' });
             badgesWrap.createEl('span', { 
                 text: `${(snapshotChars ?? 0).toLocaleString()} 字符`, 
@@ -1009,7 +1095,7 @@ export class VersionHistoryView extends ItemView {
                 e.stopPropagation();
                 await this.plugin.createVersion(file, '[Manual Save]', false, [], true);
                 this.plugin.clearGlobalCache();
-                await this.refresh();
+                if (this.globalResultsBox) await this.renderGlobalResultsList(this.globalResultsBox);
             });
 
             if (!isUnversioned && version?.id) {
@@ -1024,7 +1110,6 @@ export class VersionHistoryView extends ItemView {
                 diffBtn.addEventListener('click', () => new DiffModal(this.app, this.plugin, file, version.id, 'current').open());
             }
         } else if (version?.id) {
-            // 🌟 针对已删除笔记的专属操作按钮：在线预览 & 一键复活！
             const previewBtn = actions.createEl('button', { 
                 cls: 'vc-timeline-icon-btn', 
                 attr: { 'aria-label': '预览已删除笔记的快照内容' } 
@@ -1045,7 +1130,7 @@ export class VersionHistoryView extends ItemView {
                 new ConfirmModal(this.app, '♻️ 复活已删除的笔记？', `将在原路径「${filePath}」使用最新快照重新创建恢复此笔记。`, async () => {
                     const created = await this.plugin.resurrectDeletedFile(filePath, version.id);
                     if (created) await this.app.workspace.getLeaf(false).openFile(created);
-                }).open();
+                }, '确认复活').open();
             });
         }
 
@@ -1083,7 +1168,6 @@ export class VersionHistoryView extends ItemView {
             this.debouncedSearchGlobal();
         });
 
-        // 🌟 多端同步一键重建全局索引按钮
         const syncBtn = actionHeader.createEl('button', { 
             cls: 'vc-btn-sync-icon', 
             attr: { 'aria-label': '重建全库快照索引（多端同步后可点击校准）' } 
@@ -1112,7 +1196,7 @@ export class VersionHistoryView extends ItemView {
             }
             await this.plugin.createVersion(activeFile, '[Manual Save]', false, [], true);
             this.plugin.clearGlobalCache();
-            await this.refresh();
+            if (this.globalResultsBox) await this.renderGlobalResultsList(this.globalResultsBox);
         });
 
         this.globalResultsBox = container.createEl('div', { cls: 'vc-timeline-content-area' });
@@ -1120,6 +1204,8 @@ export class VersionHistoryView extends ItemView {
     }
 
     async renderGlobalResultsList(timelineArea: HTMLElement) {
+        const myToken = ++this.globalRenderToken;
+
         timelineArea.empty();
         
         let loadingEl: HTMLElement | null = null;
@@ -1131,13 +1217,14 @@ export class VersionHistoryView extends ItemView {
 
         let history: GlobalHistoryItem[] = [];
         try {
-            // 🌟 将 globalSearchQuery 直接传给底层，实现穿透整个仓库的全量精准搜索！
             history = await this.plugin.getGlobalHistory(100, this.globalSearchQuery);
         } catch (e) {
             console.error('获取全库时间线失败:', e);
         } finally {
             if (loadingEl) loadingEl.remove();
         }
+
+        if (myToken !== this.globalRenderToken || !timelineArea.isConnected) return;
 
         if (this.globalSearchQuery) {
             const resultMeta = timelineArea.createEl('div', { cls: 'vc-search-result-meta' });
@@ -1199,7 +1286,14 @@ export class VersionHistoryView extends ItemView {
 // ============================= 辅助模态框 ==============================
 // =======================================================================
 export class ConfirmModal extends Modal {
-    constructor(app: App, private title: string, private message: string, private onConfirm: () => void) { super(app); }
+    constructor(
+        app: App, 
+        private title: string, 
+        private message: string, 
+        private onConfirm: () => void,
+        private confirmText = '确认执行'
+    ) { super(app); }
+
     onOpen() {
         const { contentEl } = this;
         contentEl.addClass('vc-confirm-dialog');
@@ -1208,7 +1302,7 @@ export class ConfirmModal extends Modal {
         const box = contentEl.createEl('div', { cls: 'vc-dialog-actions' });
         const cancel = box.createEl('button', { text: '放弃' });
         cancel.addEventListener('click', () => this.close());
-        const ok = box.createEl('button', { text: '确认执行', cls: 'mod-warning' });
+        const ok = box.createEl('button', { text: this.confirmText, cls: 'mod-warning' });
         ok.addEventListener('click', () => { this.close(); this.onConfirm(); });
     }
     onClose() { this.contentEl.empty(); }
@@ -1265,6 +1359,7 @@ export class VersionControlSettingTab extends PluginSettingTab {
         renderItem('节省空间', '计算中...', '');
 
         this.plugin.getStorageStats().then(stats => {
+            if (!statsGrid.isConnected) return;
             statsGrid.empty();
             renderItem('快照总数', `${stats.totalSnapshots.toLocaleString()} 个`, `${stats.totalFiles} 篇笔记`);
             renderItem('磁盘占用', this.plugin.formatFileSize(stats.actualDiskBytes), `未压等效: ${this.plugin.formatFileSize(stats.rawEquivalentBytes)}`);
@@ -1291,7 +1386,7 @@ export class VersionControlSettingTab extends PluginSettingTab {
                 } finally {
                     purgeBtn.disabled = false;
                 }
-            }).open();
+            }, '确认清理').open();
         });
 
         rebuildBtn.addEventListener('click', async () => {

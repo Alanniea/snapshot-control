@@ -1,3 +1,4 @@
+
 import { 
     Plugin, TFile, TFolder, debounce, moment, normalizePath, DataAdapter, Notice 
 } from 'obsidian';
@@ -138,12 +139,14 @@ export const DEFAULT_SETTINGS: VersionControlSettings = {
 
 export type ViewMode = 'current' | 'global';
 
+type DebouncedFn = ((...args: any[]) => any) & { cancel?: () => void };
+
 // =======================================================================
 // ==================== 主插件类 (VersionControlPlugin) ===================
 // =======================================================================
 export default class VersionControlPlugin extends Plugin {
     settings: VersionControlSettings;
-    debouncedSaves: Map<string, Function> = new Map();
+    debouncedSaves: Map<string, DebouncedFn> = new Map();
     statusBarItem: HTMLElement;
     
     versionCache: SimpleLRU<string, VersionFile> = new SimpleLRU(50);
@@ -153,7 +156,7 @@ export default class VersionControlPlugin extends Plugin {
     snapshotMetaMap: Map<string, { latest: VersionData; prev?: VersionData; totalVersions: number }> = new Map();
     isSnapshotMetaLoaded = false;
     private loadingIndexPromise: Promise<void> | null = null;
-    private debouncedSaveGlobalIndex: () => void;
+    private debouncedSaveGlobalIndex: DebouncedFn;
     
     activeFileLastSaveTime: number | null = null;
     activeFileSaveLabel = '';
@@ -161,7 +164,7 @@ export default class VersionControlPlugin extends Plugin {
     isRestoring = false; 
     isUnloaded = false;
 
-    debouncedUpdateStatusBar: () => void;
+    debouncedUpdateStatusBar: DebouncedFn;
     private lastRenderedStatusText = '';
 
     async onload() {
@@ -226,7 +229,14 @@ export default class VersionControlPlugin extends Plugin {
 
     onunload() {
         this.isUnloaded = true;
+        // 🌟 彻底清理取消所有未触发定时器，杜绝僵尸回调
+        for (const fn of this.debouncedSaves.values()) {
+            fn.cancel?.();
+        }
         this.debouncedSaves.clear();
+        this.debouncedSaveGlobalIndex?.cancel?.();
+        this.debouncedUpdateStatusBar?.cancel?.();
+
         this.versionCache.clear();
         this.contentCache.clear();
         this.globalHistoryCache = null;
@@ -264,17 +274,32 @@ export default class VersionControlPlugin extends Plugin {
         }
     }
 
+    // 🌟 修复：递归清扫所有子目录下的残留 .tmp 临时文件
     async cleanupTempFiles() {
         const adapter = this.app.vault.adapter;
         const folder = this.settings.versionFolder;
-        try {
-            if (await adapter.exists(folder)) {
-                const list = await adapter.list(folder);
+        if (!(await adapter.exists(folder))) return;
+
+        const queue: string[] = [folder];
+        const visited = new Set<string>();
+
+        while (queue.length > 0) {
+            const cur = queue.shift()!;
+            if (visited.has(cur)) continue;
+            visited.add(cur);
+            try {
+                const list = await adapter.list(cur);
                 for (const f of list.files) {
-                    if (f.endsWith('.tmp')) { try { await adapter.remove(f); } catch {} }
+                    if (f.endsWith('.tmp')) {
+                        try { await adapter.remove(f); } catch {}
+                    }
                 }
-            }
-        } catch {}
+                for (const sub of list.folders) {
+                    const base = sub.split('/').pop() || '';
+                    if (base !== '.' && base !== '..' && !visited.has(sub)) queue.push(sub);
+                }
+            } catch {}
+        }
     }
 
     async withLock(filePath: string, fn: () => Promise<void>, timeoutMs = 30000): Promise<void> {
@@ -308,6 +333,14 @@ export default class VersionControlPlugin extends Plugin {
         return text ? text.replace(/\r\n?/g, "\n") : ""; 
     }
 
+    private cancelDebouncer(filePath: string) {
+        const old = this.debouncedSaves.get(filePath);
+        if (old) {
+            old.cancel?.();
+            this.debouncedSaves.delete(filePath);
+        }
+    }
+
     async handleFolderRename(folder: TFolder, oldFolderPath: string) {
         const files = this.app.vault.getMarkdownFiles();
         for (const file of files) {
@@ -319,6 +352,8 @@ export default class VersionControlPlugin extends Plugin {
     }
 
     async handleRename(file: TFile, oldPath: string) {
+        this.cancelDebouncer(oldPath);
+
         await this.withLock(oldPath, async () => {
             const adapter = this.app.vault.adapter;
             const oldVersionPath = this.getVersionFilePath(oldPath);
@@ -339,6 +374,7 @@ export default class VersionControlPlugin extends Plugin {
                     this.versionCache.delete(oldPath);
                     this.contentCache.deletePrefix(oldPath + "::");
 
+                    await this.loadOrBuildGlobalIndex();
                     const meta = this.snapshotMetaMap.get(oldPath);
                     if (meta) {
                         this.snapshotMetaMap.delete(oldPath);
@@ -351,12 +387,17 @@ export default class VersionControlPlugin extends Plugin {
                 } catch (e) { console.error("Rename Error", e); }
             }
         });
-        const oldDebouncer = this.debouncedSaves.get(oldPath);
-        if (oldDebouncer) { this.debouncedSaves.delete(oldPath); this.handleFileModify(file); }
     }
 
     async handleDelete(filePath: string) {
-        if (!this.settings.deleteHistoryOnDelete) return;
+        this.cancelDebouncer(filePath);
+
+        if (!this.settings.deleteHistoryOnDelete) {
+            this.clearGlobalCache();
+            this.refreshVersionHistoryView();
+            return;
+        }
+
         await this.withLock(filePath, async () => {
             const adapter = this.app.vault.adapter;
             const versionPath = this.getVersionFilePath(filePath);
@@ -364,7 +405,7 @@ export default class VersionControlPlugin extends Plugin {
                 await adapter.remove(versionPath);
                 this.versionCache.delete(filePath);
                 this.contentCache.deletePrefix(filePath + "::");
-                this.debouncedSaves.delete(filePath);
+                await this.loadOrBuildGlobalIndex();
                 this.snapshotMetaMap.delete(filePath);
                 this.debouncedSaveGlobalIndex();
                 this.clearGlobalCache();
@@ -379,6 +420,9 @@ export default class VersionControlPlugin extends Plugin {
 
     async saveSettings() { 
         await this.saveData(this.settings); 
+        for (const fn of this.debouncedSaves.values()) {
+            fn.cancel?.();
+        }
         this.debouncedSaves.clear();
         this.debouncedUpdateStatusBar(); 
     }
@@ -461,6 +505,8 @@ export default class VersionControlPlugin extends Plugin {
             const delayMinutes = Math.max(0.1, Number(this.settings.autoSaveDelayOnModify) || 3);
             debouncer = debounce(async (f: TFile) => { 
                 if (this.isUnloaded) return;
+                // 若文件在等待期间被删除，则跳过
+                if (!this.app.vault.getAbstractFileByPath(f.path)) return;
                 await this.createVersion(f, '[Auto Save]', false); 
             }, delayMinutes * 60 * 1000, true);
             this.debouncedSaves.set(file.path, debouncer);
@@ -468,15 +514,19 @@ export default class VersionControlPlugin extends Plugin {
         debouncer(file);
     }
     
+    // 🌟 修复：严格文件夹边界匹配，防止排除 "temp" 时误杀 "templates/"
     isExcluded(filePath: string): boolean { 
-        return this.settings.excludedFolders.some(folder => filePath.startsWith(folder)); 
+        return this.settings.excludedFolders.some(folder => {
+            const clean = folder.replace(/\/+$/, '');
+            if (!clean) return false;
+            return filePath === clean || filePath.startsWith(clean + '/');
+        }); 
     }
 
     async createManualVersion() {
         const file = this.app.workspace.getActiveFile();
         if (!file) { new Notice('没有打开的文件'); return; }
-        const debouncer = this.debouncedSaves.get(file.path);
-        if (debouncer) this.debouncedSaves.delete(file.path);
+        this.cancelDebouncer(file.path);
         await this.createVersion(file, '[Manual Save]', false, [], true);
     }
 
@@ -490,6 +540,8 @@ export default class VersionControlPlugin extends Plugin {
 
     private async createVersionInternal(file: TFile, message: string, showNotification: boolean, tags: string[], isManual: boolean, content: string) {
         try {
+            await this.loadOrBuildGlobalIndex();
+
             const timestamp = Date.now();
             const id = `${timestamp}-${Math.random().toString(36).substring(2, 9)}`;
             const hash = hashString(content);
@@ -584,8 +636,9 @@ export default class VersionControlPlugin extends Plugin {
         if (!this.globalHistoryCache) return;
         let currentChars = file.stat.size;
         try {
-            const text = await this.app.vault.cachedRead(file);
-            currentChars = text.length;
+            const rawText = await this.app.vault.cachedRead(file);
+            // 🌟 统一标准化换行符，修复 Windows \r\n 导致的虚假变动误报
+            currentChars = this.normalizeText(rawText).length;
         } catch {}
 
         const idx = this.globalHistoryCache.findIndex(item => item.filePath === file.path);
@@ -612,11 +665,12 @@ export default class VersionControlPlugin extends Plugin {
         versionFile.versionIndex = index; 
     }
 
+    // 🌟 修复空文件 "" 假值跳过 bug
     repairVersionSizes(vf: VersionFile) {
         if (!vf || !vf.versions || vf.versions.length === 0) return;
 
-        let currentKnownText = vf.versions[0]?.content ?? null;
-        if (currentKnownText) {
+        let currentKnownText: string | null = vf.versions[0]?.content ?? null;
+        if (currentKnownText !== null) {
             vf.versions[0]!.size = currentKnownText.length;
         }
 
@@ -674,6 +728,7 @@ export default class VersionControlPlugin extends Plugin {
     }
 
     async deleteSingleVersion(filePath: string, versionId: string): Promise<boolean> {
+        await this.loadOrBuildGlobalIndex();
         let success = false;
         await this.withLock(filePath, async () => {
             try {
@@ -681,8 +736,9 @@ export default class VersionControlPlugin extends Plugin {
                 const targetIdx = vf.versions.findIndex(v => v.id === versionId);
                 if (targetIdx === -1) return;
 
-                const dependent = vf.versions.find(v => v.baseVersionId === versionId);
-                if (dependent) {
+                // 🌟 修复：遍历全部依赖此版本的节点，全部解包防断链
+                const dependents = vf.versions.filter(v => v.baseVersionId === versionId);
+                for (const dependent of dependents) {
                     try {
                         const full = this.resolveContentFromList(vf.versions, dependent.id);
                         dependent.content = full;
@@ -699,21 +755,27 @@ export default class VersionControlPlugin extends Plugin {
                 vf.lastModified = Date.now();
                 this.buildVersionIndex(vf);
                 this.repairVersionSizes(vf);
-                await this.saveVersionFile(filePath, vf);
-
-                this.versionCache.set(filePath, vf);
-                this.contentCache.delete(`${filePath}::${versionId}`);
 
                 if (vf.versions.length > 0) {
+                    await this.saveVersionFile(filePath, vf);
+                    this.versionCache.set(filePath, vf);
                     this.snapshotMetaMap.set(filePath, {
                         latest: vf.versions[0]!,
                         prev: vf.versions[1],
                         totalVersions: vf.versions.length
                     });
                 } else {
+                    // 🌟 若删光最后一个版本，彻底删除空历史文件，不留垃圾
+                    const adapter = this.app.vault.adapter;
+                    const vPath = this.getVersionFilePath(filePath);
+                    if (await adapter.exists(vPath)) {
+                        try { await adapter.remove(vPath); } catch {}
+                    }
+                    this.versionCache.delete(filePath);
                     this.snapshotMetaMap.delete(filePath);
                 }
 
+                this.contentCache.delete(`${filePath}::${versionId}`);
                 this.debouncedSaveGlobalIndex();
                 this.clearGlobalCache();
                 success = true;
@@ -725,11 +787,15 @@ export default class VersionControlPlugin extends Plugin {
         return success;
     }
 
-    // 🌟 核心新增：从快照中一键复活已删除的笔记文件（支持自动重建多级目录）
     async resurrectDeletedFile(filePath: string, versionId: string): Promise<TFile | null> {
         try {
+            const existing = this.app.vault.getAbstractFileByPath(filePath);
+            if (existing instanceof TFile) {
+                new Notice('ℹ️ 该笔记已存在于库中，为您直接打开');
+                return existing;
+            }
+
             const content = await this.getVersionContent(filePath, versionId);
-            // 确保所有父级文件夹都存在
             const parts = filePath.split('/');
             if (parts.length > 1) {
                 let currentPath = '';
@@ -768,7 +834,8 @@ export default class VersionControlPlugin extends Plugin {
         if (await adapter.exists(folder)) {
             const files = await this.getJSONFilesRecursively(folder);
             totalFiles = files.length;
-            for (const file of files) {
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i]!;
                 try {
                     const stat = await adapter.stat(file);
                     if (stat) actualDiskBytes += stat.size;
@@ -783,6 +850,7 @@ export default class VersionControlPlugin extends Plugin {
                         }
                     }
                 } catch {}
+                if (i % 10 === 0) await this.yieldToMain();
             }
         }
 
@@ -803,42 +871,50 @@ export default class VersionControlPlugin extends Plugin {
             const files = await this.getJSONFilesRecursively(folder);
             const cutoff = Date.now() - (keepDays * 24 * 60 * 60 * 1000);
 
-            for (const file of files) {
+            for (let idx = 0; idx < files.length; idx++) {
+                const file = files[idx]!;
                 try {
                     const raw = await this.readCompressedOrRaw(file);
                     if (!raw) continue;
-                    const vf = JSON.parse(raw) as VersionFile;
-                    if (!vf || !Array.isArray(vf.versions)) continue;
+                    const parsed = JSON.parse(raw) as VersionFile;
+                    if (!parsed || !parsed.filePath || !Array.isArray(parsed.versions)) continue;
 
-                    const originalTotal = vf.versions.length;
-                    const starred = vf.versions.filter(v => v.starred);
-                    const nonStarred = vf.versions.filter(v => !v.starred);
+                    // 🌟 加锁安全瘦身并清理缓存，防止与自动保存产生写冲突
+                    await this.withLock(parsed.filePath, async () => {
+                        const vf = await this.loadVersionFile(parsed.filePath);
+                        const originalTotal = vf.versions.length;
+                        const starred = vf.versions.filter(v => v.starred);
+                        const nonStarred = vf.versions.filter(v => !v.starred);
 
-                    const keepNonStarred = nonStarred.filter((v, idx) => idx < minKeepPerFile || v.timestamp >= cutoff);
-                    const keepIds = new Set([...starred, ...keepNonStarred].map(v => v.id));
+                        const keepNonStarred = nonStarred.filter((v, i) => i < minKeepPerFile || v.timestamp >= cutoff);
+                        const keepIds = new Set([...starred, ...keepNonStarred].map(v => v.id));
 
-                    if (keepIds.size < originalTotal) {
-                        const proposed = vf.versions.filter(v => keepIds.has(v.id));
-                        for (let i = proposed.length - 1; i >= 0; i--) {
-                            const v = proposed[i]!;
-                            if (v.diff && v.baseVersionId && !keepIds.has(v.baseVersionId)) {
-                                try {
-                                    const full = this.resolveContentFromList(vf.versions, v.id);
-                                    v.content = full;
-                                    v.diff = undefined;
-                                    v.baseVersionId = undefined;
-                                    v.size = full.length;
-                                } catch {}
+                        if (keepIds.size < originalTotal) {
+                            const proposed = vf.versions.filter(v => keepIds.has(v.id));
+                            for (let i = proposed.length - 1; i >= 0; i--) {
+                                const v = proposed[i]!;
+                                if (v.diff && v.baseVersionId && !keepIds.has(v.baseVersionId)) {
+                                    try {
+                                        const full = this.resolveContentFromList(vf.versions, v.id);
+                                        v.content = full;
+                                        v.diff = undefined;
+                                        v.baseVersionId = undefined;
+                                        v.size = full.length;
+                                    } catch {}
+                                }
                             }
+                            vf.versions = proposed;
+                            vf.lastModified = Date.now();
+                            this.buildVersionIndex(vf);
+                            this.repairVersionSizes(vf);
+                            await this.saveVersionFile(vf.filePath, vf);
+                            this.versionCache.delete(vf.filePath);
+                            this.contentCache.deletePrefix(vf.filePath + "::");
+                            purgedCount += (originalTotal - vf.versions.length);
                         }
-                        vf.versions = proposed;
-                        vf.lastModified = Date.now();
-                        this.buildVersionIndex(vf);
-                        this.repairVersionSizes(vf);
-                        await this.saveVersionFile(vf.filePath, vf);
-                        purgedCount += (originalTotal - vf.versions.length);
-                    }
+                    });
                 } catch {}
+                if (idx % 5 === 0) await this.yieldToMain();
             }
         }
 
@@ -900,8 +976,8 @@ export default class VersionControlPlugin extends Plugin {
                         finalVersionFile.versions.sort((a, b) => b.timestamp - a.timestamp);
                         this.repairVersionSizes(finalVersionFile);
 
-                        // 🌟 多端同步自愈：如果磁盘文件里有比索引更新或更多的数据，自动修正同步索引
-                        if (finalVersionFile.versions.length > 0) {
+                        // 多端同步自愈：只有全局索引已加载完才执行反向同步更新，严防启动竞态覆盖
+                        if (this.isSnapshotMetaLoaded && finalVersionFile.versions.length > 0) {
                             const latestDisk = finalVersionFile.versions[0]!;
                             const existingMeta = this.snapshotMetaMap.get(filePath);
                             if (!existingMeta || existingMeta.latest?.id !== latestDisk.id || existingMeta.totalVersions !== finalVersionFile.versions.length) {
@@ -971,14 +1047,15 @@ export default class VersionControlPlugin extends Plugin {
     async getAllVersions(filePath: string): Promise<VersionData[]> { 
         try { 
             const vf = await this.loadVersionFile(filePath); 
-            return vf.versions.sort((a, b) => b.timestamp - a.timestamp); 
+            return [...vf.versions].sort((a, b) => b.timestamp - a.timestamp); 
         } catch { return []; } 
     }
     
+    // 🌟 修复空文件 "" 假值跳过缓存 Bug
     async getVersionContent(filePath: string, versionId: string, suppressNotice = false, strictMode = false): Promise<string> { 
         const cacheKey = `${filePath}::${versionId}`;
         const cached = this.contentCache.get(cacheKey);
-        if (cached) return cached;
+        if (cached !== undefined) return cached;
 
         try { 
             const vf = await this.loadVersionFile(filePath); 
@@ -1112,7 +1189,9 @@ export default class VersionControlPlugin extends Plugin {
         return normalizePath(`${this.settings.versionFolder}/global-index.json`);
     }
 
+    // 🌟 强锁保护：在索引正式加载完之前，绝不允许残缺写回硬盘
     private async persistGlobalIndex() {
+        if (!this.isSnapshotMetaLoaded) return;
         const adapter = this.app.vault.adapter;
         const indexPath = this.getGlobalIndexPath();
         try {
@@ -1124,7 +1203,6 @@ export default class VersionControlPlugin extends Plugin {
         } catch {}
     }
 
-    // 🌟 新增：一键强制重建全库索引（用于多端同步对齐）
     async rebuildGlobalIndex(): Promise<void> {
         const adapter = this.app.vault.adapter;
         const indexPath = this.getGlobalIndexPath();
@@ -1183,11 +1261,13 @@ export default class VersionControlPlugin extends Plugin {
                             const latest = vf.versions[0]!;
                             const prev = vf.versions[1];
 
-                            if (latest.content) latest.size = latest.content.length;
+                            if (latest.content !== undefined && latest.content !== null) {
+                                latest.size = latest.content.length;
+                            }
                             if (prev) {
-                                if (prev.content) {
+                                if (prev.content !== undefined && prev.content !== null) {
                                     prev.size = prev.content.length;
-                                } else if (prev.diff && latest.content) {
+                                } else if (prev.diff && latest.content !== undefined && latest.content !== null) {
                                     try {
                                         const restored = Diff.applyPatch(latest.content, prev.diff);
                                         if (restored !== false) prev.size = restored.length;
@@ -1205,6 +1285,8 @@ export default class VersionControlPlugin extends Plugin {
                 }
                 this.isSnapshotMetaLoaded = true;
                 this.persistGlobalIndex();
+            } else {
+                this.isSnapshotMetaLoaded = true;
             }
         })();
 
@@ -1215,7 +1297,6 @@ export default class VersionControlPlugin extends Plugin {
         }
     }
 
-    // 🌟 核心升级：支持穿透全库的 searchQuery 过滤，确保第 500 篇老笔记也能搜到！
     async getGlobalHistory(limit = 100, searchQuery = ''): Promise<GlobalHistoryItem[]> {
         const q = searchQuery.trim().toLowerCase();
         if (!q && this.globalHistoryCache) return this.globalHistoryCache.slice(0, limit);
@@ -1231,7 +1312,7 @@ export default class VersionControlPlugin extends Plugin {
         for (let i = 0; i < allVaultFiles.length; i++) {
             const f = allVaultFiles[i]!;
             seenPaths.add(f.path);
-            if (q && !f.path.toLowerCase().includes(q)) continue; // 先搜全库再截断！
+            if (q && !f.path.toLowerCase().includes(q)) continue;
             const snaps = this.snapshotMetaMap.get(f.path);
             candidates.push({
                 file: f,
@@ -1275,8 +1356,9 @@ export default class VersionControlPlugin extends Plugin {
 
                         if (isModified) {
                             try {
-                                const curText = await this.app.vault.cachedRead(file);
-                                currentChars = curText.length;
+                                const rawCur = await this.app.vault.cachedRead(file);
+                                // 🌟 统一标准化换行符，避免 Windows \r\n 误报改动
+                                currentChars = this.normalizeText(rawCur).length;
                                 hasUnsaved = (currentChars !== snapshotChars);
                             } catch {}
                         }

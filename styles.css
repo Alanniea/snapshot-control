@@ -32,11 +32,12 @@
     gap: 8px;
 }
 
-/* 顶部标题区域 */
+/* 顶部标题区域：右侧预留 34px 避免与弹窗关闭 X 按钮重叠 */
 .vc-diff-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    padding-right: 34px;
 }
 .vc-diff-title-area {
     display: flex;
@@ -48,11 +49,15 @@
     display: flex;
     align-items: center;
     color: var(--text-accent);
+    flex-shrink: 0;
 }
 .vc-diff-filename {
     font-weight: 600;
     font-size: 15px;
     color: var(--text-normal);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 .vc-diff-filepath {
     font-size: 11px;
@@ -217,7 +222,7 @@
 .vc-metric-arrow { color: var(--text-faint); font-size: 8.5px; }
 .vc-metric-new { color: var(--text-normal); font-weight: 600; }
 
-/* 🌟 差异视窗工具栏：允许弹性折行，绝对不裁切最右侧按钮 */
+/* 差异视窗工具栏 */
 .vc-diff-toolbar {
     display: flex;
     align-items: center;
@@ -393,7 +398,7 @@
 .vc-empty-hero h4 { margin: 0 0 6px 0; font-size: 16px; }
 .vc-empty-hero p { margin: 0 0 16px 0; font-size: 13px; color: var(--text-muted); }
 
-/* 🌟 已删除笔记预览弹窗 */
+/* 已删除笔记预览弹窗 */
 .vc-deleted-meta-bar {
     display: flex;
     align-items: center;
@@ -563,7 +568,6 @@
     color: var(--text-normal);
 }
 
-/* 🌟 同步重建索引图标按钮 */
 .vc-btn-sync-icon {
     display: flex;
     align-items: center;
@@ -578,6 +582,10 @@
     cursor: pointer;
     flex-shrink: 0;
     transition: var(--vc-trans-smooth);
+}
+.vc-btn-sync-icon svg {
+    width: 14px;
+    height: 14px;
 }
 .vc-btn-sync-icon:hover {
     background: var(--background-modifier-hover);
@@ -682,7 +690,6 @@
     z-index: 1;
 }
 
-/* 卡片主体：独立渲染上下文隔离 */
 .vc-timeline-card {
     flex: 1;
     min-width: 0;
@@ -773,6 +780,7 @@
     text-decoration: none; 
     font-weight: 600; 
     word-break: break-all;
+    cursor: pointer;
 }
 .vc-timeline-link:hover { color: var(--text-accent); }
 .vc-timeline-link.is-deleted-link {
@@ -1231,7 +1239,6 @@
         height: 94vh;
         padding: 6px 8px;
     }
-    /* 移动端对比模态框按钮自适应缩紧，绝不溢屏 */
     .vc-toggle-chip {
         padding: 3px 8px;
         font-size: 10.5px;
