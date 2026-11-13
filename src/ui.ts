@@ -149,7 +149,6 @@ export class DiffModal extends Modal {
 
         this.textDiffContainer = contentEl.createEl('div', { cls: 'vc-diff-viewport' });
 
-        // 🌟 容错并行读取，避免单个版本读取异常导致整个对比窗白屏
         try {
             const [versions, left, right] = await Promise.all([
                 this.plugin.getAllVersions(this.file.path),
@@ -166,7 +165,7 @@ export class DiffModal extends Modal {
 
             this.renderMetricsBar();
             this.renderDiff();
-        } catch (err) {
+        } catch {
             this.textDiffContainer.empty();
             const errBox = this.textDiffContainer.createEl('div', { cls: 'vc-empty-hero' });
             errBox.createEl('h4', { text: '无法加载版本内容' });
@@ -174,7 +173,6 @@ export class DiffModal extends Modal {
         }
     }
 
-    // 🌟 修复：统一通过 normalizeText 标准化 \r\n 换行符
     private async fetchContent(verId: string): Promise<string> {
         if (verId === 'current') {
             const raw = await this.app.vault.read(this.file);
@@ -307,7 +305,6 @@ export class DiffModal extends Modal {
         }
     }
 
-    // 🌟 算法优化：剥离相同前后缀再运行 diffChars，消灭万字长行卡死问题
     private fastDiffChars(oldLine: string, newLine: string): Diff.Change[] {
         let prefixLen = 0;
         const minLen = Math.min(oldLine.length, newLine.length);
@@ -330,7 +327,6 @@ export class DiffModal extends Modal {
         const midOld = oldLine.slice(prefixLen, oldEnd);
         const midNew = newLine.slice(prefixLen, newEnd);
         if (midOld.length > 0 || midNew.length > 0) {
-            // 极端长变动（单次修改超 4000 字）退化为单词级比对，保护移动端不卡死
             const changes = (midOld.length + midNew.length > 4000)
                 ? Diff.diffWordsWithSpace(midOld, midNew)
                 : Diff.diffChars(midOld, midNew);
@@ -353,7 +349,6 @@ export class DiffModal extends Modal {
         const rawLineDiff = Diff.diffLines(this.leftContent, this.rightContent, { ignoreWhitespace: this.ignoreWhitespace });
         const hasAnyDiff = rawLineDiff.some(p => p.added || p.removed);
 
-        // 🌟 修复：即使开启忽略空白，在无实质性差异时也正确展现一致提示页，不再展示空白折叠条
         if (this.leftContent === this.rightContent || !hasAnyDiff) {
             this.totalDiffCount = 0;
             this.updateNavStats();
@@ -589,7 +584,6 @@ export class VersionHistoryView extends ItemView {
     private currentResultsBox: HTMLElement | null = null;
     private globalResultsBox: HTMLElement | null = null;
 
-    // 🌟 异步并发令牌，防止快速输入产生列表重渲染乱序
     private currentRenderToken = 0;
     private globalRenderToken = 0;
 
@@ -801,7 +795,6 @@ export class VersionHistoryView extends ItemView {
             return; 
         }
 
-        // 🌟 建立索引映射，保证即便搜索过滤后依然能找对真实的前驱上一版本
         const idToRealIndex = new Map<string, number>();
         allVersions.forEach((ver, idx) => idToRealIndex.set(ver.id, idx));
 
@@ -860,7 +853,6 @@ export class VersionHistoryView extends ItemView {
             });
             typeBadge.setText(this.plugin.getSaveTypeLabel(v.message));
 
-            // 🌟 核心修复：通过 idToRealIndex 找回在完整历史中真正紧邻的上一版本！
             const realIdx = idToRealIndex.get(v.id) ?? -1;
             const realPrevVersion = realIdx !== -1 ? allVersions[realIdx + 1] : undefined;
 
@@ -1094,8 +1086,6 @@ export class VersionHistoryView extends ItemView {
             cardSnapBtn.addEventListener('click', async (e: MouseEvent) => {
                 e.stopPropagation();
                 await this.plugin.createVersion(file, '[Manual Save]', false, [], true);
-                this.plugin.clearGlobalCache();
-                if (this.globalResultsBox) await this.renderGlobalResultsList(this.globalResultsBox);
             });
 
             if (!isUnversioned && version?.id) {
@@ -1195,8 +1185,6 @@ export class VersionHistoryView extends ItemView {
                 return;
             }
             await this.plugin.createVersion(activeFile, '[Manual Save]', false, [], true);
-            this.plugin.clearGlobalCache();
-            if (this.globalResultsBox) await this.renderGlobalResultsList(this.globalResultsBox);
         });
 
         this.globalResultsBox = container.createEl('div', { cls: 'vc-timeline-content-area' });
@@ -1206,10 +1194,9 @@ export class VersionHistoryView extends ItemView {
     async renderGlobalResultsList(timelineArea: HTMLElement) {
         const myToken = ++this.globalRenderToken;
 
-        timelineArea.empty();
-        
         let loadingEl: HTMLElement | null = null;
         if (!this.plugin.globalHistoryCache && !this.plugin.isSnapshotMetaLoaded) {
+            timelineArea.empty();
             loadingEl = timelineArea.createEl('div', { cls: 'vc-timeline-loading' });
             loadingEl.createEl('div', { cls: 'vc-spinner' });
             loadingEl.createEl('span', { text: '正在加载全库时间线...' });
@@ -1225,6 +1212,7 @@ export class VersionHistoryView extends ItemView {
         }
 
         if (myToken !== this.globalRenderToken || !timelineArea.isConnected) return;
+        timelineArea.empty();
 
         if (this.globalSearchQuery) {
             const resultMeta = timelineArea.createEl('div', { cls: 'vc-search-result-meta' });
