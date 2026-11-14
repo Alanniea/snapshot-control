@@ -5,7 +5,7 @@ import {
 } from 'obsidian';
 import * as Diff from 'diff';
 import type VersionControlPlugin from './main';
-import type { VersionData, VersionMeta, GlobalHistoryItem, ViewMode } from './main';
+import type { VersionData, VersionMeta, GlobalHistoryItem, ViewMode, GlobalFilterMode } from './main';
 
 // =======================================================================
 // ==================== 极速轻量化代码审查模态框 ==========================
@@ -130,7 +130,6 @@ export class DiffModal extends Modal {
             text: this.showLineNumbers ? '# 行号' : '# 无行号',
             cls: `vc-toggle-chip ${this.showLineNumbers ? 'is-active' : ''}`
         });
-        // 纯 CSS 切换行号显隐，0ms 响应无需重跑 Diff
         numToggle.addEventListener('click', () => {
             this.showLineNumbers = !this.showLineNumbers;
             numToggle.setText(this.showLineNumbers ? '# 行号' : '# 无行号');
@@ -211,7 +210,9 @@ export class DiffModal extends Modal {
         }));
         this.allVersions.forEach((v: VersionData, idx: number) => {
             const isLatestTag = idx === 0 ? ' [最新]' : '';
-            menu.addItem(i => i.setTitle(`🕒 ${this.plugin.formatTime(v.timestamp)} · ${this.plugin.getSaveTypeLabel(v.message)}${isLatestTag}`).setIcon('history').onClick(() => {
+            const note = this.plugin.getCustomNote(v.message);
+            const noteSuffix = note ? ` · ${note}` : '';
+            menu.addItem(i => i.setTitle(`🕒 ${this.plugin.formatTime(v.timestamp)} · ${this.plugin.getSaveTypeLabel(v.message)}${noteSuffix}${isLatestTag}`).setIcon('history').onClick(() => {
                 if (side === 'left') this.versionId = v.id; else this.secondVersionId = v.id;
                 this.updateDiffView();
             }));
@@ -223,7 +224,6 @@ export class DiffModal extends Modal {
         if (!this.metricsBar) return;
         this.metricsBar.empty();
 
-        // 单次遍历零 GC 分配计算全部指标
         const leftStats = this.plugin.getTextStats(this.leftContent);
         const rightStats = this.plugin.getTextStats(this.rightContent);
 
@@ -326,7 +326,6 @@ export class DiffModal extends Modal {
         const midOld = oldLine.slice(prefixLen, oldEnd);
         const midNew = newLine.slice(prefixLen, newEnd);
         if (midOld.length > 0 || midNew.length > 0) {
-            // 长段落降低阈值至 800，避免 Myers 字符矩阵卡顿
             const changes = (midOld.length + midNew.length > 800)
                 ? Diff.diffWordsWithSpace(midOld, midNew)
                 : Diff.diffChars(midOld, midNew);
@@ -550,16 +549,124 @@ export class DiffModal extends Modal {
 }
 
 // =======================================================================
-// ================= 已删除笔记在线预览与一键复活模态框 ====================
+// ================= 快照备注与标签编辑弹窗 (SnapshotNoteModal) ===========
+// =======================================================================
+export class SnapshotNoteModal extends Modal {
+    constructor(
+        app: App,
+        private plugin: VersionControlPlugin,
+        private file: TFile,
+        private editVersion?: VersionData,
+        private onSaved?: () => void
+    ) {
+        super(app);
+    }
+
+    onOpen() {
+        const { contentEl } = this;
+        contentEl.addClass('vc-note-modal');
+        const isEdit = Boolean(this.editVersion);
+
+        contentEl.createEl('h3', { text: isEdit ? '✏️ 编辑快照备注与标签' : '🏷️ 保存带备注与标签的快照' });
+        contentEl.createEl('div', {
+            text: isEdit
+                ? `${this.file.path} · ${this.plugin.formatTime(this.editVersion!.timestamp)}`
+                : this.file.path,
+            cls: 'vc-note-modal-sub'
+        });
+
+        const noteField = contentEl.createEl('div', { cls: 'vc-note-field' });
+        noteField.createEl('label', { text: '快照备注 (Message)' });
+        const noteInput = noteField.createEl('input', {
+            type: 'text',
+            placeholder: '例如：重大重构前备份 / 提交审稿定稿...'
+        });
+        if (this.editVersion) {
+            noteInput.value = this.plugin.getCustomNote(this.editVersion.message);
+        }
+
+        const tagsField = contentEl.createEl('div', { cls: 'vc-note-field' });
+        tagsField.createEl('label', { text: '标签 (Tags)' });
+        const tagsInput = tagsField.createEl('input', {
+            type: 'text',
+            placeholder: '例如：里程碑, 初稿（用逗号或空格分隔）'
+        });
+        if (this.editVersion?.tags && this.editVersion.tags.length > 0) {
+            tagsInput.value = this.editVersion.tags.join(', ');
+        }
+        tagsField.createEl('div', { text: '支持按备注或标签在时间线中快速检索', cls: 'vc-note-hint' });
+
+        const actions = contentEl.createEl('div', { cls: 'vc-dialog-actions' });
+        const cancelBtn = actions.createEl('button', { text: '取消' });
+        cancelBtn.addEventListener('click', () => this.close());
+
+        const submitBtn = actions.createEl('button', {
+            text: isEdit ? '保存修改' : '保存快照',
+            cls: 'mod-cta'
+        });
+
+        const handleSubmit = async () => {
+            submitBtn.disabled = true;
+            const rawNote = noteInput.value.trim();
+            const tags = Array.from(new Set(
+                tagsInput.value
+                    .split(/[,，\s]+/)
+                    .map(t => t.replace(/^#+/, '').trim())
+                    .filter(Boolean)
+            ));
+
+            try {
+                if (this.editVersion) {
+                    const ok = await this.plugin.updateVersionMeta(this.file.path, this.editVersion.id, rawNote, tags);
+                    if (ok) {
+                        new Notice('✅ 快照备注与标签已更新');
+                        this.onSaved?.();
+                    }
+                } else {
+                    const msg = rawNote ? `[Manual Save] ${rawNote}` : '[Manual Save]';
+                    await this.plugin.createVersion(this.file, msg, true, tags, true);
+                    this.onSaved?.();
+                }
+                this.close();
+            } finally {
+                submitBtn.disabled = false;
+            }
+        };
+
+        submitBtn.addEventListener('click', handleSubmit);
+        const onKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Enter' && !e.isComposing) {
+                e.preventDefault();
+                handleSubmit();
+            }
+        };
+        noteInput.addEventListener('keydown', onKeyDown);
+        tagsInput.addEventListener('keydown', onKeyDown);
+
+        window.setTimeout(() => noteInput.focus(), 20);
+    }
+
+    onClose() { this.contentEl.empty(); }
+}
+
+// =======================================================================
+// ================= 已删除笔记在线预览与多版本复活模态框 ================
 // =======================================================================
 export class DeletedNoteModal extends Modal {
+    private currentVersion: VersionMeta | VersionData;
+    private allVersions: VersionData[] = [];
+    private previewBox: HTMLElement;
+    private sizeSpan: HTMLElement;
+    private versionSelect: HTMLSelectElement;
+
     constructor(
         app: App,
         private plugin: VersionControlPlugin,
         private filePath: string,
-        private version: VersionMeta
+        private initialVersion: VersionMeta
     ) {
         super(app);
+        this.currentVersion = initialVersion;
     }
 
     async onOpen() {
@@ -570,38 +677,102 @@ export class DeletedNoteModal extends Modal {
         const titleArea = header.createEl('div', { cls: 'vc-diff-title-area' });
         const iconSpan = titleArea.createEl('span', { cls: 'vc-diff-type-icon' });
         setIcon(iconSpan, 'trash-2');
-        titleArea.createEl('span', { text: '已删除笔记快照预览', cls: 'vc-diff-filename' });
+        titleArea.createEl('span', { text: '回收站 · 已删除笔记历史', cls: 'vc-diff-filename' });
         titleArea.createEl('span', { text: this.filePath, cls: 'vc-diff-filepath' });
 
-        const metaBar = contentEl.createEl('div', { cls: 'vc-deleted-meta-bar' });
-        metaBar.createEl('span', { text: `🕒 快照时间: ${this.plugin.formatTime(this.version.timestamp)}` });
-        metaBar.createEl('span', { text: `📝 字符数: ${(this.version.size ?? 0).toLocaleString()}` });
+        const metaBar = contentEl.createEl('div', { cls: 'vc-deleted-meta-bar vc-deleted-toolbar' });
 
-        const resurrectBtn = metaBar.createEl('button', {
-            text: '♻️ 立即按原路径复活笔记',
+        this.versionSelect = metaBar.createEl('select', { cls: 'vc-deleted-version-select' });
+        this.versionSelect.createEl('option', {
+            value: this.currentVersion.id,
+            text: `🕒 ${this.plugin.formatTime(this.currentVersion.timestamp)} (加载全部版本中...)`
+        });
+
+        this.sizeSpan = metaBar.createEl('span', { text: `📝 ${(this.currentVersion.size ?? 0).toLocaleString()} 字符` });
+
+        const btnGroup = metaBar.createEl('div', { cls: 'vc-deleted-actions-group' });
+
+        const purgeFileBtn = btnGroup.createEl('button', {
+            text: '🗑️ 彻底销毁',
+            cls: 'mod-warning'
+        });
+        purgeFileBtn.addEventListener('click', () => {
+            new ConfirmModal(
+                this.app,
+                '彻底销毁回收站历史？',
+                `将永久清空「${this.filePath}」的全部历史快照，操作不可逆。`,
+                async () => {
+                    const ok = await this.plugin.deleteAllVersionsForFile(this.filePath);
+                    if (ok) this.close();
+                },
+                '彻底销毁'
+            ).open();
+        });
+
+        const resurrectBtn = btnGroup.createEl('button', {
+            text: '♻️ 复活此版本',
             cls: 'mod-cta'
         });
         resurrectBtn.addEventListener('click', async () => {
             resurrectBtn.disabled = true;
             resurrectBtn.setText('正在复活...');
-            const created = await this.plugin.resurrectDeletedFile(this.filePath, this.version.id);
+            const created = await this.plugin.resurrectDeletedFile(this.filePath, this.currentVersion.id);
             if (created) {
                 this.close();
                 await this.app.workspace.getLeaf(false).openFile(created);
             } else {
                 resurrectBtn.disabled = false;
-                resurrectBtn.setText('♻️ 立即按原路径复活笔记');
+                resurrectBtn.setText('♻️ 复活此版本');
             }
         });
 
-        const previewBox = contentEl.createEl('div', { cls: 'vc-deleted-preview-body' });
-        previewBox.setText('正在读取历史正文...');
+        this.previewBox = contentEl.createEl('div', { cls: 'vc-deleted-preview-body' });
+        this.previewBox.setText('正在读取历史正文...');
 
+        // 并行拉取版本列表与当前选中版本正文
+        const [, versions] = await Promise.all([
+            this.loadVersionPreview(this.currentVersion.id),
+            this.plugin.getAllVersions(this.filePath)
+        ]);
+
+        if (!this.versionSelect.isConnected) return;
+        this.allVersions = versions;
+        if (this.allVersions.length > 0) {
+            this.versionSelect.empty();
+            this.allVersions.forEach((v, idx) => {
+                const note = this.plugin.getCustomNote(v.message);
+                const noteText = note ? ` · ${note}` : '';
+                const latestTag = idx === 0 ? ' [最新]' : '';
+                const opt = this.versionSelect.createEl('option', {
+                    value: v.id,
+                    text: `${this.plugin.formatTime(v.timestamp)} · ${this.plugin.getSaveTypeLabel(v.message)}${noteText} (${v.size.toLocaleString()}字)${latestTag}`
+                });
+                if (v.id === this.currentVersion.id) opt.selected = true;
+            });
+
+            this.versionSelect.addEventListener('change', async () => {
+                const chosen = this.allVersions.find(v => v.id === this.versionSelect.value);
+                if (chosen) {
+                    this.currentVersion = chosen;
+                    this.sizeSpan.setText(`📝 ${(chosen.size ?? 0).toLocaleString()} 字符`);
+                    await this.loadVersionPreview(chosen.id);
+                }
+            });
+        }
+    }
+
+    private async loadVersionPreview(versionId: string) {
+        if (!this.previewBox.isConnected) return;
+        this.previewBox.setText('正在读取历史正文...');
         try {
-            const text = await this.plugin.getVersionContent(this.filePath, this.version.id);
-            previewBox.setText(text || '(空笔记)');
+            const text = await this.plugin.getVersionContent(this.filePath, versionId);
+            if (this.previewBox.isConnected && this.currentVersion.id === versionId) {
+                this.previewBox.setText(text || '(空笔记)');
+            }
         } catch {
-            previewBox.setText('❌ 无法解析历史正文内容');
+            if (this.previewBox.isConnected) {
+                this.previewBox.setText('❌ 无法解析历史正文内容');
+            }
         }
     }
 
@@ -618,10 +789,12 @@ export class VersionHistoryView extends ItemView {
     globalSearchQuery = ''; 
     searchFullText = false;
     currentViewMode: ViewMode = 'current';
+    globalFilterMode: GlobalFilterMode = 'all';
 
     private currentResultsBox: HTMLElement | null = null;
     private globalResultsBox: HTMLElement | null = null;
     private timelineScrollEl: HTMLElement | null = null;
+    private trashCountEl: HTMLElement | null = null;
 
     private currentRenderToken = 0;
     private globalRenderToken = 0;
@@ -629,7 +802,6 @@ export class VersionHistoryView extends ItemView {
     private relTimeEntries: { el: HTMLElement; ts: number }[] = [];
     private tickCount = 0;
 
-    // 搜正文模式会话级正文缓存（避免 50 槽全局 LRU 抖动）
     private searchCacheKey = '';
     private searchContentCache: Map<string, string> = new Map();
     private searchContentCacheChars = 0;
@@ -692,7 +864,6 @@ export class VersionHistoryView extends ItemView {
             })
         );
 
-        // 普通打字修改不再触发当前笔记视图重绘，全球时间线修改已由主插件防抖批量同步后驱动
         this.registerEvent(this.app.vault.on('rename', () => this.debouncedStructuralRefresh()));
         this.registerEvent(this.app.vault.on('delete', () => this.debouncedStructuralRefresh()));
 
@@ -707,6 +878,7 @@ export class VersionHistoryView extends ItemView {
         this.currentResultsBox = null;
         this.globalResultsBox = null;
         this.timelineScrollEl = null;
+        this.trashCountEl = null;
         this.currentFile = null;
     }
 
@@ -763,6 +935,7 @@ export class VersionHistoryView extends ItemView {
         this.currentResultsBox = null;
         this.globalResultsBox = null;
         this.timelineScrollEl = null;
+        this.trashCountEl = null;
         this.relTimeEntries = [];
 
         const buffer = container.createDiv({ cls: 'vc-root-shell' });
@@ -817,7 +990,7 @@ export class VersionHistoryView extends ItemView {
         
         const searchInput = searchBox.createEl('input', { 
             type: 'text', 
-            placeholder: this.searchFullText ? '搜索正文内容...' : '搜索快照或标签...' 
+            placeholder: this.searchFullText ? '搜索正文内容...' : '搜索备注或标签...' 
         });
         searchInput.value = this.searchQuery;
 
@@ -839,7 +1012,7 @@ export class VersionHistoryView extends ItemView {
             this.searchFullText = !this.searchFullText;
             if (!this.searchFullText) this.invalidateSearchCache();
             innerToggle.toggleClass('is-active', this.searchFullText);
-            searchInput.placeholder = this.searchFullText ? '搜索正文内容...' : '搜索快照或标签...';
+            searchInput.placeholder = this.searchFullText ? '搜索正文内容...' : '搜索备注或标签...';
             if (this.currentResultsBox) this.renderCurrentResultsList(this.currentResultsBox, file, false);
         });
 
@@ -856,6 +1029,15 @@ export class VersionHistoryView extends ItemView {
             this.searchQuery = (e.target as HTMLInputElement).value;
             clearBtn.style.display = this.searchQuery ? 'flex' : 'none';
             this.debouncedSearchCurrent(); 
+        });
+
+        const noteSnapBtn = actionHeader.createEl('button', {
+            cls: 'vc-btn-note-snap',
+            attr: { 'aria-label': '保存带备注与标签的快照' }
+        });
+        setIcon(noteSnapBtn, 'tag');
+        noteSnapBtn.addEventListener('click', () => {
+            new SnapshotNoteModal(this.app, this.plugin, file).open();
         });
 
         const snapBtn = actionHeader.createEl('button', { cls: 'vc-btn-record', attr: { 'aria-label': '立即保存快照' } });
@@ -929,7 +1111,11 @@ export class VersionHistoryView extends ItemView {
                 }
                 filteredVersions = matched;
             } else {
-                filteredVersions = allVersions.filter((v: VersionData) => v.message.toLowerCase().includes(q) || (v.tags && v.tags.some(t => t.toLowerCase().includes(q))));
+                const cleanQ = q.replace(/^#+/, '');
+                filteredVersions = allVersions.filter((v: VersionData) =>
+                    v.message.toLowerCase().includes(q) ||
+                    (v.tags && v.tags.some(t => t.toLowerCase().includes(cleanQ)))
+                );
             }
         }
 
@@ -987,8 +1173,13 @@ export class VersionHistoryView extends ItemView {
 
             if (v.tags) {
                 v.tags.forEach((t: string) => {
-                    badgeGroup.createEl('span', { cls: 'vc-tag-custom', text: t });
+                    badgeGroup.createEl('span', { cls: 'vc-tag-custom', text: `#${t}` });
                 });
+            }
+
+            const customNote = this.plugin.getCustomNote(v.message);
+            if (customNote) {
+                top.createEl('div', { cls: 'vc-custom-note', text: `📝 ${customNote}` });
             }
 
             const timeWrap = top.createEl('div', { cls: 'vc-timeline-time-box' });
@@ -1017,6 +1208,18 @@ export class VersionHistoryView extends ItemView {
                 e.stopPropagation();
                 await this.plugin.toggleVersionStar(file.path, v.id);
                 this.renderCurrentResultsList(resultsContainer, file, true);
+            });
+
+            const editMetaBtn = actions.createEl('button', {
+                cls: 'vc-timeline-icon-btn',
+                attr: { 'aria-label': '编辑备注与标签' }
+            });
+            setIcon(editMetaBtn, 'pencil');
+            editMetaBtn.addEventListener('click', (e: MouseEvent) => {
+                e.stopPropagation();
+                new SnapshotNoteModal(this.app, this.plugin, file, v, () => {
+                    this.renderCurrentResultsList(resultsContainer, file, true);
+                }).open();
             });
 
             const prevDiffBtn = actions.createEl('button', { 
@@ -1161,6 +1364,19 @@ export class VersionHistoryView extends ItemView {
             });
         }
 
+        if (!isUnversioned && version?.tags && version.tags.length > 0) {
+            version.tags.forEach(t => {
+                badgesWrap.createEl('span', { cls: 'vc-tag-custom', text: `#${t}` });
+            });
+        }
+
+        if (!isUnversioned) {
+            const customNote = this.plugin.getCustomNote(message);
+            if (customNote) {
+                top.createEl('div', { cls: 'vc-custom-note', text: `📝 ${customNote}` });
+            }
+        }
+
         const timeCol = top.createEl('div', { cls: 'vc-global-time-col' });
 
         if (file && file.stat && file.stat.mtime) {
@@ -1227,7 +1443,7 @@ export class VersionHistoryView extends ItemView {
         } else if (version?.id) {
             const previewBtn = actions.createEl('button', { 
                 cls: 'vc-timeline-icon-btn', 
-                attr: { 'aria-label': '预览已删除笔记的快照内容' } 
+                attr: { 'aria-label': '浏览全部版本与内容预览' } 
             });
             setIcon(previewBtn, 'eye');
             previewBtn.addEventListener('click', (e: MouseEvent) => {
@@ -1252,13 +1468,19 @@ export class VersionHistoryView extends ItemView {
         return item;
     }
 
+    private updateTrashCountBadge() {
+        if (!this.trashCountEl || !this.trashCountEl.isConnected) return;
+        const count = this.plugin.getGlobalTrashCount();
+        this.trashCountEl.setText(count > 0 ? `(${count})` : '');
+    }
+
     async renderGlobalHistory(container: HTMLElement) {
         const actionHeader = container.createEl('div', { cls: 'vc-timeline-search-bar' });
         const searchBox = actionHeader.createEl('div', { cls: 'vc-search-capsule' });
         const searchIcon = searchBox.createEl('span', { cls: 'vc-search-icon' });
         setIcon(searchIcon, 'search');
 
-        const searchInput = searchBox.createEl('input', { type: 'text', placeholder: '搜索全库笔记或路径...' });
+        const searchInput = searchBox.createEl('input', { type: 'text', placeholder: '搜索笔记路径、备注或标签...' });
         searchInput.value = this.globalSearchQuery;
 
         const clearBtn = searchBox.createEl('button', { 
@@ -1312,6 +1534,67 @@ export class VersionHistoryView extends ItemView {
             await this.plugin.createVersion(activeFile, '[Manual Save]', false, [], true);
         });
 
+        // 筛选胶囊栏 + 全局一键归档变动
+        const filterBar = container.createEl('div', { cls: 'vc-global-filter-bar' });
+        const pillsGroup = filterBar.createEl('div', { cls: 'vc-filter-pills-group' });
+
+        const filterDefs: { id: GlobalFilterMode; label: string; isTrash?: boolean }[] = [
+            { id: 'all', label: '全部' },
+            { id: 'unsaved', label: '● 未保存' },
+            { id: 'trash', label: '🗑️ 回收站', isTrash: true },
+            { id: 'starred', label: '⭐ 星标' }
+        ];
+
+        const pillButtons: Map<GlobalFilterMode, HTMLButtonElement> = new Map();
+        filterDefs.forEach(def => {
+            const pill = pillsGroup.createEl('button', {
+                cls: `vc-filter-pill ${def.isTrash ? 'is-trash' : ''} ${this.globalFilterMode === def.id ? 'is-active' : ''}`
+            });
+            pill.createEl('span', { text: def.label });
+            if (def.isTrash) {
+                this.trashCountEl = pill.createEl('span', { cls: 'vc-filter-count' });
+                this.updateTrashCountBadge();
+            }
+            pillButtons.set(def.id, pill);
+
+            pill.addEventListener('click', async () => {
+                if (this.globalFilterMode === def.id) return;
+                this.globalFilterMode = def.id;
+                pillButtons.forEach((btn, mode) => btn.toggleClass('is-active', mode === def.id));
+                if (this.globalResultsBox) {
+                    await this.renderGlobalResultsList(this.globalResultsBox, false);
+                }
+            });
+        });
+
+        const batchBtn = filterBar.createEl('button', {
+            cls: 'vc-btn-batch-snap',
+            attr: { 'aria-label': '一键为全库所有未保存改动的笔记创建快照' }
+        });
+        setIcon(batchBtn, 'layers');
+        batchBtn.createEl('span', { text: '归档全部变动' });
+        batchBtn.addEventListener('click', () => {
+            new ConfirmModal(
+                this.app,
+                '一键归档所有变动笔记？',
+                '将为全库所有存在未保存改动的笔记（含未建过快照的笔记）生成手动快照。内容未变化的文件会自动去重跳过。',
+                async () => {
+                    batchBtn.disabled = true;
+                    try {
+                        const res = await this.plugin.snapshotAllModifiedNotes();
+                        if (res.savedCount > 0) {
+                            new Notice(`✅ 批量归档完成：已为 ${res.savedCount} 篇笔记创建快照`);
+                        } else {
+                            new Notice('✨ 所有笔记均已是最新快照，无需归档');
+                        }
+                    } finally {
+                        if (batchBtn.isConnected) batchBtn.disabled = false;
+                    }
+                },
+                '立即归档'
+            ).open();
+        });
+
         this.globalResultsBox = container.createEl('div', { cls: 'vc-timeline-content-area' });
         await this.renderGlobalResultsList(this.globalResultsBox, false);
     }
@@ -1329,9 +1612,10 @@ export class VersionHistoryView extends ItemView {
             loadingEl.createEl('span', { text: '正在加载全库时间线...' });
         }
 
+        const fetchLimit = this.globalFilterMode === 'all' ? 100 : 300;
         let history: GlobalHistoryItem[] = [];
         try {
-            history = await this.plugin.getGlobalHistory(100, this.globalSearchQuery);
+            history = await this.plugin.getGlobalHistory(fetchLimit, this.globalSearchQuery, this.globalFilterMode);
         } catch (e) {
             console.error('获取全库时间线失败:', e);
         } finally {
@@ -1341,18 +1625,40 @@ export class VersionHistoryView extends ItemView {
         if (myToken !== this.globalRenderToken || !timelineArea.isConnected) return;
         this.relTimeEntries = [];
         timelineArea.empty();
+        this.updateTrashCountBadge();
 
-        if (this.globalSearchQuery) {
+        if (this.globalSearchQuery || this.globalFilterMode !== 'all') {
             const resultMeta = timelineArea.createEl('div', { cls: 'vc-search-result-meta' });
-            resultMeta.setText(`搜索到 ${history.length} 篇匹配笔记`);
+            const modeLabelMap: Record<GlobalFilterMode, string> = {
+                all: '全库匹配',
+                unsaved: '未保存改动',
+                trash: '回收站已删除笔记',
+                starred: '含星标快照笔记'
+            };
+            resultMeta.setText(`${modeLabelMap[this.globalFilterMode]}：${history.length} 篇`);
         }
 
         if (history.length === 0) {
             const empty = timelineArea.createEl('div', { cls: 'vc-timeline-empty' });
             const icon = empty.createEl('div', { cls: 'vc-timeline-empty-icon' });
-            setIcon(icon, 'history');
-            empty.createEl('h4', { text: this.globalSearchQuery ? '未找到匹配笔记' : '暂无笔记快照' });
-            empty.createEl('p', { text: this.globalSearchQuery ? '请尝试更换关键词或清空搜索条件。' : '打开任意笔记并点击右上角「保存快照」即可开始版本控制。' });
+            setIcon(icon, this.globalFilterMode === 'trash' ? 'trash-2' : 'history');
+
+            if (this.globalSearchQuery) {
+                empty.createEl('h4', { text: '未找到匹配笔记' });
+                empty.createEl('p', { text: '请尝试更换关键词或切换上方筛选条件。' });
+            } else if (this.globalFilterMode === 'trash') {
+                empty.createEl('h4', { text: '回收站空空如也' });
+                empty.createEl('p', { text: '已删除但保留有快照的笔记会出现在这里，支持随时预览和按原路径复活。' });
+            } else if (this.globalFilterMode === 'unsaved') {
+                empty.createEl('h4', { text: '所有笔记均已快照归档' });
+                empty.createEl('p', { text: '当前工作区没有任何未保存为快照的新改动。' });
+            } else if (this.globalFilterMode === 'starred') {
+                empty.createEl('h4', { text: '暂无星标收藏笔记' });
+                empty.createEl('p', { text: '在任意笔记的时间轴上点击星标图标，即可将关键版本设为永久里程碑。' });
+            } else {
+                empty.createEl('h4', { text: '暂无笔记快照' });
+                empty.createEl('p', { text: '打开任意笔记并点击右上角「保存快照」即可开始版本控制。' });
+            }
             return;
         }
 
@@ -1463,6 +1769,7 @@ export class VersionControlSettingTab extends PluginSettingTab {
         
         containerEl.createEl('h2', { text: '版本控制设置' });
 
+        // 1. 存储分析仪表盘
         const statsBox = containerEl.createEl('div', { cls: 'vc-storage-dashboard' });
         statsBox.createEl('div', { text: '📊 存储占用分析与健康管理', cls: 'vc-storage-header' });
 
@@ -1521,7 +1828,8 @@ export class VersionControlSettingTab extends PluginSettingTab {
             }
         });
 
-        containerEl.createEl('h3', { text: '常规选项', cls: 'vc-settings-subhead' });
+        // 2. 自动保存与过滤规则
+        containerEl.createEl('h3', { text: '自动保存与排除范围', cls: 'vc-settings-subhead' });
 
         new Setting(containerEl)
             .setName('修改自动保存')
@@ -1532,24 +1840,138 @@ export class VersionControlSettingTab extends PluginSettingTab {
             }));
 
         new Setting(containerEl)
-            .setName('保存延迟时间')
-            .setDesc('停止键入等待多少分钟后自动触发快照（例如输入 10 代表 10 分钟）')
+            .setName('保存延迟时间（分钟）')
+            .setDesc('停止键入等待多少分钟后自动触发快照（例如输入 3 代表 3 分钟）')
             .addText(text => {
                 text.inputEl.type = 'number';
                 text.inputEl.min = '0.5';
-                text.inputEl.step = '1';
+                text.inputEl.step = '0.5';
                 text.inputEl.style.width = '80px';
                 text.inputEl.style.textAlign = 'center';
                 text.setPlaceholder('3')
                     .setValue(String(this.plugin.settings.autoSaveDelayOnModify ?? 3))
                     .onChange(async (val: string) => {
-                        let num = parseFloat(val);
+                        const num = parseFloat(val);
                         if (!isNaN(num) && num > 0) {
                             this.plugin.settings.autoSaveDelayOnModify = num;
                             await this.plugin.saveSettings();
                         }
                     });
             });
+
+        new Setting(containerEl)
+            .setName('内容去重')
+            .setDesc('如果当前文本与最新快照内容完全一致，自动跳过保存，防止重复冗余')
+            .addToggle(t => t.setValue(this.plugin.settings.enableDeduplication).onChange(async (v: boolean) => {
+                this.plugin.settings.enableDeduplication = v;
+                await this.plugin.saveSettings();
+            }));
+
+        new Setting(containerEl)
+            .setName('排除文件夹')
+            .setDesc('不追踪这些目录内的笔记变化（每行填写一个相对于库根目录的路径，例如 Templates 或 Daily/Archive）')
+            .addTextArea(area => {
+                area.inputEl.addClass('vc-settings-textarea');
+                area.setPlaceholder('Templates\nAttachments\nExcalidraw')
+                    .setValue((this.plugin.settings.excludedFolders || []).join('\n'));
+                area.inputEl.addEventListener('change', async () => {
+                    this.plugin.settings.excludedFolders = area.getValue()
+                        .split('\n')
+                        .map(s => s.trim().replace(/^\/+|\/+$/g, ''))
+                        .filter(Boolean);
+                    await this.plugin.saveSettings();
+                    this.plugin.clearGlobalCache();
+                    this.plugin.refreshVersionHistoryView();
+                });
+            });
+
+        // 3. 自动清理与回收站策略
+        containerEl.createEl('h3', { text: '历史清理与回收站策略', cls: 'vc-settings-subhead' });
+
+        const clearRulesBox = containerEl.createDiv();
+        const updateClearRulesVisibility = () => {
+            clearRulesBox.style.display = this.plugin.settings.autoClear ? 'block' : 'none';
+        };
+
+        new Setting(containerEl)
+            .setName('自动清理旧快照')
+            .setDesc('保存新快照时，自动按下方策略清理超限或超期的未标星快照（标星版本永远受到保护）')
+            .addToggle(t => t.setValue(this.plugin.settings.autoClear).onChange(async (v: boolean) => {
+                this.plugin.settings.autoClear = v;
+                await this.plugin.saveSettings();
+                updateClearRulesVisibility();
+            }));
+
+        // 把开启自动清理的子项放入容器并插在控制容器之后
+        containerEl.appendChild(clearRulesBox);
+        updateClearRulesVisibility();
+
+        new Setting(clearRulesBox)
+            .setName('限制单篇最大版本数')
+            .setDesc('开启后，单篇笔记的非标星版本超出上限时将自动淘汰最早的历史')
+            .addToggle(t => t.setValue(this.plugin.settings.enableMaxVersions).onChange(async (v: boolean) => {
+                this.plugin.settings.enableMaxVersions = v;
+                await this.plugin.saveSettings();
+            }));
+
+        new Setting(clearRulesBox)
+            .setName('单篇最多保留版本数')
+            .setDesc('每篇笔记保留的快照数量上限（建议 20 ~ 200）')
+            .addText(text => {
+                text.inputEl.type = 'number';
+                text.inputEl.min = '1';
+                text.inputEl.step = '1';
+                text.inputEl.style.width = '80px';
+                text.inputEl.style.textAlign = 'center';
+                text.setPlaceholder('50')
+                    .setValue(String(this.plugin.settings.maxVersions ?? 50))
+                    .onChange(async (val: string) => {
+                        const num = parseInt(val, 10);
+                        if (!isNaN(num) && num >= 1) {
+                            this.plugin.settings.maxVersions = num;
+                            await this.plugin.saveSettings();
+                        }
+                    });
+            });
+
+        new Setting(clearRulesBox)
+            .setName('按天数自动清理过期快照')
+            .setDesc('自动移除早于指定天数的未标星旧快照')
+            .addToggle(t => t.setValue(this.plugin.settings.enableMaxDays).onChange(async (v: boolean) => {
+                this.plugin.settings.enableMaxDays = v;
+                await this.plugin.saveSettings();
+            }));
+
+        new Setting(clearRulesBox)
+            .setName('快照保留天数')
+            .setDesc('超过该天数的未标星快照将被自动清理')
+            .addText(text => {
+                text.inputEl.type = 'number';
+                text.inputEl.min = '1';
+                text.inputEl.step = '1';
+                text.inputEl.style.width = '80px';
+                text.inputEl.style.textAlign = 'center';
+                text.setPlaceholder('30')
+                    .setValue(String(this.plugin.settings.maxDays ?? 30))
+                    .onChange(async (val: string) => {
+                        const num = parseInt(val, 10);
+                        if (!isNaN(num) && num >= 1) {
+                            this.plugin.settings.maxDays = num;
+                            await this.plugin.saveSettings();
+                        }
+                    });
+            });
+
+        new Setting(containerEl)
+            .setName('删除笔记时同步删除版本历史')
+            .setDesc('关闭时（推荐）将保留已删除笔记的全部历史快照，可在「全库时间线 → 回收站」随时预览并一键复活原笔记')
+            .addToggle(t => t.setValue(this.plugin.settings.deleteHistoryOnDelete).onChange(async (v: boolean) => {
+                this.plugin.settings.deleteHistoryOnDelete = v;
+                await this.plugin.saveSettings();
+            }));
+
+        // 4. 存储引擎与路径
+        containerEl.createEl('h3', { text: '存储引擎与目录', cls: 'vc-settings-subhead' });
 
         new Setting(containerEl)
             .setName('原生流压缩 (gzip)')
@@ -1564,6 +1986,81 @@ export class VersionControlSettingTab extends PluginSettingTab {
             .setDesc('仅记录差异增量，防止全量副本膨胀')
             .addToggle(t => t.setValue(this.plugin.settings.enableIncrementalStorage).onChange(async (v: boolean) => {
                 this.plugin.settings.enableIncrementalStorage = v;
+                await this.plugin.saveSettings();
+            }));
+
+        new Setting(containerEl)
+            .setName('增量基线重建间隔')
+            .setDesc('连续多少个增量补丁后重新保留一份完整基线快照（建议 5 ~ 20，越小读取越快但略占空间）')
+            .addText(text => {
+                text.inputEl.type = 'number';
+                text.inputEl.min = '1';
+                text.inputEl.max = '100';
+                text.inputEl.step = '1';
+                text.inputEl.style.width = '80px';
+                text.inputEl.style.textAlign = 'center';
+                text.setPlaceholder('10')
+                    .setValue(String(this.plugin.settings.rebuildBaseInterval ?? 10))
+                    .onChange(async (val: string) => {
+                        const num = parseInt(val, 10);
+                        if (!isNaN(num) && num >= 1) {
+                            this.plugin.settings.rebuildBaseInterval = num;
+                            await this.plugin.saveSettings();
+                        }
+                    });
+            });
+
+        let pendingFolderPath = this.plugin.settings.versionFolder;
+        new Setting(containerEl)
+            .setName('版本仓库存储目录')
+            .setDesc('历史快照文件存放的隐藏文件夹路径（修改后需点击右侧「应用目录」）')
+            .addText(text => {
+                text.setPlaceholder('.versions')
+                    .setValue(this.plugin.settings.versionFolder)
+                    .onChange((val: string) => {
+                        pendingFolderPath = val.trim();
+                    });
+            })
+            .addButton(btn => {
+                btn.setButtonText('应用目录').onClick(() => {
+                    const cleanNew = pendingFolderPath.replace(/^\/+|\/+$/g, '');
+                    if (!cleanNew) {
+                        new Notice('❌ 目录路径不能为空');
+                        return;
+                    }
+                    if (cleanNew === this.plugin.settings.versionFolder) {
+                        new Notice('ℹ️ 目录路径未发生变化');
+                        return;
+                    }
+                    new ConfirmModal(
+                        this.app,
+                        '迁移并切换版本目录？',
+                        `将把现有目录「${this.plugin.settings.versionFolder}」中的全部历史快照文件自动迁移到「${cleanNew}」并重建索引。`,
+                        async () => {
+                            await this.plugin.migrateVersionFolder(cleanNew, true);
+                            await this.display();
+                        },
+                        '确认迁移'
+                    ).open();
+                });
+            });
+
+        // 5. 界面与通知
+        containerEl.createEl('h3', { text: '界面与通知', cls: 'vc-settings-subhead' });
+
+        new Setting(containerEl)
+            .setName('状态栏显示快照与实时字数变动')
+            .setDesc('在底部状态栏实时显示最近快照时间及未快照字数差值，点击可快速对比差异')
+            .addToggle(t => t.setValue(this.plugin.settings.enableStatusBarDiff).onChange(async (v: boolean) => {
+                this.plugin.settings.enableStatusBarDiff = v;
+                await this.plugin.saveSettings();
+            }));
+
+        new Setting(containerEl)
+            .setName('显示操作提示通知')
+            .setDesc('手动保存快照或恢复版本时在右上角显示提示消息')
+            .addToggle(t => t.setValue(this.plugin.settings.showNotifications).onChange(async (v: boolean) => {
+                this.plugin.settings.showNotifications = v;
                 await this.plugin.saveSettings();
             }));
     }
