@@ -5,7 +5,7 @@ import {
 } from 'obsidian';
 import * as Diff from 'diff';
 import type VersionControlPlugin from './main';
-import type { VersionData, GlobalHistoryItem, ViewMode } from './main';
+import type { VersionData, VersionMeta, GlobalHistoryItem, ViewMode } from './main';
 
 // =======================================================================
 // ==================== 极速轻量化代码审查模态框 ==========================
@@ -24,6 +24,7 @@ export class DiffModal extends Modal {
     private diffElements: HTMLElement[] = [];
     private currentDiffIdx = 0;
     private totalDiffCount = 0;
+    private renderToken = 0;
     
     private metricsBar: HTMLElement;
     private textDiffContainer: HTMLElement;
@@ -129,11 +130,12 @@ export class DiffModal extends Modal {
             text: this.showLineNumbers ? '# 行号' : '# 无行号',
             cls: `vc-toggle-chip ${this.showLineNumbers ? 'is-active' : ''}`
         });
+        // 纯 CSS 切换行号显隐，0ms 响应无需重跑 Diff
         numToggle.addEventListener('click', () => {
             this.showLineNumbers = !this.showLineNumbers;
             numToggle.setText(this.showLineNumbers ? '# 行号' : '# 无行号');
             numToggle.toggleClass('is-active', this.showLineNumbers);
-            this.renderDiff();
+            this.textDiffContainer.toggleClass('vc-hide-gutter', !this.showLineNumbers);
         });
 
         const wsToggle = togglesGroup.createEl('button', { 
@@ -148,6 +150,7 @@ export class DiffModal extends Modal {
         });
 
         this.textDiffContainer = contentEl.createEl('div', { cls: 'vc-diff-viewport' });
+        this.textDiffContainer.toggleClass('vc-hide-gutter', !this.showLineNumbers);
 
         try {
             const [versions, left, right] = await Promise.all([
@@ -164,7 +167,7 @@ export class DiffModal extends Modal {
             this.updateChipText(rightBtn, this.secondVersionId, '右侧');
 
             this.renderMetricsBar();
-            this.renderDiff();
+            await this.renderDiff();
         } catch {
             this.textDiffContainer.empty();
             const errBox = this.textDiffContainer.createEl('div', { cls: 'vc-empty-hero' });
@@ -220,17 +223,13 @@ export class DiffModal extends Modal {
         if (!this.metricsBar) return;
         this.metricsBar.empty();
 
-        const leftLines = this.leftContent ? this.leftContent.split('\n').length : 0;
-        const rightLines = this.rightContent ? this.rightContent.split('\n').length : 0;
-        const diffLines = rightLines - leftLines;
+        // 单次遍历零 GC 分配计算全部指标
+        const leftStats = this.plugin.getTextStats(this.leftContent);
+        const rightStats = this.plugin.getTextStats(this.rightContent);
 
-        const leftWords = this.plugin.countWords(this.leftContent);
-        const rightWords = this.plugin.countWords(this.rightContent);
-        const diffWords = rightWords - leftWords;
-
-        const leftChars = this.leftContent.length;
-        const rightChars = this.rightContent.length;
-        const diffChars = rightChars - leftChars;
+        const diffLines = rightStats.lines - leftStats.lines;
+        const diffWords = rightStats.words - leftStats.words;
+        const diffChars = rightStats.chars - leftStats.chars;
 
         const formatDelta = (delta: number) => delta > 0 ? `+${delta.toLocaleString()}` : (delta < 0 ? `${delta.toLocaleString()}` : '+0');
         const getDeltaClass = (delta: number) => delta > 0 ? 'is-plus' : (delta < 0 ? 'is-minus' : 'is-zero');
@@ -252,9 +251,9 @@ export class DiffModal extends Modal {
             dataWrap.createEl('span', { text: rightVal.toLocaleString(), cls: 'vc-metric-new', attr: { title: '右侧版本' } });
         };
 
-        buildMetricItem('行数', 'rows', leftLines, rightLines, diffLines);
-        buildMetricItem('词数', 'file-text', leftWords, rightWords, diffWords);
-        buildMetricItem('字符数', 'type', leftChars, rightChars, diffChars);
+        buildMetricItem('行数', 'rows', leftStats.lines, rightStats.lines, diffLines);
+        buildMetricItem('词数', 'file-text', leftStats.words, rightStats.words, diffWords);
+        buildMetricItem('字符数', 'type', leftStats.chars, rightStats.chars, diffChars);
     }
 
     async updateDiffView() {
@@ -272,7 +271,7 @@ export class DiffModal extends Modal {
             this.rightContent = right;
 
             this.renderMetricsBar();
-            this.renderDiff();
+            await this.renderDiff();
         } catch {
             this.textDiffContainer.empty();
             const errBox = this.textDiffContainer.createEl('div', { cls: 'vc-empty-hero' });
@@ -327,7 +326,8 @@ export class DiffModal extends Modal {
         const midOld = oldLine.slice(prefixLen, oldEnd);
         const midNew = newLine.slice(prefixLen, newEnd);
         if (midOld.length > 0 || midNew.length > 0) {
-            const changes = (midOld.length + midNew.length > 4000)
+            // 长段落降低阈值至 800，避免 Myers 字符矩阵卡顿
+            const changes = (midOld.length + midNew.length > 800)
                 ? Diff.diffWordsWithSpace(midOld, midNew)
                 : Diff.diffChars(midOld, midNew);
             result.push(...changes);
@@ -341,8 +341,10 @@ export class DiffModal extends Modal {
         return result;
     }
 
-    renderDiff() {
+    async renderDiff() {
+        const myToken = ++this.renderToken;
         this.textDiffContainer.empty();
+        this.textDiffContainer.toggleClass('vc-hide-gutter', !this.showLineNumbers);
         this.diffElements = [];
         this.currentDiffIdx = 0;
 
@@ -371,7 +373,32 @@ export class DiffModal extends Modal {
 
         let oldLineNum = 1;
         let newLineNum = 1;
-        const frag = document.createDocumentFragment();
+        let frag = document.createDocumentFragment();
+        let batchLines = 0;
+        let jumpedToFirst = false;
+
+        const flushBatchIfNeeded = async (force = false) => {
+            if (!force && batchLines < 350) return false;
+            if (batchLines === 0 && !force) return false;
+
+            this.textDiffContainer.appendChild(frag);
+            frag = document.createDocumentFragment();
+            batchLines = 0;
+
+            this.totalDiffCount = this.diffElements.length;
+            this.updateNavStats();
+
+            if (!jumpedToFirst && this.diffElements.length > 0) {
+                jumpedToFirst = true;
+                this.navigateDiff(0);
+            }
+
+            if (!force) {
+                await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+                if (myToken !== this.renderToken || !this.textDiffContainer.isConnected) return true;
+            }
+            return false;
+        };
 
         for (let i = 0; i < rawLineDiff.length; i++) {
             const part = rawLineDiff[i]!;
@@ -393,11 +420,7 @@ export class DiffModal extends Modal {
 
                         const lineEl = document.createElement('div');
                         lineEl.className = 'vc-diff-line vc-diff-line-modified';
-
-                        if (this.showLineNumbers) {
-                            this.buildGutter(lineEl, curOld, curNew);
-                        }
-
+                        this.buildGutter(lineEl, curOld, curNew);
                         lineEl.createEl('span', { cls: 'vc-diff-sign', text: '~' });
                         
                         const textSpan = lineEl.createEl('span', { cls: 'vc-diff-code' });
@@ -412,21 +435,31 @@ export class DiffModal extends Modal {
                         });
                         this.diffElements.push(lineEl);
                         frag.appendChild(lineEl);
+                        batchLines++;
                     } else if (lLine !== undefined) {
                         frag.appendChild(this.buildLineDOM('-', lLine, 'removed', oldLineNum++, null));
+                        batchLines++;
                     } else if (rLine !== undefined) {
                         frag.appendChild(this.buildLineDOM('+', rLine, 'added', null, newLineNum++));
+                        batchLines++;
                     }
+                    if (await flushBatchIfNeeded()) return;
                 }
                 i++;
             } else if (part.added) {
-                part.value.replace(/\n$/, '').split('\n').forEach((l: string) => {
-                    frag.appendChild(this.buildLineDOM('+', l, 'added', null, newLineNum++));
-                });
+                const lines = part.value.replace(/\n$/, '').split('\n');
+                for (let j = 0; j < lines.length; j++) {
+                    frag.appendChild(this.buildLineDOM('+', lines[j]!, 'added', null, newLineNum++));
+                    batchLines++;
+                    if (await flushBatchIfNeeded()) return;
+                }
             } else if (part.removed) {
-                part.value.replace(/\n$/, '').split('\n').forEach((l: string) => {
-                    frag.appendChild(this.buildLineDOM('-', l, 'removed', oldLineNum++, null));
-                });
+                const lines = part.value.replace(/\n$/, '').split('\n');
+                for (let j = 0; j < lines.length; j++) {
+                    frag.appendChild(this.buildLineDOM('-', lines[j]!, 'removed', oldLineNum++, null));
+                    batchLines++;
+                    if (await flushBatchIfNeeded()) return;
+                }
             } else {
                 const contextLines = part.value.replace(/\n$/, '').split('\n');
                 const len = contextLines.length;
@@ -437,6 +470,7 @@ export class DiffModal extends Modal {
 
                     for (let h = 0; h < headKeep; h++) {
                         frag.appendChild(this.buildLineDOM(' ', contextLines[h]!, 'context', oldLineNum++, newLineNum++));
+                        batchLines++;
                     }
 
                     const foldCount = len - headKeep - tailKeep;
@@ -460,24 +494,30 @@ export class DiffModal extends Modal {
                     });
 
                     frag.appendChild(foldBar);
+                    batchLines++;
 
                     for (let t = len - tailKeep; t < len; t++) {
                         frag.appendChild(this.buildLineDOM(' ', contextLines[t]!, 'context', oldLineNum++, newLineNum++));
+                        batchLines++;
                     }
+                    if (await flushBatchIfNeeded()) return;
                 } else {
-                    contextLines.forEach((l: string) => {
-                        frag.appendChild(this.buildLineDOM(' ', l, 'context', oldLineNum++, newLineNum++));
-                    });
+                    for (let j = 0; j < len; j++) {
+                        frag.appendChild(this.buildLineDOM(' ', contextLines[j]!, 'context', oldLineNum++, newLineNum++));
+                        batchLines++;
+                        if (await flushBatchIfNeeded()) return;
+                    }
                 }
             }
         }
 
-        this.textDiffContainer.appendChild(frag);
-        this.totalDiffCount = this.diffElements.length;
-        this.updateNavStats();
-        
-        if (this.totalDiffCount > 0) {
-            setTimeout(() => this.navigateDiff(0), 20);
+        await flushBatchIfNeeded(true);
+        if (!jumpedToFirst && this.totalDiffCount > 0) {
+            setTimeout(() => {
+                if (myToken === this.renderToken && this.textDiffContainer.isConnected) {
+                    this.navigateDiff(0);
+                }
+            }, 20);
         }
     }
 
@@ -491,10 +531,7 @@ export class DiffModal extends Modal {
         const lineEl = document.createElement('div');
         lineEl.className = `vc-diff-line vc-diff-line-${type}`;
 
-        if (this.showLineNumbers) {
-            this.buildGutter(lineEl, oldNum, newNum);
-        }
-
+        this.buildGutter(lineEl, oldNum, newNum);
         lineEl.createEl('span', { cls: 'vc-diff-sign', text: marker });
         lineEl.createEl('span', { cls: 'vc-diff-code', text });
         if (type !== 'context') this.diffElements.push(lineEl);
@@ -502,6 +539,7 @@ export class DiffModal extends Modal {
     }
 
     onClose() {
+        this.renderToken++;
         if (this.textDiffContainer) {
             this.textDiffContainer.style.display = 'none';
             this.textDiffContainer.remove();
@@ -519,7 +557,7 @@ export class DeletedNoteModal extends Modal {
         app: App,
         private plugin: VersionControlPlugin,
         private filePath: string,
-        private version: VersionData
+        private version: VersionMeta
     ) {
         super(app);
     }
@@ -583,11 +621,20 @@ export class VersionHistoryView extends ItemView {
 
     private currentResultsBox: HTMLElement | null = null;
     private globalResultsBox: HTMLElement | null = null;
+    private timelineScrollEl: HTMLElement | null = null;
 
     private currentRenderToken = 0;
     private globalRenderToken = 0;
 
-    private debouncedAutoRefresh: () => void;
+    private relTimeEntries: { el: HTMLElement; ts: number }[] = [];
+    private tickCount = 0;
+
+    // 搜正文模式会话级正文缓存（避免 50 槽全局 LRU 抖动）
+    private searchCacheKey = '';
+    private searchContentCache: Map<string, string> = new Map();
+    private searchContentCacheChars = 0;
+
+    private debouncedStructuralRefresh: () => void;
     private debouncedSearchCurrent: () => void;
     private debouncedSearchGlobal: () => void;
 
@@ -595,34 +642,38 @@ export class VersionHistoryView extends ItemView {
         super(leaf);
         this.plugin = plugin;
 
-        this.debouncedAutoRefresh = debounce(() => {
+        this.debouncedStructuralRefresh = debounce(() => {
             const activeEl = document.activeElement;
             if (activeEl && activeEl.closest('.vc-search-capsule')) return;
-            if (this.currentViewMode === 'current' && this.currentResultsBox?.isConnected && this.currentFile) {
-                this.renderCurrentResultsList(this.currentResultsBox, this.currentFile);
-            } else if (this.currentViewMode === 'global' && this.globalResultsBox?.isConnected) {
-                this.renderGlobalResultsList(this.globalResultsBox);
-            } else {
-                this.refresh();
-            }
-        }, 500, true);
+            this.refreshSmart();
+        }, 350, true);
 
         this.debouncedSearchCurrent = debounce(() => {
             if (this.currentResultsBox?.isConnected && this.currentFile) {
-                this.renderCurrentResultsList(this.currentResultsBox, this.currentFile);
+                this.renderCurrentResultsList(this.currentResultsBox, this.currentFile, false);
             }
-        }, 220, false);
+        }, 220, true);
 
         this.debouncedSearchGlobal = debounce(() => {
             if (this.globalResultsBox?.isConnected) {
-                this.renderGlobalResultsList(this.globalResultsBox);
+                this.renderGlobalResultsList(this.globalResultsBox, false);
             }
-        }, 220, false);
+        }, 220, true);
     }
 
     getViewType(): string { return 'version-history'; }
     getDisplayText(): string { return '版本历史'; }
     getIcon(): string { return 'history'; }
+
+    isGlobalViewVisible(): boolean {
+        return this.currentViewMode === 'global' && this.contentEl.isConnected && this.contentEl.offsetParent !== null;
+    }
+
+    private invalidateSearchCache() {
+        this.searchCacheKey = '';
+        this.searchContentCache.clear();
+        this.searchContentCacheChars = 0;
+    }
 
     async onOpen() {
         this.registerEvent(
@@ -630,52 +681,89 @@ export class VersionHistoryView extends ItemView {
                 if (this.currentViewMode === 'current') {
                     const active = this.app.workspace.getActiveFile();
                     if (active && (!this.currentFile || this.currentFile.path !== active.path)) {
+                        this.invalidateSearchCache();
                         this.refresh();
                     } else if (!active && this.currentFile) {
                         this.currentFile = null; 
+                        this.invalidateSearchCache();
                         this.refresh();
                     }
                 }
             })
         );
 
-        this.registerEvent(
-            this.app.vault.on('modify', (file) => {
-                if (file instanceof TFile && !this.plugin.isExcluded(file.path)) {
-                    this.debouncedAutoRefresh();
-                }
-            })
-        );
-        this.registerEvent(this.app.vault.on('rename', () => this.debouncedAutoRefresh()));
-        this.registerEvent(this.app.vault.on('delete', () => this.debouncedAutoRefresh()));
+        // 普通打字修改不再触发当前笔记视图重绘，全球时间线修改已由主插件防抖批量同步后驱动
+        this.registerEvent(this.app.vault.on('rename', () => this.debouncedStructuralRefresh()));
+        this.registerEvent(this.app.vault.on('delete', () => this.debouncedStructuralRefresh()));
 
         await this.refresh();
     }
 
+    async onClose() {
+        this.currentRenderToken++;
+        this.globalRenderToken++;
+        this.relTimeEntries = [];
+        this.invalidateSearchCache();
+        this.currentResultsBox = null;
+        this.globalResultsBox = null;
+        this.timelineScrollEl = null;
+        this.currentFile = null;
+    }
+
     updateRelativeTimes() {
-        const timeEls = this.contentEl.querySelectorAll('.vc-rel-time');
-        timeEls.forEach((el: Element) => {
-            const tsStr = el.getAttribute('data-timestamp');
-            if (tsStr) {
-                const ts = parseInt(tsStr, 10);
-                if (!isNaN(ts) && ts > 0) {
-                    const newText = `(${this.plugin.getRelativeTime(ts)})`;
-                    if (el.textContent !== newText) {
-                        el.textContent = newText;
-                    }
+        if (!this.contentEl.isConnected || this.contentEl.offsetParent === null) return;
+        if (this.relTimeEntries.length === 0) return;
+
+        this.tickCount++;
+        const checkOlder = (this.tickCount % 15) === 0;
+        const now = Date.now();
+
+        for (let i = 0; i < this.relTimeEntries.length; i++) {
+            const entry = this.relTimeEntries[i]!;
+            if (!entry.el.isConnected) continue;
+            const age = now - entry.ts;
+            if (age < 65000 || checkOlder) {
+                const newText = `(${this.plugin.getRelativeTime(entry.ts)})`;
+                if (entry.el.textContent !== newText) {
+                    entry.el.textContent = newText;
                 }
             }
-        });
+        }
+    }
+
+    async refreshSmart() {
+        const activeEl = document.activeElement;
+        const isTypingInSearch = Boolean(activeEl && activeEl.closest('.vc-search-capsule'));
+
+        if (this.currentViewMode === 'current') {
+            const active = this.app.workspace.getActiveFile();
+            if (active?.path !== this.currentFile?.path) {
+                if (!isTypingInSearch) await this.refresh();
+                return;
+            }
+            if (active && this.currentResultsBox?.isConnected) {
+                await this.renderCurrentResultsList(this.currentResultsBox, active, true);
+                return;
+            }
+        } else if (this.currentViewMode === 'global') {
+            if (this.globalResultsBox?.isConnected) {
+                await this.renderGlobalResultsList(this.globalResultsBox, true);
+                return;
+            }
+        }
+        await this.refresh();
     }
 
     async refresh() {
-        const scrollBox = this.contentEl.querySelector('.vc-timeline-container');
+        const scrollBox = this.timelineScrollEl ?? this.contentEl.querySelector('.vc-timeline-container');
         const prevScrollTop = scrollBox ? scrollBox.scrollTop : 0;
 
         const container = this.contentEl;
         container.empty();
         this.currentResultsBox = null;
         this.globalResultsBox = null;
+        this.timelineScrollEl = null;
+        this.relTimeEntries = [];
 
         const buffer = container.createDiv({ cls: 'vc-root-shell' });
 
@@ -701,6 +789,7 @@ export class VersionHistoryView extends ItemView {
         });
 
         const contentArea = buffer.createEl('div', { cls: 'vc-timeline-container' });
+        this.timelineScrollEl = contentArea;
         if (this.currentViewMode === 'current') await this.renderCurrentFileHistory(contentArea);
         else await this.renderGlobalHistory(contentArea);
 
@@ -748,9 +837,10 @@ export class VersionHistoryView extends ItemView {
         innerToggle.addEventListener('click', (e: MouseEvent) => {
             e.stopPropagation();
             this.searchFullText = !this.searchFullText;
+            if (!this.searchFullText) this.invalidateSearchCache();
             innerToggle.toggleClass('is-active', this.searchFullText);
             searchInput.placeholder = this.searchFullText ? '搜索正文内容...' : '搜索快照或标签...';
-            if (this.currentResultsBox) this.renderCurrentResultsList(this.currentResultsBox, file);
+            if (this.currentResultsBox) this.renderCurrentResultsList(this.currentResultsBox, file, false);
         });
 
         clearBtn.addEventListener('click', (e: MouseEvent) => {
@@ -758,7 +848,7 @@ export class VersionHistoryView extends ItemView {
             this.searchQuery = '';
             searchInput.value = '';
             clearBtn.style.display = 'none';
-            if (this.currentResultsBox) this.renderCurrentResultsList(this.currentResultsBox, file);
+            if (this.currentResultsBox) this.renderCurrentResultsList(this.currentResultsBox, file, false);
             searchInput.focus();
         });
 
@@ -774,11 +864,13 @@ export class VersionHistoryView extends ItemView {
         snapBtn.addEventListener('click', () => this.plugin.createManualVersion());
 
         this.currentResultsBox = container.createEl('div', { cls: 'vc-results-container' });
-        await this.renderCurrentResultsList(this.currentResultsBox, file);
+        await this.renderCurrentResultsList(this.currentResultsBox, file, false);
     }
 
-    async renderCurrentResultsList(resultsContainer: HTMLElement, file: TFile) {
+    async renderCurrentResultsList(resultsContainer: HTMLElement, file: TFile, preserveScroll = false) {
         const myToken = ++this.currentRenderToken;
+        const prevScroll = preserveScroll && this.timelineScrollEl ? this.timelineScrollEl.scrollTop : 0;
+
         const versionFile = await this.plugin.loadVersionFile(file.path);
         if (myToken !== this.currentRenderToken || !resultsContainer.isConnected) return;
 
@@ -786,6 +878,7 @@ export class VersionHistoryView extends ItemView {
         const totalCount = allVersions.length;
 
         if (totalCount === 0) { 
+            this.relTimeEntries = [];
             resultsContainer.empty();
             const empty = resultsContainer.createEl('div', { cls: 'vc-timeline-empty' });
             const icon = empty.createEl('div', { cls: 'vc-timeline-empty-icon' });
@@ -804,11 +897,26 @@ export class VersionHistoryView extends ItemView {
         if (this.searchQuery) {
             const q = this.searchQuery.toLowerCase();
             if (this.searchFullText) {
+                const expectedKey = `${file.path}::${allVersions.length}::${allVersions[0]?.id ?? ''}`;
+                if (this.searchCacheKey !== expectedKey) {
+                    this.searchContentCache.clear();
+                    this.searchContentCacheChars = 0;
+                    this.searchCacheKey = expectedKey;
+                }
+
                 const matched: VersionData[] = [];
-                for (const v of allVersions) {
+                for (let idx = 0; idx < allVersions.length; idx++) {
+                    const v = allVersions[idx]!;
                     if (myToken !== this.currentRenderToken) return;
                     try {
-                        const content = await this.plugin.getVersionContent(file.path, v.id, true);
+                        let content = this.searchContentCache.get(v.id);
+                        if (content === undefined) {
+                            content = await this.plugin.getVersionContent(file.path, v.id, true);
+                            if (this.searchContentCacheChars + content.length <= 30_000_000) {
+                                this.searchContentCache.set(v.id, content);
+                                this.searchContentCacheChars += content.length;
+                            }
+                        }
                         const pos = content.toLowerCase().indexOf(q);
                         if (pos !== -1) {
                             matched.push(v);
@@ -817,6 +925,7 @@ export class VersionHistoryView extends ItemView {
                             snippetMatchMap.set(v.id, content.substring(start, end).replace(/\n/g, ' '));
                         }
                     } catch {}
+                    if (idx % 5 === 4) await this.plugin.yieldToMain();
                 }
                 filteredVersions = matched;
             } else {
@@ -825,6 +934,7 @@ export class VersionHistoryView extends ItemView {
         }
 
         if (myToken !== this.currentRenderToken || !resultsContainer.isConnected) return;
+        this.relTimeEntries = [];
         resultsContainer.empty();
 
         if (this.searchQuery) {
@@ -833,10 +943,12 @@ export class VersionHistoryView extends ItemView {
         }
 
         const timeline = resultsContainer.createEl('div', { cls: 'vc-linear-timeline' });
+        const frag = document.createDocumentFragment();
 
         filteredVersions.forEach((v: VersionData, index: number) => {
             const isManual = !v.message.includes('[Auto Save]');
-            const item = timeline.createEl('div', { cls: `vc-timeline-entry ${v.starred ? 'is-starred' : ''}` });
+            const item = document.createElement('div');
+            item.className = `vc-timeline-entry ${v.starred ? 'is-starred' : ''}`;
             
             const rail = item.createEl('div', { cls: 'vc-timeline-rail' });
             rail.createEl('div', { cls: `vc-timeline-node ${isManual ? 'is-manual' : ''} ${v.starred ? 'is-star' : ''}` });
@@ -881,11 +993,12 @@ export class VersionHistoryView extends ItemView {
 
             const timeWrap = top.createEl('div', { cls: 'vc-timeline-time-box' });
             timeWrap.createEl('span', { text: this.plugin.formatTime(v.timestamp), cls: 'vc-abs-time' });
-            timeWrap.createEl('span', { 
+            const relEl = timeWrap.createEl('span', { 
                 text: `(${this.plugin.getRelativeTime(v.timestamp)})`, 
                 cls: 'vc-rel-time',
                 attr: { 'data-timestamp': String(v.timestamp) } 
             });
+            this.relTimeEntries.push({ el: relEl, ts: v.timestamp });
 
             if (snippetMatchMap.has(v.id)) {
                 const snipEl = top.createEl('div', { cls: 'vc-snippet-match' });
@@ -903,7 +1016,7 @@ export class VersionHistoryView extends ItemView {
             starBtn.addEventListener('click', async (e: MouseEvent) => {
                 e.stopPropagation();
                 await this.plugin.toggleVersionStar(file.path, v.id);
-                this.renderCurrentResultsList(resultsContainer, file);
+                this.renderCurrentResultsList(resultsContainer, file, true);
             });
 
             const prevDiffBtn = actions.createEl('button', { 
@@ -945,10 +1058,20 @@ export class VersionHistoryView extends ItemView {
                 e.stopPropagation();
                 new ConfirmModal(this.app, '彻底删除此快照？', `将永久销毁版本「${this.plugin.formatTime(v.timestamp)}」。底层将自动重组依赖链，不影响其他版本。`, async () => {
                     const ok = await this.plugin.deleteSingleVersion(file.path, v.id);
-                    if (ok) this.renderCurrentResultsList(resultsContainer, file);
+                    if (ok) {
+                        this.invalidateSearchCache();
+                        this.renderCurrentResultsList(resultsContainer, file, true);
+                    }
                 }, '确认删除').open();
             });
+
+            frag.appendChild(item);
         });
+
+        timeline.appendChild(frag);
+        if (preserveScroll && prevScroll > 0 && this.timelineScrollEl) {
+            this.timelineScrollEl.scrollTop = prevScroll;
+        }
     }
 
     private buildGlobalHistoryCard(
@@ -1050,11 +1173,12 @@ export class VersionHistoryView extends ItemView {
 
             const timeContainer = mtimeRow.createEl('div', { cls: 'vc-meta-time-cluster' });
             timeContainer.createEl('span', { text: this.plugin.formatTime(mtime), cls: 'vc-meta-time-abs' });
-            timeContainer.createEl('span', { 
+            const mtimeRelEl = timeContainer.createEl('span', { 
                 text: `(${this.plugin.getRelativeTime(mtime)})`, 
                 cls: 'vc-rel-time',
                 attr: { 'data-timestamp': String(mtime) } 
             });
+            this.relTimeEntries.push({ el: mtimeRelEl, ts: mtime });
         }
 
         const snapRow = timeCol.createEl('div', { cls: 'vc-meta-time-row' });
@@ -1068,11 +1192,12 @@ export class VersionHistoryView extends ItemView {
             snapTimeContainer.createEl('span', { text: '尚未保存快照', cls: 'vc-meta-time-abs is-empty-text' });
         } else {
             snapTimeContainer.createEl('span', { text: this.plugin.formatTime(version.timestamp), cls: 'vc-meta-time-abs' });
-            snapTimeContainer.createEl('span', { 
+            const snapRelEl = snapTimeContainer.createEl('span', { 
                 text: `(${this.plugin.getRelativeTime(version.timestamp)})`, 
                 cls: 'vc-rel-time',
                 attr: { 'data-timestamp': String(version.timestamp) } 
             });
+            this.relTimeEntries.push({ el: snapRelEl, ts: version.timestamp });
         }
 
         const actions = body.createEl('div', { cls: 'vc-timeline-actions' });
@@ -1148,7 +1273,7 @@ export class VersionHistoryView extends ItemView {
             this.globalSearchQuery = '';
             searchInput.value = '';
             clearBtn.style.display = 'none';
-            if (this.globalResultsBox) this.renderGlobalResultsList(this.globalResultsBox);
+            if (this.globalResultsBox) this.renderGlobalResultsList(this.globalResultsBox, false);
             searchInput.focus();
         });
 
@@ -1188,14 +1313,16 @@ export class VersionHistoryView extends ItemView {
         });
 
         this.globalResultsBox = container.createEl('div', { cls: 'vc-timeline-content-area' });
-        await this.renderGlobalResultsList(this.globalResultsBox);
+        await this.renderGlobalResultsList(this.globalResultsBox, false);
     }
 
-    async renderGlobalResultsList(timelineArea: HTMLElement) {
+    async renderGlobalResultsList(timelineArea: HTMLElement, preserveScroll = false) {
         const myToken = ++this.globalRenderToken;
+        const prevScroll = preserveScroll && this.timelineScrollEl ? this.timelineScrollEl.scrollTop : 0;
 
         let loadingEl: HTMLElement | null = null;
         if (!this.plugin.globalHistoryCache && !this.plugin.isSnapshotMetaLoaded) {
+            this.relTimeEntries = [];
             timelineArea.empty();
             loadingEl = timelineArea.createEl('div', { cls: 'vc-timeline-loading' });
             loadingEl.createEl('div', { cls: 'vc-spinner' });
@@ -1212,6 +1339,7 @@ export class VersionHistoryView extends ItemView {
         }
 
         if (myToken !== this.globalRenderToken || !timelineArea.isConnected) return;
+        this.relTimeEntries = [];
         timelineArea.empty();
 
         if (this.globalSearchQuery) {
@@ -1266,6 +1394,10 @@ export class VersionHistoryView extends ItemView {
                     moreContainer.remove();
                 }
             });
+        }
+
+        if (preserveScroll && prevScroll > 0 && this.timelineScrollEl) {
+            this.timelineScrollEl.scrollTop = prevScroll;
         }
     }
 }
